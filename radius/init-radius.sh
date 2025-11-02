@@ -105,21 +105,22 @@ if [ ! -d /etc/freeradius/3.0/mods-config/sql/main/postgresql ]; then
     cat > /etc/freeradius/3.0/mods-config/sql/main/postgresql/queries.conf <<'QUERYEOF'
 # FreeRADIUS PostgreSQL Query Templates
 # This file contains SQL queries used by the SQL module
+# Column names match FreeRADIUS standard schema (UserName, Attribute, Value)
 
 # Authentication check query - retrieves user credentials from radcheck
-authorize_check_query = "SELECT id, username, attribute, op, value FROM ${authcheck_table} WHERE username = '%{SQL-User-Name}' ORDER BY id"
+authorize_check_query = "SELECT id, \"UserName\", \"Attribute\", op, \"Value\" FROM ${authcheck_table} WHERE \"UserName\" = '%{SQL-User-Name}' ORDER BY id"
 
 # Authentication reply query - retrieves user attributes from radreply  
-authorize_reply_query = "SELECT id, username, attribute, value FROM ${authreply_table} WHERE username = '%{SQL-User-Name}' ORDER BY id"
+authorize_reply_query = "SELECT id, \"UserName\", \"Attribute\", \"Value\" FROM ${authreply_table} WHERE \"UserName\" = '%{SQL-User-Name}' ORDER BY id"
 
 # Group check query
-group_check_query = "SELECT id, groupname, attribute, op, value FROM ${groupcheck_table} WHERE groupname = '%{SQL-Group-Name}' ORDER BY id"
+group_check_query = "SELECT id, \"GroupName\", \"Attribute\", op, \"Value\" FROM ${groupcheck_table} WHERE \"GroupName\" = '%{SQL-Group-Name}' ORDER BY id"
 
 # Group reply query
-group_reply_query = "SELECT id, groupname, attribute, value FROM ${groupreply_table} WHERE groupname = '%{SQL-Group-Name}' ORDER BY id"
+group_reply_query = "SELECT id, \"GroupName\", \"Attribute\", \"Value\" FROM ${groupreply_table} WHERE \"GroupName\" = '%{SQL-Group-Name}' ORDER BY id"
 
 # User group membership query
-usergroup_check_query = "SELECT groupname FROM ${usergroup_table} WHERE username = '%{SQL-User-Name}' ORDER BY priority"
+usergroup_check_query = "SELECT \"GroupName\" FROM ${usergroup_table} WHERE \"UserName\" = '%{SQL-User-Name}' ORDER BY priority"
 
 # Accounting start query
 accounting_start_query = "INSERT INTO ${accounting_table} (acctuniqueid, username, nasipaddress, acctstarttime, acctsessiontime, acctinputoctets, acctoutputoctets, accttotaloctets, framedipaddress) VALUES ('%{%{Acct-Unique-Session-Id}:-%{%{Acct-Session-ID}:-%{%{Auth-Type}:-noauth}}}-%{%{NAS-IP-Address}:-%{%{NAS-IPv6-Address}:-0.0.0.0}}}', '%{SQL-User-Name}', '%{%{NAS-IP-Address}:-%{%{NAS-IPv6-Address}:-%{Packet-Src-IP-Address}}}', NOW(), 0, 0, 0, 0, '%{Framed-IP-Address}')"

@@ -92,27 +92,28 @@ model RadAcct {
 }
 
 // FreeRADIUS user credentials table
+// Following FreeRADIUS standard schema: camelCase in Prisma, uppercase in database
 model RadCheck {
-  id       Int    @id @default(autoincrement())
-  username String @map("username")
-  attribute String @default("Cleartext-Password") @map("attribute")
-  op       String @default(":=") @map("op")
-  value    String @map("value")
+  id        Int    @id @default(autoincrement())
+  userName  String @map("UserName") @default("")
+  attribute String @map("Attribute") @default("Cleartext-Password")
+  op        String @map("op") @default(":=")
+  value     String @map("Value") @default("")
 
   @@map("radcheck")
-  @@index([username])
+  @@index([userName, attribute])
 }
 
 // FreeRADIUS user attributes (bandwidth limits, quotas)
 model RadReply {
-  id       Int    @id @default(autoincrement())
-  username String @map("username")
-  attribute String @map("attribute")
-  op       String @default("=") @map("op")
-  value    String @map("value")
+  id        Int    @id @default(autoincrement())
+  userName  String @map("UserName") @default("")
+  attribute String @map("Attribute") @default("")
+  op        String @map("op") @default("=")
+  value     String @map("Value") @default("")
 
   @@map("radreply")
-  @@index([username])
+  @@index([userName, attribute])
 }
 
 enum Role {

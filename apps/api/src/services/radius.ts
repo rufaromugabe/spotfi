@@ -348,7 +348,7 @@ async function processRouterSync(router: {
  */
 export async function getRadiusUser(username: string) {
   return prisma.radCheck.findFirst({
-    where: { username },
+    where: { userName: username },
   });
 }
 
@@ -358,7 +358,7 @@ export async function getRadiusUser(username: string) {
 export async function createRadiusUser(username: string, password: string) {
   // Check if user already exists
   const existing = await prisma.radCheck.findFirst({
-    where: { username },
+    where: { userName: username },
   });
 
   if (existing) {
@@ -367,7 +367,7 @@ export async function createRadiusUser(username: string, password: string) {
 
   return prisma.radCheck.create({
     data: {
-      username,
+      userName: username,
       attribute: 'Cleartext-Password',
       op: ':=',
       value: password,
@@ -380,7 +380,7 @@ export async function createRadiusUser(username: string, password: string) {
  */
 export async function updateRadiusUserPassword(username: string, password: string) {
   return prisma.radCheck.updateMany({
-    where: { username },
+    where: { userName: username },
     data: {
       value: password,
     },
@@ -398,24 +398,24 @@ export async function setRadiusUserAttribute(
   // Check if attribute already exists
   const existing = await prisma.radReply.findFirst({
     where: {
-      username,
-      attribute,
+      userName: username,
+      attribute: attribute,
     },
   });
 
   if (existing) {
     return prisma.radReply.update({
       where: { id: existing.id },
-      data: { value },
+      data: { value: value },
     });
   }
 
   return prisma.radReply.create({
     data: {
-      username,
-      attribute,
+      userName: username,
+      attribute: attribute,
       op: '=',
-      value,
+      value: value,
     },
   });
 }
