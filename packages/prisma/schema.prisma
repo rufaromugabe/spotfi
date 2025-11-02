@@ -30,6 +30,7 @@ model Router {
   lastSeen    DateTime?
   totalUsage  Float     @default(0)
   nasipaddress String?
+  macAddress  String?   // Router MAC address for robust tracking (doesn't change like IP)
   location    String?
   invoices    Invoice[]
   sessions    RadAcct[]
@@ -37,6 +38,7 @@ model Router {
   updatedAt   DateTime  @updatedAt
 
   @@index([hostId])
+  @@index([macAddress])
   @@map("routers")
 }
 
@@ -66,6 +68,9 @@ model RadAcct {
   acctuniqueid    String   @id @map("acctuniqueid")
   username        String
   nasipaddress    String   @map("nasipaddress")
+  nasidentifier   String?  @map("nasidentifier") // NAS identifier (router hostname/ID/MAC)
+  callingstationid String? @map("callingstationid") // Client MAC address
+  nasmacaddress   String?  @map("nasmacaddress") // Router/NAS MAC address (populated via trigger)
   routerId       String?
   router          Router?  @relation(fields: [routerId], references: [id])
   acctstarttime   DateTime? @map("acctstarttime")
@@ -78,6 +83,9 @@ model RadAcct {
 
   @@index([routerId])
   @@index([nasipaddress])
+  @@index([nasidentifier])
+  @@index([nasmacaddress])
+  @@index([callingstationid])
   @@index([acctstarttime])
   @@index([routerId, acctstarttime])
   @@map("radacct")

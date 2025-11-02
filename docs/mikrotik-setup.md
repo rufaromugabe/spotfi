@@ -30,9 +30,43 @@ Replace:
 - `<SPOTFI_RADIUS_IP>` with your SpotFi RADIUS server IP
 - `<RADIUS_SECRET>` with your RADIUS secret (configured in FreeRADIUS)
 
+### Optional: Include Router MAC in NAS-Identifier (Enhanced Tracking)
+
+**Note:** This is optional! SpotFi automatically captures router MAC via WebSocket connection, so you don't need this. However, including MAC in NAS-Identifier provides additional reliability.
+
+To include router MAC address in RADIUS packets (so it appears in `NAS-Identifier`):
+
+```bash
+# Get router's MAC address (from main WAN interface, usually ether1)
+:local routerMac [/interface ethernet get ether1 mac-address]
+
+# Set system identity to include MAC (makes it unique and identifiable)
+/system identity set name="MikroTik-$routerMac"
+```
+
+Or manually set a unique identifier:
+```bash
+/system identity set name="Router-$routerMac"
+```
+
+This makes the router's MAC address appear in FreeRADIUS `NAS-Identifier` field:
+```
+NAS-Identifier = "MikroTik-DC:2C:6E:8A:71:5F"
+```
+
+**Why this helps:**
+- Provides redundancy if WebSocket connection is temporarily down
+- Makes router identification visible directly in RADIUS logs
+- Helps with debugging and monitoring
+
+**But it's not required because:**
+- SpotFi gets router MAC via WebSocket when router connects
+- Database trigger auto-populates MAC in accounting records based on IP lookup
+- System works reliably even without this configuration
+
 ## Step 3: WebSocket Connection Script
 
-Create a scheduler script to maintain WebSocket connection:
+Create a scheduler script to maintain WebSocket connection. **This is required** - it's how SpotFi captures your router's MAC address for reliable tracking.
 
 ### Router Script (RouterOS)
 
@@ -40,8 +74,12 @@ Create a scheduler script to maintain WebSocket connection:
 # Variables
 :local routerId "YOUR_ROUTER_ID"
 :local routerToken "YOUR_ROUTER_TOKEN"
-:local wsUrl "wss://api.spotfi.com/ws?id=$routerId&token=$routerToken"
-:local reconnectInterval 60
+
+# Get router MAC address (from main interface, usually ether1)
+:local routerMac [/interface ethernet get ether1 mac-address]
+
+# WebSocket URL with MAC address parameter
+:local wsUrl "wss://api.spotfi.com/ws?id=$routerId&token=$routerToken&mac=$routerMac"
 
 # WebSocket connection script
 :local connectWs do={
@@ -61,13 +99,19 @@ Create a scheduler script to maintain WebSocket connection:
 # Initial connection
 $connectWs
 
-# Schedule reconnection every minute
+# Schedule reconnection every minute (maintains connection and updates IP/MAC)
 /system scheduler add \
     name="spotfi-reconnect" \
-    interval=$reconnectInterval \
+    interval=60 \
     start-time=startup \
     on-event="$connectWs"
 ```
+
+**Important:** The WebSocket connection does two critical things:
+1. **Auto-detects router IP** - No manual IP entry needed
+2. **Captures router MAC** - Enables reliable tracking even with dynamic IPs
+
+The router MAC is sent in the `?mac=` parameter, ensuring SpotFi always knows which router is which.
 
 ### Sending Metrics
 

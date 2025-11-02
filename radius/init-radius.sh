@@ -5,9 +5,13 @@ set -e
 
 echo "🔧 Configuring FreeRADIUS for PostgreSQL..."
 
-# Install PostgreSQL support
-apt-get update
-apt-get install -y freeradius-postgresql libpq-dev
+# Wait for database to be ready
+echo "⏳ Waiting for database connection..."
+until PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -c '\q' 2>/dev/null; do
+  echo "   Database not ready, waiting 2 seconds..."
+  sleep 2
+done
+echo "✅ Database connection established"
 
 # Enable SQL module
 if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
@@ -54,9 +58,20 @@ if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
   ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
 fi
 
-echo "✅ FreeRADIUS PostgreSQL configuration complete"
-echo "🚀 Starting FreeRADIUS..."
+# Apply database trigger for router MAC tracking (if SQL file exists)
+if [ -f /migrations/ensure_router_mac.sql ]; then
+  echo "📊 Applying router MAC tracking trigger..."
+  PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -f /migrations/ensure_router_mac.sql 2>/dev/null || echo "   Trigger may already exist, skipping..."
+fi
 
-# Start FreeRADIUS in foreground with debug
-exec freeradius -X
+echo "✅ FreeRADIUS PostgreSQL configuration complete"
+
+# Determine if debug mode
+if [ "${RADIUS_DEBUG:-no}" = "yes" ] || [ "${RADIUS_DEBUG:-no}" = "true" ]; then
+  echo "🐛 Starting FreeRADIUS in DEBUG mode..."
+  exec freeradius -X
+else
+  echo "🚀 Starting FreeRADIUS in production mode..."
+  exec freeradius -f
+fi
 

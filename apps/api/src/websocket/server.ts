@@ -14,6 +14,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       const routerId = url.searchParams.get('id');
       const token = url.searchParams.get('token');
+      const macAddress = url.searchParams.get('mac'); // Optional MAC address parameter
 
       if (!routerId || !token) {
         connection.socket.close(1008, 'Missing router ID or token');
@@ -43,11 +44,11 @@ export function setupWebSocket(fastify: FastifyInstance) {
             || request.socket?.remoteAddress 
             || 'unknown';
 
-          // Update router status and NAS IP (if it changed)
+          // Update router status, NAS IP, and MAC address (if provided)
           prisma.router
             .findUnique({
               where: { id: routerId },
-              select: { nasipaddress: true },
+              select: { nasipaddress: true, macAddress: true },
             })
             .then((currentRouter) => {
               const updateData: any = {
@@ -55,11 +56,30 @@ export function setupWebSocket(fastify: FastifyInstance) {
                 lastSeen: new Date(),
               };
 
-              // Update nasipaddress if it changed (helps with dynamic IPs)
-              // Only update if we have a valid IP and it's different
-              if (clientIp !== 'unknown' && clientIp !== currentRouter?.nasipaddress) {
-                updateData.nasipaddress = clientIp;
-                fastify.log.info(`Router ${routerId} IP changed: ${currentRouter?.nasipaddress} → ${clientIp}`);
+              // Always update nasipaddress when router connects (IP is auto-detected)
+              // This ensures IP is set even if router was created without it
+              if (clientIp !== 'unknown') {
+                if (clientIp !== currentRouter?.nasipaddress) {
+                  updateData.nasipaddress = clientIp;
+                  if (currentRouter?.nasipaddress) {
+                    fastify.log.info(`Router ${routerId} IP changed: ${currentRouter.nasipaddress} → ${clientIp}`);
+                  } else {
+                    fastify.log.info(`Router ${routerId} IP auto-detected: ${clientIp}`);
+                  }
+                }
+              }
+
+              // Update MAC address if provided (most robust identifier - doesn't change)
+              // Normalize MAC address format (remove colons/dashes, uppercase)
+              if (macAddress) {
+                const normalizedMac = macAddress.replace(/[:-]/g, '').toUpperCase();
+                // Format as standard MAC (AA:BB:CC:DD:EE:FF) for consistency
+                const formattedMac = normalizedMac.match(/.{2}/g)?.join(':') || normalizedMac;
+                
+                if (formattedMac !== currentRouter?.macAddress) {
+                  updateData.macAddress = formattedMac;
+                  fastify.log.info(`Router ${routerId} MAC address ${currentRouter?.macAddress ? 'updated' : 'set'}: ${formattedMac}`);
+                }
               }
 
               return prisma.router.update({
@@ -94,12 +114,21 @@ export function setupWebSocket(fastify: FastifyInstance) {
                 case 'metrics':
                   // Update router metrics
                   if (data.metrics) {
+                    const updateData: any = {
+                      lastSeen: new Date(),
+                      status: 'ONLINE',
+                    };
+                    
+                    // Update MAC address if provided in metrics
+                    if (data.metrics.macAddress) {
+                      const normalizedMac = data.metrics.macAddress.replace(/[:-]/g, '').toUpperCase();
+                      const formattedMac = normalizedMac.match(/.{2}/g)?.join(':') || normalizedMac;
+                      updateData.macAddress = formattedMac;
+                    }
+                    
                     await prisma.router.update({
                       where: { id: routerId },
-                      data: {
-                        lastSeen: new Date(),
-                        status: 'ONLINE',
-                      },
+                      data: updateData,
                     });
                   }
                   break;

@@ -147,11 +147,15 @@ export async function routerRoutes(fastify: FastifyInstance) {
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
-          required: ['name', 'hostId'],
+          required: ['name', 'hostId', 'macAddress'],
           properties: {
             name: { type: 'string' },
             hostId: { type: 'string', description: 'ID of the host user (must be HOST role)' },
-            nasipaddress: { type: 'string', format: 'ipv4' },
+            macAddress: { 
+              type: 'string', 
+              pattern: '^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$|^[0-9A-Fa-f]{12}$',
+              description: 'Router MAC address (e.g., AA:BB:CC:DD:EE:FF). IP address is automatically detected when router connects.' 
+            },
             location: { type: 'string' },
           },
         },
@@ -208,13 +212,25 @@ export async function routerRoutes(fastify: FastifyInstance) {
       // Generate unique token for router
       const token = randomBytes(32).toString('hex');
 
+      // Normalize MAC address format (AA:BB:CC:DD:EE:FF)
+      const normalizedMac = body.macAddress.replace(/[:-]/g, '').toUpperCase();
+      const formattedMac = normalizedMac.match(/.{2}/g)?.join(':') || normalizedMac;
+
+      // Validate MAC address format
+      if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(formattedMac)) {
+        return reply.code(400).send({ 
+          error: 'Invalid MAC address format. Expected format: AA:BB:CC:DD:EE:FF' 
+        });
+      }
+
       const router = await prisma.router.create({
         data: {
           name: body.name,
           hostId: body.hostId, // Use provided hostId, not current user
           token,
-          nasipaddress: body.nasipaddress,
+          macAddress: formattedMac, // Store MAC address (required)
           location: body.location,
+          // nasipaddress is NOT set here - it's automatically detected when router connects via WebSocket
           status: 'OFFLINE',
         },
         include: {
