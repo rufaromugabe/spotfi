@@ -78,12 +78,43 @@ sql {
     groupcheck_table = "radgroupcheck"
     groupreply_table = "radgroupreply"
     usergroup_table = "radusergroup"
+    
 }
 EOF
 
 # Ensure SQL module is enabled
 if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
   ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
+fi
+
+# Ensure SQL query templates exist (required for SQL module to work)
+# FreeRADIUS needs the query templates in mods-config/sql/main/postgresql/
+if [ ! -d /etc/freeradius/3.0/mods-config/sql/main/postgresql ]; then
+  mkdir -p /etc/freeradius/3.0/mods-config/sql/main/postgresql
+  # Copy query templates from backup if available, or create minimal ones
+  if [ -d /etc/freeradius/3.0.backup/mods-config/sql/main/postgresql ]; then
+    cp -r /etc/freeradius/3.0.backup/mods-config/sql/main/postgresql/* /etc/freeradius/3.0/mods-config/sql/main/postgresql/ 2>/dev/null || true
+  else
+    # Create minimal query files if backup doesn't exist
+    # These are basic queries that should work with standard FreeRADIUS schema
+    echo "   📝 Creating SQL query templates..."
+    cat > /etc/freeradius/3.0/mods-config/sql/main/postgresql/queries.conf <<'QUERYEOF'
+# Default queries for PostgreSQL
+
+# Authentication query
+authorize_check_query = "\
+    SELECT id, username, attribute, op, value \
+    FROM ${authcheck_table} \
+    WHERE username = '%{SQL-User-Name}' \
+    ORDER BY id"
+
+authorize_reply_query = "\
+    SELECT id, username, attribute, value \
+    FROM ${authreply_table} \
+    WHERE username = '%{SQL-User-Name}' \
+    ORDER BY id"
+QUERYEOF
+  fi
 fi
 
 # Ensure default site is enabled
@@ -107,6 +138,79 @@ if [ ! -L /etc/freeradius/3.0/sites-enabled/inner-tunnel ]; then
     cp /etc/freeradius/3.0.backup/sites-available/inner-tunnel /etc/freeradius/3.0/sites-available/inner-tunnel 2>/dev/null || true
     ln -s /etc/freeradius/3.0/sites-available/inner-tunnel /etc/freeradius/3.0/sites-enabled/inner-tunnel
   fi
+fi
+
+# If default site doesn't exist, create a minimal one that uses SQL
+if [ ! -f /etc/freeradius/3.0/sites-available/default ]; then
+  echo "📝 Creating minimal default site configuration..."
+  mkdir -p /etc/freeradius/3.0/sites-available
+  cat > /etc/freeradius/3.0/sites-available/default <<'SITEEOF'
+server default {
+    listen {
+        type = auth
+        ipaddr = *
+        port = 1812
+    }
+    
+    listen {
+        type = acct
+        ipaddr = *
+        port = 1813
+    }
+    
+    authorize {
+        preprocess
+        sql
+        if (noop) {
+            ok
+        }
+    }
+    
+    authenticate {
+        Auth-Type SQL {
+            sql
+        }
+    }
+    
+    preacct {
+        preprocess
+        acct_unique
+        sql
+    }
+    
+    accounting {
+        sql
+        unix
+        radutmp
+    }
+    
+    session {
+        sql
+    }
+    
+    post-auth {
+        sql
+        remove_reply_message_if_eap
+        Post-Auth-Type REJECT {
+            attr_filter.access_reject
+        }
+    }
+    
+    pre-proxy {
+    }
+    
+    post-proxy {
+        eap
+    }
+}
+SITEEOF
+  # Ensure sites-enabled directory exists
+  mkdir -p /etc/freeradius/3.0/sites-enabled
+  # Enable the site
+  if [ ! -L /etc/freeradius/3.0/sites-enabled/default ]; then
+    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
+  fi
+  echo "   ✅ Default site created and enabled"
 fi
 
 # Configure clients - allow connections from any IP with the shared secret
