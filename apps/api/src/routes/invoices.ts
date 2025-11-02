@@ -1,11 +1,12 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { getHostInvoices, markInvoicePaid } from '../services/billing.js';
+import { requireAdmin } from '../utils/auth.js';
 
 const prisma = new PrismaClient();
 
 export async function invoiceRoutes(fastify: FastifyInstance) {
-  // Get all invoices for current user
+  // Get all invoices (earnings/payments due) for current user
   fastify.get(
     '/api/invoices',
     {
@@ -13,7 +14,7 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
       schema: {
         tags: ['invoices'],
         summary: 'List all invoices',
-        description: 'Get all invoices for the authenticated user',
+        description: 'Get all payment invoices (earnings) for the authenticated host user',
         security: [{ bearerAuth: [] }],
         response: {
           200: {
@@ -41,13 +42,34 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
 
-      const invoices = await getHostInvoices(user.userId);
+      // Admins can see all invoices, hosts can only see their own earnings
+      if (user.role === 'ADMIN') {
+        const invoices = await prisma.invoice.findMany({
+          include: {
+            router: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            host: {
+              select: {
+                id: true,
+                email: true,
+              },
+            },
+          },
+          orderBy: { period: 'desc' },
+        });
+        return { invoices };
+      }
 
+      const invoices = await getHostInvoices(user.userId);
       return { invoices };
     }
   );
 
-  // Get single invoice
+  // Get single invoice (earnings/payment due)
   fastify.get(
     '/api/invoices/:id',
     {
@@ -55,7 +77,7 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
       schema: {
         tags: ['invoices'],
         summary: 'Get invoice details',
-        description: 'Get detailed information about a specific invoice',
+        description: 'Get detailed information about a specific payment invoice (earning)',
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
@@ -94,11 +116,13 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
       const user = request.user as any;
       const { id } = request.params as { id: string };
 
+      // Admins can view any invoice, hosts can only view their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const invoice = await prisma.invoice.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
         include: {
           router: {
             select: {
@@ -124,15 +148,15 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Mark invoice as paid
+  // Mark invoice as paid (Admin only - platform processes payment to host)
   fastify.post(
     '/api/invoices/:id/pay',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireAdmin],
       schema: {
         tags: ['invoices'],
         summary: 'Mark invoice as paid',
-        description: 'Mark an invoice as paid',
+        description: 'Mark an invoice as paid when platform has processed payment to host (Admin only)',
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',
@@ -156,6 +180,12 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
               message: { type: 'string' },
             },
           },
+          400: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
           404: {
             type: 'object',
             properties: {
@@ -166,14 +196,16 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const user = request.user as any;
       const { id } = request.params as { id: string };
 
       try {
-        const invoice = await markInvoicePaid(id, user.userId);
-        return { invoice, message: 'Invoice marked as paid' };
+        const invoice = await markInvoicePaid(id);
+        return { invoice, message: 'Invoice marked as paid - payment processed to host' };
       } catch (error: any) {
-        return reply.code(404).send({ error: error.message });
+        if (error.message === 'Invoice not found') {
+          return reply.code(404).send({ error: error.message });
+        }
+        return reply.code(400).send({ error: error.message });
       }
     }
   );

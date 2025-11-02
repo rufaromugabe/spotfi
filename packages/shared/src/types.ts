@@ -13,6 +13,7 @@ export const RegisterSchema = z.object({
 
 export const RouterCreateSchema = z.object({
   name: z.string().min(1),
+  hostId: z.string().min(1), // Required: router must have a host
   nasipaddress: z.string().ip().optional(),
   location: z.string().optional(),
 });

@@ -15,18 +15,23 @@ export async function syncRadiusAccounting() {
       select: {
         id: true,
         nasipaddress: true,
+        lastSeen: true, // Need this for orphan detection
       },
     });
 
     for (const router of routers) {
       // Find all accounting records for this router
-      // Match by nasipaddress if available, or by routerId
-      const whereClause: any = {};
+      // Priority: 1) routerId (most reliable), 2) nasipaddress (for initial linking)
+      // For routers with dynamic IPs, routerId is set after first match, so we check both
+      const whereClause: any = {
+        OR: [
+          { routerId: router.id }, // Match by routerId first (works even if IP changes)
+        ]
+      };
       
+      // Also match by nasipaddress for new sessions that haven't been linked yet
       if (router.nasipaddress) {
-        whereClause.nasipaddress = router.nasipaddress;
-      } else {
-        whereClause.routerId = router.id;
+        whereClause.OR.push({ nasipaddress: router.nasipaddress });
       }
 
       const sessions = await prisma.radAcct.findMany({
@@ -45,18 +50,76 @@ export async function syncRadiusAccounting() {
       // Convert to MB
       const totalUsageMB = totalBytes / (1024 * 1024);
 
-      // Update router if routerId wasn't set in radacct
+      // Link any unlinked accounting records to this router
+      // This handles cases where IP changed but we still need to link old sessions
+      const linkWhere: any = {
+        routerId: null, // Only link records that aren't already linked
+      };
+      
+      // Strategy 1: Link records matching current nasipaddress
       if (router.nasipaddress) {
-        // Update radacct records to link them to router
-        await prisma.radAcct.updateMany({
-          where: {
-            nasipaddress: router.nasipaddress,
-            routerId: null,
-          },
+        linkWhere.nasipaddress = router.nasipaddress;
+        
+        const linkedCount = await prisma.radAcct.updateMany({
+          where: linkWhere,
           data: {
             routerId: router.id,
           },
         });
+        
+        if (linkedCount.count > 0) {
+          console.log(`  🔗 Linked ${linkedCount.count} sessions by current IP (${router.nasipaddress})`);
+        }
+      }
+      
+      // Strategy 2: If router already has linked sessions, try to link recent unlinked records
+      // This handles the case where IP changed but router hasn't reconnected via WebSocket yet
+      const routerHasLinkedSessions = sessions.some(s => s.routerId === router.id);
+      
+      if (routerHasLinkedSessions) {
+        // Find recent unlinked sessions (last 24 hours) that might belong to this router
+        // Check if there are any recent unlinked records that could be from this router
+        const oneDayAgo = new Date();
+        oneDayAgo.setHours(oneDayAgo.getHours() - 24);
+        
+        // Get recent IPs this router has used (from linked sessions)
+        const recentLinkedSessions = await prisma.radAcct.findMany({
+          where: {
+            routerId: router.id,
+            acctstarttime: {
+              gte: oneDayAgo,
+            },
+          },
+          select: {
+            nasipaddress: true,
+          },
+        });
+        
+        // Get unique IPs from recent linked sessions
+        const recentIPs = [...new Set(recentLinkedSessions.map(s => s.nasipaddress).filter(Boolean))];
+        
+        // Try to link recent unlinked records that have IPs matching recent router IPs
+        // This handles the gap between IP change and WebSocket reconnection
+        if (recentIPs.length > 0) {
+          const orphanLinkWhere: any = {
+            routerId: null,
+            nasipaddress: { in: recentIPs },
+            acctstarttime: {
+              gte: oneDayAgo,
+            },
+          };
+          
+          const orphanLinkedCount = await prisma.radAcct.updateMany({
+            where: orphanLinkWhere,
+            data: {
+              routerId: router.id,
+            },
+          });
+          
+          if (orphanLinkedCount.count > 0) {
+            console.log(`  🔗 Linked ${orphanLinkedCount.count} orphaned sessions (IPs: ${recentIPs.join(', ')})`);
+          }
+        }
       }
 
       // Update router totalUsage

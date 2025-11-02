@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { RouterCreateSchema, RouterCommandSchema } from '@spotfi/shared';
 import { randomBytes } from 'crypto';
 import { routerWebSocketConnections } from '../websocket/server.js';
+import { requireAdmin } from '../utils/auth.js';
 
 const prisma = new PrismaClient();
 
@@ -43,8 +44,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
 
+      // Admins can see all routers, hosts can only see their own
+      const whereClause = user.role === 'ADMIN' 
+        ? {} 
+        : { hostId: user.userId };
+
       const routers = await prisma.router.findMany({
-        where: { hostId: user.userId },
+        where: whereClause,
         include: {
           host: {
             select: {
@@ -104,11 +110,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const user = request.user as any;
       const { id } = request.params as { id: string };
 
+      // Admins can access any router, hosts can only access their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const router = await prisma.router.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
         include: {
           host: {
             select: {
@@ -127,21 +135,22 @@ export async function routerRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Create router
+  // Create router (Admin only - can assign routers to specific hosts)
   fastify.post(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireAdmin],
       schema: {
         tags: ['routers'],
         summary: 'Create a new router',
-        description: 'Register a new router for the authenticated user',
+        description: 'Register a new router for a specific host (Admin only)',
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
-          required: ['name'],
+          required: ['name', 'hostId'],
           properties: {
             name: { type: 'string' },
+            hostId: { type: 'string', description: 'ID of the host user (must be HOST role)' },
             nasipaddress: { type: 'string', format: 'ipv4' },
             location: { type: 'string' },
           },
@@ -162,12 +171,39 @@ export async function routerRoutes(fastify: FastifyInstance) {
               },
             },
           },
+          400: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
+          404: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
         },
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const user = request.user as any;
       const body = RouterCreateSchema.parse(request.body);
+
+      // Validate that the host exists and is a HOST role
+      const host = await prisma.user.findUnique({
+        where: { id: body.hostId },
+        select: { id: true, role: true, email: true },
+      });
+
+      if (!host) {
+        return reply.code(404).send({ error: 'Host user not found' });
+      }
+
+      if (host.role !== 'HOST') {
+        return reply.code(400).send({ 
+          error: 'Can only assign routers to users with HOST role' 
+        });
+      }
 
       // Generate unique token for router
       const token = randomBytes(32).toString('hex');
@@ -175,7 +211,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const router = await prisma.router.create({
         data: {
           name: body.name,
-          hostId: user.userId,
+          hostId: body.hostId, // Use provided hostId, not current user
           token,
           nasipaddress: body.nasipaddress,
           location: body.location,
@@ -246,11 +282,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = request.body as Partial<{ name: string; location: string }>;
 
+      // Admins can update any router, hosts can only update their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const router = await prisma.router.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
       });
 
       if (!router) {
@@ -314,11 +352,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const user = request.user as any;
       const { id } = request.params as { id: string };
 
+      // Admins can delete any router, hosts can only delete their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const router = await prisma.router.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
       });
 
       if (!router) {
@@ -383,11 +423,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = RouterCommandSchema.parse(request.body);
 
+      // Admins can send commands to any router, hosts can only send to their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const router = await prisma.router.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
       });
 
       if (!router) {
@@ -466,11 +508,13 @@ export async function routerRoutes(fastify: FastifyInstance) {
       const user = request.user as any;
       const { id } = request.params as { id: string };
 
+      // Admins can view stats for any router, hosts can only view their own
+      const whereClause = user.role === 'ADMIN'
+        ? { id }
+        : { id, hostId: user.userId };
+
       const router = await prisma.router.findFirst({
-        where: {
-          id,
-          hostId: user.userId,
-        },
+        where: whereClause,
       });
 
       if (!router) {

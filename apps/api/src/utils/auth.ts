@@ -38,6 +38,13 @@ export async function requireRole(
   }
 }
 
+export async function requireAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  return requireRole(request, reply, ['ADMIN']);
+}
+
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 10);
 }

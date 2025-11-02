@@ -37,14 +37,35 @@ export function setupWebSocket(fastify: FastifyInstance) {
           // Store connection
           routerWebSocketConnections.set(routerId, connection.socket);
 
-          // Update router status
+          // Extract client IP (may be behind proxy)
+          const clientIp = request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() 
+            || request.headers['x-real-ip']?.toString() 
+            || request.socket?.remoteAddress 
+            || 'unknown';
+
+          // Update router status and NAS IP (if it changed)
           prisma.router
-            .update({
+            .findUnique({
               where: { id: routerId },
-              data: {
+              select: { nasipaddress: true },
+            })
+            .then((currentRouter) => {
+              const updateData: any = {
                 status: 'ONLINE',
                 lastSeen: new Date(),
-              },
+              };
+
+              // Update nasipaddress if it changed (helps with dynamic IPs)
+              // Only update if we have a valid IP and it's different
+              if (clientIp !== 'unknown' && clientIp !== currentRouter?.nasipaddress) {
+                updateData.nasipaddress = clientIp;
+                fastify.log.info(`Router ${routerId} IP changed: ${currentRouter?.nasipaddress} → ${clientIp}`);
+              }
+
+              return prisma.router.update({
+                where: { id: routerId },
+                data: updateData,
+              });
             })
             .catch((err) => {
               fastify.log.error(err);

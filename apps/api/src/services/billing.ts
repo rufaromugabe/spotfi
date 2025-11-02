@@ -2,11 +2,12 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-// Cost per MB in USD (configurable)
-const COST_PER_MB = parseFloat(process.env.BILLING_COST_PER_MB || '0.02');
+// Payment rate per MB in USD - what the platform pays hosts for data usage (configurable)
+const PAYMENT_RATE_PER_MB = parseFloat(process.env.PAYMENT_RATE_PER_MB || process.env.BILLING_COST_PER_MB || '0.02');
 
 /**
- * Generate invoices for all routers based on their usage for the billing period
+ * Generate invoices (payments due) for all hosts based on their router usage
+ * These represent what the platform owes to hosts for end-user data consumption
  */
 export async function generateInvoices(billingPeriod?: Date) {
   try {
@@ -70,8 +71,8 @@ export async function generateInvoices(billingPeriod?: Date) {
       // Convert to MB
       const usageMB = totalBytes / (1024 * 1024);
 
-      // Calculate cost
-      const amount = usageMB * COST_PER_MB;
+      // Calculate payment amount - what the platform owes the host
+      const paymentAmount = usageMB * PAYMENT_RATE_PER_MB;
 
       // Only create invoice if there's actual usage
       if (usageMB > 0) {
@@ -79,15 +80,15 @@ export async function generateInvoices(billingPeriod?: Date) {
           data: {
             hostId: router.hostId,
             routerId: router.id,
-            amount: Math.round(amount * 100) / 100, // Round to 2 decimals
+            amount: Math.round(paymentAmount * 100) / 100, // Round to 2 decimals - amount owed TO host
             period,
             usage: Math.round(usageMB * 100) / 100,
-            status: 'PENDING',
+            status: 'PENDING', // PENDING = platform hasn't paid host yet
           },
         });
 
         invoicesCreated++;
-        console.log(`✅ Created invoice for router ${router.id}: ${usageMB.toFixed(2)} MB = $${amount.toFixed(2)}`);
+        console.log(`✅ Created payment invoice for host ${router.hostId} (router ${router.id}): ${usageMB.toFixed(2)} MB = $${paymentAmount.toFixed(2)} owed`);
       } else {
         console.log(`⏭️  No usage for router ${router.id}, skipping invoice`);
       }
@@ -102,7 +103,8 @@ export async function generateInvoices(billingPeriod?: Date) {
 }
 
 /**
- * Get all invoices for a host
+ * Get all invoices (payments due) for a host
+ * These represent what the platform owes the host for router usage
  */
 export async function getHostInvoices(hostId: string) {
   return prisma.invoice.findMany({
@@ -120,18 +122,20 @@ export async function getHostInvoices(hostId: string) {
 }
 
 /**
- * Mark invoice as paid
+ * Mark invoice as paid (Admin only)
+ * This is called when the platform has processed payment to the host
  */
-export async function markInvoicePaid(invoiceId: string, hostId: string) {
-  const invoice = await prisma.invoice.findFirst({
-    where: {
-      id: invoiceId,
-      hostId,
-    },
+export async function markInvoicePaid(invoiceId: string) {
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
   });
 
   if (!invoice) {
     throw new Error('Invoice not found');
+  }
+
+  if (invoice.status === 'PAID') {
+    throw new Error('Invoice is already marked as paid');
   }
 
   return prisma.invoice.update({
