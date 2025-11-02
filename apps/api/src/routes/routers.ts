@@ -535,23 +535,23 @@ export async function routerRoutes(fastify: FastifyInstance) {
         },
       });
 
-      // Calculate total usage for current month
+      // Calculate total usage for current month using database aggregation (scalable)
       const startOfMonth = new Date();
       startOfMonth.setDate(1);
       startOfMonth.setHours(0, 0, 0, 0);
 
-      const monthlySessions = await prisma.radAcct.findMany({
-        where: {
-          routerId: id,
-          acctstarttime: {
-            gte: startOfMonth,
-          },
-        },
-      });
+      // Use SQL aggregation instead of loading all records into memory
+      const monthlyUsageResult = await prisma.$queryRaw<Array<{ total_bytes: bigint; count: bigint }>>`
+        SELECT 
+          COALESCE(SUM(accttotaloctets), 0)::bigint as total_bytes,
+          COUNT(*)::bigint as count
+        FROM radacct
+        WHERE router_id = ${id}::text
+          AND acctstarttime >= ${startOfMonth}
+      `;
 
-      const monthlyUsage = monthlySessions.reduce((sum: number, session) => {
-        return sum + Number(session.accttotaloctets || 0);
-      }, 0);
+      const monthlyUsage = Number(monthlyUsageResult[0]?.total_bytes || 0);
+      const monthlySessionCount = Number(monthlyUsageResult[0]?.count || 0);
 
       return {
         router: {
@@ -565,6 +565,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
           monthlyUsageBytes: monthlyUsage,
           monthlyUsageMB: monthlyUsage / (1024 * 1024),
           recentSessionsCount: recentSessions.length,
+          monthlySessionsCount: monthlySessionCount,
           recentSessions,
         },
       };

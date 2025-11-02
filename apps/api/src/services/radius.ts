@@ -19,7 +19,26 @@ export async function syncRadiusAccounting() {
       },
     });
 
-    for (const router of routers) {
+    // Process routers in parallel batches for better scalability
+    // Process 10 routers at a time to avoid overwhelming the database
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < routers.length; i += BATCH_SIZE) {
+      const batch = routers.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(router => processRouterSync(router)));
+    }
+
+    console.log('✨ RADIUS accounting sync completed');
+  } catch (error) {
+    console.error('❌ Error syncing RADIUS accounting:', error);
+    throw error;
+  }
+}
+
+/**
+ * Process sync for a single router (extracted for parallel processing)
+ */
+async function processRouterSync(router: { id: string; nasipaddress: string | null; lastSeen: Date | null }) {
+  try {
       // Find all accounting records for this router
       // Priority: 1) routerId (most reliable), 2) nasipaddress (for initial linking)
       // For routers with dynamic IPs, routerId is set after first match, so we check both
@@ -34,20 +53,21 @@ export async function syncRadiusAccounting() {
         whereClause.OR.push({ nasipaddress: router.nasipaddress });
       }
 
-      const sessions = await prisma.radAcct.findMany({
-        where: whereClause,
-        select: {
-          accttotaloctets: true,
-          routerId: true,
-        },
-      });
+      // Use database aggregation for better performance (scalable)
+      // This avoids loading millions of records into memory
+      const usageResult = router.nasipaddress
+        ? await prisma.$queryRaw<Array<{ total_bytes: bigint }>>`
+            SELECT COALESCE(SUM(accttotaloctets), 0)::bigint as total_bytes
+            FROM radacct
+            WHERE router_id = ${router.id}::text OR nasipaddress = ${router.nasipaddress}::text
+          `
+        : await prisma.$queryRaw<Array<{ total_bytes: bigint }>>`
+            SELECT COALESCE(SUM(accttotaloctets), 0)::bigint as total_bytes
+            FROM radacct
+            WHERE router_id = ${router.id}::text
+          `;
 
-      // Calculate total usage in bytes
-      const totalBytes = sessions.reduce((sum: number, session) => {
-        return sum + Number(session.accttotaloctets || 0);
-      }, 0);
-
-      // Convert to MB
+      const totalBytes = Number(usageResult[0]?.total_bytes || 0);
       const totalUsageMB = totalBytes / (1024 * 1024);
 
       // Link any unlinked accounting records to this router
@@ -74,9 +94,13 @@ export async function syncRadiusAccounting() {
       
       // Strategy 2: If router already has linked sessions, try to link recent unlinked records
       // This handles the case where IP changed but router hasn't reconnected via WebSocket yet
-      const routerHasLinkedSessions = sessions.some(s => s.routerId === router.id);
+      // Check if router has any linked sessions by querying for at least one
+      const hasLinkedSessions = await prisma.radAcct.findFirst({
+        where: { routerId: router.id },
+        select: { routerId: true },
+      });
       
-      if (routerHasLinkedSessions) {
+      if (hasLinkedSessions) {
         // Find recent unlinked sessions (last 24 hours) that might belong to this router
         // Check if there are any recent unlinked records that could be from this router
         const oneDayAgo = new Date();
@@ -130,13 +154,10 @@ export async function syncRadiusAccounting() {
         },
       });
 
-      console.log(`✅ Updated router ${router.id}: ${totalUsageMB.toFixed(2)} MB`);
-    }
-
-    console.log('✨ RADIUS accounting sync completed');
+    console.log(`✅ Updated router ${router.id}: ${totalUsageMB.toFixed(2)} MB`);
   } catch (error) {
-    console.error('❌ Error syncing RADIUS accounting:', error);
-    throw error;
+    console.error(`❌ Error syncing router ${router.id}:`, error);
+    // Don't throw - continue processing other routers
   }
 }
 

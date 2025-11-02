@@ -36,6 +36,7 @@ model Router {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  @@index([hostId])
   @@map("routers")
 }
 
@@ -53,6 +54,10 @@ model Invoice {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([hostId])
+  @@index([routerId])
+  @@index([period])
+  @@index([hostId, period])
   @@map("invoices")
 }
 
@@ -71,6 +76,10 @@ model RadAcct {
   accttotaloctets BigInt   @default(0) @map("accttotaloctets")
   framedipaddress String?  @map("framedipaddress")
 
+  @@index([routerId])
+  @@index([nasipaddress])
+  @@index([acctstarttime])
+  @@index([routerId, acctstarttime])
   @@map("radacct")
 }
 

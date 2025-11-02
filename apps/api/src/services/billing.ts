@@ -29,69 +29,22 @@ export async function generateInvoices(billingPeriod?: Date) {
       },
     });
 
+    // Calculate billing period once
+    const startOfPeriod = new Date(period);
+    const endOfPeriod = new Date(period);
+    endOfPeriod.setMonth(endOfPeriod.getMonth() + 1);
+
+    // Process routers in parallel batches for better scalability
+    // Process 10 routers at a time to avoid overwhelming the database
+    const BATCH_SIZE = 10;
     let invoicesCreated = 0;
 
-    for (const router of routers) {
-      // Check if invoice already exists for this period
-      const existingInvoice = await prisma.invoice.findFirst({
-        where: {
-          routerId: router.id,
-          period: {
-            gte: period,
-            lt: new Date(period.getFullYear(), period.getMonth() + 1, 1),
-          },
-        },
-      });
-
-      if (existingInvoice) {
-        console.log(`⏭️  Invoice already exists for router ${router.id} in period ${period.toISOString()}`);
-        continue;
-      }
-
-      // Calculate usage for the billing period
-      const startOfPeriod = new Date(period);
-      const endOfPeriod = new Date(period);
-      endOfPeriod.setMonth(endOfPeriod.getMonth() + 1);
-
-      const sessions = await prisma.radAcct.findMany({
-        where: {
-          routerId: router.id,
-          acctstarttime: {
-            gte: startOfPeriod,
-            lt: endOfPeriod,
-          },
-        },
-      });
-
-      // Calculate total usage in bytes
-      const totalBytes = sessions.reduce((sum, session) => {
-        return sum + Number(session.accttotaloctets || 0);
-      }, 0);
-
-      // Convert to MB
-      const usageMB = totalBytes / (1024 * 1024);
-
-      // Calculate payment amount - what the platform owes the host
-      const paymentAmount = usageMB * PAYMENT_RATE_PER_MB;
-
-      // Only create invoice if there's actual usage
-      if (usageMB > 0) {
-        await prisma.invoice.create({
-          data: {
-            hostId: router.hostId,
-            routerId: router.id,
-            amount: Math.round(paymentAmount * 100) / 100, // Round to 2 decimals - amount owed TO host
-            period,
-            usage: Math.round(usageMB * 100) / 100,
-            status: 'PENDING', // PENDING = platform hasn't paid host yet
-          },
-        });
-
-        invoicesCreated++;
-        console.log(`✅ Created payment invoice for host ${router.hostId} (router ${router.id}): ${usageMB.toFixed(2)} MB = $${paymentAmount.toFixed(2)} owed`);
-      } else {
-        console.log(`⏭️  No usage for router ${router.id}, skipping invoice`);
-      }
+    for (let i = 0; i < routers.length; i += BATCH_SIZE) {
+      const batch = routers.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map(router => processRouterInvoice(router, period, startOfPeriod, endOfPeriod))
+      );
+      invoicesCreated += results.filter(r => r).length;
     }
 
     console.log(`✨ Invoice generation completed: ${invoicesCreated} invoices created`);
@@ -99,6 +52,73 @@ export async function generateInvoices(billingPeriod?: Date) {
   } catch (error) {
     console.error('❌ Error generating invoices:', error);
     throw error;
+  }
+}
+
+/**
+ * Process invoice generation for a single router (extracted for parallel processing)
+ */
+async function processRouterInvoice(
+  router: { id: string; hostId: string; host: { id: string; email: string } },
+  period: Date,
+  startOfPeriod: Date,
+  endOfPeriod: Date
+): Promise<boolean> {
+  try {
+    // Check if invoice already exists for this period
+    const existingInvoice = await prisma.invoice.findFirst({
+      where: {
+        routerId: router.id,
+        period: {
+          gte: period,
+          lt: new Date(period.getFullYear(), period.getMonth() + 1, 1),
+        },
+      },
+    });
+
+    if (existingInvoice) {
+      console.log(`⏭️  Invoice already exists for router ${router.id} in period ${period.toISOString()}`);
+      return false;
+    }
+
+    // Use database aggregation for better performance (scalable)
+    // Avoids loading potentially millions of records into memory
+    const usageResult = await prisma.$queryRaw<Array<{ total_bytes: bigint }>>`
+      SELECT COALESCE(SUM(accttotaloctets), 0)::bigint as total_bytes
+      FROM radacct
+      WHERE router_id = ${router.id}::text
+        AND acctstarttime >= ${startOfPeriod}
+        AND acctstarttime < ${endOfPeriod}
+    `;
+
+    const totalBytes = Number(usageResult[0]?.total_bytes || 0);
+    const usageMB = totalBytes / (1024 * 1024);
+
+    // Calculate payment amount - what the platform owes the host
+    const paymentAmount = usageMB * PAYMENT_RATE_PER_MB;
+
+    // Only create invoice if there's actual usage
+    if (usageMB > 0) {
+      await prisma.invoice.create({
+        data: {
+          hostId: router.hostId,
+          routerId: router.id,
+          amount: Math.round(paymentAmount * 100) / 100, // Round to 2 decimals - amount owed TO host
+          period,
+          usage: Math.round(usageMB * 100) / 100,
+          status: 'PENDING', // PENDING = platform hasn't paid host yet
+        },
+      });
+
+      console.log(`✅ Created payment invoice for host ${router.hostId} (router ${router.id}): ${usageMB.toFixed(2)} MB = $${paymentAmount.toFixed(2)} owed`);
+      return true;
+    } else {
+      console.log(`⏭️  No usage for router ${router.id}, skipping invoice`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`❌ Error generating invoice for router ${router.id}:`, error);
+    return false; // Don't throw - continue processing other routers
   }
 }
 
