@@ -5,6 +5,35 @@ set -e
 
 echo "🔧 Configuring FreeRADIUS for PostgreSQL..."
 
+# Initialize FreeRADIUS config directory structure if volume is empty
+# Check if the directory structure exists, if not, restore from backup
+if [ ! -d /etc/freeradius/3.0/mods-available ] || [ -z "$(ls -A /etc/freeradius/3.0/mods-available 2>/dev/null)" ]; then
+  echo "📁 Initializing FreeRADIUS configuration directory structure..."
+  
+  # Restore base configuration from backup (created in Dockerfile)
+  if [ -d /etc/freeradius/3.0.backup ]; then
+    echo "   Restoring base configuration from backup..."
+    # Copy preserving permissions and attributes
+    cp -a /etc/freeradius/3.0.backup/. /etc/freeradius/3.0/ 2>/dev/null || {
+      echo "   ⚠️  Some files may have failed to copy, but continuing..."
+      # Fallback: create directories if copy failed
+      mkdir -p /etc/freeradius/3.0/mods-available
+      mkdir -p /etc/freeradius/3.0/mods-enabled
+      mkdir -p /etc/freeradius/3.0/sites-available
+      mkdir -p /etc/freeradius/3.0/sites-enabled
+    }
+    echo "   ✅ Base configuration restored"
+  else
+    echo "   ⚠️  Warning: Backup not found, creating minimal directory structure..."
+    # Create necessary directories as fallback
+    mkdir -p /etc/freeradius/3.0/mods-available
+    mkdir -p /etc/freeradius/3.0/mods-enabled
+    mkdir -p /etc/freeradius/3.0/sites-available
+    mkdir -p /etc/freeradius/3.0/sites-enabled
+    mkdir -p /etc/freeradius/3.0/clients.d
+  fi
+fi
+
 # Wait for database to be ready
 echo "⏳ Waiting for database connection..."
 until PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -c '\q' 2>/dev/null; do
@@ -13,10 +42,9 @@ until PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_
 done
 echo "✅ Database connection established"
 
-# Enable SQL module
-if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
-  ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
-fi
+# Ensure mods-available directory exists
+mkdir -p /etc/freeradius/3.0/mods-available
+mkdir -p /etc/freeradius/3.0/mods-enabled
 
 # Configure SQL module for PostgreSQL
 cat > /etc/freeradius/3.0/mods-available/sql <<EOF

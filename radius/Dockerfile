@@ -21,6 +21,10 @@ RUN mkdir -p /etc/freeradius/3.0/mods-enabled && \
     mkdir -p /var/log/freeradius && \
     chown -R freerad:freerad /var/log/freeradius
 
+# Backup base FreeRADIUS configuration (before volume mount overwrites it)
+# This will be restored in init-radius.sh if the volume is empty
+RUN cp -r /etc/freeradius/3.0 /etc/freeradius/3.0.backup || true
+
 # Expose RADIUS ports
 EXPOSE 1812/udp 1813/udp
 
