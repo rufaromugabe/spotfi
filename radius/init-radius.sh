@@ -96,23 +96,38 @@ if [ ! -d /etc/freeradius/3.0/mods-config/sql/main/postgresql ]; then
     cp -r /etc/freeradius/3.0.backup/mods-config/sql/main/postgresql/* /etc/freeradius/3.0/mods-config/sql/main/postgresql/ 2>/dev/null || true
   else
     # Create minimal query files if backup doesn't exist
-    # These are basic queries that should work with standard FreeRADIUS schema
+    # FreeRADIUS 3.x queries.conf format - just query strings, no blocks
     echo "   📝 Creating SQL query templates..."
     cat > /etc/freeradius/3.0/mods-config/sql/main/postgresql/queries.conf <<'QUERYEOF'
-# Default queries for PostgreSQL
+# FreeRADIUS PostgreSQL Query Templates
+# This file contains SQL queries used by the SQL module
 
-# Authentication query
-authorize_check_query = "\
-    SELECT id, username, attribute, op, value \
-    FROM ${authcheck_table} \
-    WHERE username = '%{SQL-User-Name}' \
-    ORDER BY id"
+# Authentication check query - retrieves user credentials from radcheck
+authorize_check_query = "SELECT id, username, attribute, op, value FROM ${authcheck_table} WHERE username = '%{SQL-User-Name}' ORDER BY id"
 
-authorize_reply_query = "\
-    SELECT id, username, attribute, value \
-    FROM ${authreply_table} \
-    WHERE username = '%{SQL-User-Name}' \
-    ORDER BY id"
+# Authentication reply query - retrieves user attributes from radreply  
+authorize_reply_query = "SELECT id, username, attribute, value FROM ${authreply_table} WHERE username = '%{SQL-User-Name}' ORDER BY id"
+
+# Group check query
+group_check_query = "SELECT id, groupname, attribute, op, value FROM ${groupcheck_table} WHERE groupname = '%{SQL-Group-Name}' ORDER BY id"
+
+# Group reply query
+group_reply_query = "SELECT id, groupname, attribute, value FROM ${groupreply_table} WHERE groupname = '%{SQL-Group-Name}' ORDER BY id"
+
+# User group membership query
+usergroup_check_query = "SELECT groupname FROM ${usergroup_table} WHERE username = '%{SQL-User-Name}' ORDER BY priority"
+
+# Accounting start query
+accounting_start_query = "INSERT INTO ${accounting_table} (acctuniqueid, username, nasipaddress, acctstarttime, acctsessiontime, acctinputoctets, acctoutputoctets, accttotaloctets, framedipaddress) VALUES ('%{%{Acct-Unique-Session-Id}:-%{%{Acct-Session-ID}:-%{%{Auth-Type}:-noauth}}}-%{%{NAS-IP-Address}:-%{%{NAS-IPv6-Address}:-0.0.0.0}}}', '%{SQL-User-Name}', '%{%{NAS-IP-Address}:-%{%{NAS-IPv6-Address}:-%{Packet-Src-IP-Address}}}', NOW(), 0, 0, 0, 0, '%{Framed-IP-Address}')"
+
+# Accounting stop query
+accounting_stop_query = "UPDATE ${accounting_table} SET acctstoptime = NOW(), acctsessiontime = '%{Acct-Session-Time}', acctinputoctets = '%{Acct-Input-Octets}', acctoutputoctets = '%{Acct-Output-Octets}', accttotaloctets = '%{Acct-Input-Octets}' + '%{Acct-Output-Octets}' WHERE acctuniqueid = '%{%{Acct-Unique-Session-Id}:-%{%{Acct-Session-ID}:-%{%{Auth-Type}:-noauth}}}'"
+
+# Accounting update query
+accounting_update_query = "UPDATE ${accounting_table} SET acctinputoctets = '%{Acct-Input-Octets}', acctoutputoctets = '%{Acct-Output-Octets}', accttotaloctets = '%{Acct-Input-Octets}' + '%{Acct-Output-Octets}' WHERE acctuniqueid = '%{%{Acct-Unique-Session-Id}:-%{%{Acct-Session-ID}:-%{%{Auth-Type}:-noauth}}}'"
+
+# Post-auth query
+postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, authdate, class) VALUES ('%{User-Name}', '%{User-Password}', '%{reply:Packet-Type}', NOW(), '%{Class}')"
 QUERYEOF
   fi
 fi
