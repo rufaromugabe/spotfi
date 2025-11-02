@@ -79,8 +79,12 @@ sql {
     groupreply_table = "radgroupreply"
     usergroup_table = "radusergroup"
     
+    # Include queries from mods-config/sql/main/postgresql/queries.conf
+    # This is automatically included based on dialect, but we ensure it exists above
 }
 EOF
+
+echo "   ✅ SQL module configured"
 
 # Ensure SQL module is enabled
 if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
