@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(HOST)
+  routers   Router[]
+  invoices  Invoice[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Router {
+  id          String    @id @default(cuid())
+  name        String
+  hostId      String
+  host        User      @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  token       String    @unique
+  status      RouterStatus @default(OFFLINE)
+  lastSeen    DateTime?
+  totalUsage  Float     @default(0)
+  nasipaddress String?
+  location    String?
+  invoices    Invoice[]
+  sessions    RadAcct[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("routers")
+}
+
+model Invoice {
+  id          String   @id @default(cuid())
+  hostId      String
+  host        User     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  routerId    String
+  router      Router   @relation(fields: [routerId], references: [id], onDelete: Cascade)
+  amount      Float
+  period      DateTime
+  usage       Float
+  status      InvoiceStatus @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("invoices")
+}
+
+// FreeRADIUS accounting table
+model RadAcct {
+  acctuniqueid    String   @id @map("acctuniqueid")
+  username        String
+  nasipaddress    String   @map("nasipaddress")
+  routerId       String?
+  router          Router?  @relation(fields: [routerId], references: [id])
+  acctstarttime   DateTime? @map("acctstarttime")
+  acctstoptime    DateTime? @map("acctstoptime")
+  acctsessiontime BigInt?  @map("acctsessiontime")
+  acctinputoctets BigInt   @default(0) @map("acctinputoctets")
+  acctoutputoctets BigInt  @default(0) @map("acctoutputoctets")
+  accttotaloctets BigInt   @default(0) @map("accttotaloctets")
+  framedipaddress String?  @map("framedipaddress")
+
+  @@map("radacct")
+}
+
+// FreeRADIUS user credentials table
+model RadCheck {
+  id       Int    @id @default(autoincrement())
+  username String @map("username")
+  attribute String @default("Cleartext-Password") @map("attribute")
+  op       String @default(":=") @map("op")
+  value    String @map("value")
+
+  @@map("radcheck")
+  @@index([username])
+}
+
+// FreeRADIUS user attributes (bandwidth limits, quotas)
+model RadReply {
+  id       Int    @id @default(autoincrement())
+  username String @map("username")
+  attribute String @map("attribute")
+  op       String @default("=") @map("op")
+  value    String @map("value")
+
+  @@map("radreply")
+  @@index([username])
+}
+
+enum Role {
+  ADMIN
+  HOST
+}
+
+enum RouterStatus {
+  ONLINE
+  OFFLINE
+  ERROR
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+

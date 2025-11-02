@@ -1,0 +1,429 @@
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { PrismaClient } from '@prisma/client';
+import { RouterCreateSchema, RouterCommandSchema } from '@spotfi/shared';
+import { randomBytes } from 'crypto';
+import { routerWebSocketConnections } from '../websocket/server.js';
+
+const prisma = new PrismaClient();
+
+export async function routerRoutes(fastify: FastifyInstance) {
+  // Get all routers (for current user)
+  fastify.get(
+    '/',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'List all routers',
+        description: 'Get all routers for the authenticated user',
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              routers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    name: { type: 'string' },
+                    status: { type: 'string' },
+                    lastSeen: { type: 'string', format: 'date-time', nullable: true },
+                    totalUsage: { type: 'number' },
+                    createdAt: { type: 'string', format: 'date-time' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user as any;
+
+      const routers = await prisma.router.findMany({
+        where: { hostId: user.userId },
+        include: {
+          host: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return { routers };
+    }
+  );
+
+  // Get single router
+  fastify.get(
+    '/:id',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const user = request.user as any;
+      const { id } = request.params;
+
+      const router = await prisma.router.findFirst({
+        where: {
+          id,
+          hostId: user.userId,
+        },
+        include: {
+          host: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      if (!router) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      return { router };
+    }
+  );
+
+  // Create router
+  fastify.post(
+    '/',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Create a new router',
+        description: 'Register a new router for the authenticated user',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string' },
+            nasipaddress: { type: 'string', format: 'ipv4' },
+            location: { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              router: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                  token: { type: 'string' },
+                  status: { type: 'string' },
+                  createdAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user as any;
+      const body = RouterCreateSchema.parse(request.body);
+
+      // Generate unique token for router
+      const token = randomBytes(32).toString('hex');
+
+      const router = await prisma.router.create({
+        data: {
+          name: body.name,
+          hostId: user.userId,
+          token,
+          nasipaddress: body.nasipaddress,
+          location: body.location,
+          status: 'OFFLINE',
+        },
+        include: {
+          host: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      return { router };
+    }
+  );
+
+  // Update router
+  fastify.put(
+    '/:id',
+    { preHandler: [fastify.authenticate] },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: Partial<{ name: string; location: string }> }>,
+      reply: FastifyReply
+    ) => {
+      const user = request.user as any;
+      const { id } = request.params;
+      const body = request.body;
+
+      const router = await prisma.router.findFirst({
+        where: {
+          id,
+          hostId: user.userId,
+        },
+      });
+
+      if (!router) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      const updated = await prisma.router.update({
+        where: { id },
+        data: {
+          name: body.name,
+          location: body.location,
+        },
+        include: {
+          host: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      return { router: updated };
+    }
+  );
+
+  // Delete router
+  fastify.delete(
+    '/:id',
+    { preHandler: [fastify.authenticate] },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const user = request.user as any;
+      const { id } = request.params;
+
+      const router = await prisma.router.findFirst({
+        where: {
+          id,
+          hostId: user.userId,
+        },
+      });
+
+      if (!router) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      await prisma.router.delete({
+        where: { id },
+      });
+
+      return { message: 'Router deleted' };
+    }
+  );
+
+  // Send command to router
+  fastify.post(
+    '/:id/command',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Send command to router',
+        description: 'Send a remote command to a router via WebSocket',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['command'],
+          properties: {
+            command: {
+              type: 'string',
+              enum: ['reboot', 'fetch-logs', 'get-status', 'update-config'],
+            },
+            params: { type: 'object' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              message: { type: 'string' },
+              commandId: { type: 'string' },
+              command: { type: 'string' },
+            },
+          },
+          503: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { command: string; params?: Record<string, unknown> } }>,
+      reply: FastifyReply
+    ) => {
+      const user = request.user as any;
+      const { id } = request.params;
+      const body = RouterCommandSchema.parse(request.body);
+
+      const router = await prisma.router.findFirst({
+        where: {
+          id,
+          hostId: user.userId,
+        },
+      });
+
+      if (!router) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      // Check if router is connected via WebSocket
+      const ws = routerWebSocketConnections.get(id);
+      if (!ws || ws.readyState !== 1) {
+        return reply.code(503).send({ error: 'Router is offline' });
+      }
+
+      // Send command via WebSocket
+      const commandId = randomBytes(8).toString('hex');
+      const message = {
+        id: commandId,
+        type: 'command',
+        command: body.command,
+        params: body.params || {},
+        timestamp: new Date().toISOString(),
+      };
+
+      ws.send(JSON.stringify(message));
+
+      return {
+        message: 'Command sent',
+        commandId,
+        command: body.command,
+      };
+    }
+  );
+
+  // Get router statistics
+  fastify.get(
+    '/:id/stats',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Get router statistics',
+        description: 'Get usage statistics and recent sessions for a router',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              router: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                  status: { type: 'string' },
+                  totalUsage: { type: 'number' },
+                },
+              },
+              stats: {
+                type: 'object',
+                properties: {
+                  monthlyUsageBytes: { type: 'number' },
+                  monthlyUsageMB: { type: 'number' },
+                  recentSessionsCount: { type: 'number' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const user = request.user as any;
+      const { id } = request.params;
+
+      const router = await prisma.router.findFirst({
+        where: {
+          id,
+          hostId: user.userId,
+        },
+      });
+
+      if (!router) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      // Get recent sessions from radacct
+      const recentSessions = await prisma.radAcct.findMany({
+        where: { routerId: id },
+        orderBy: { acctstarttime: 'desc' },
+        take: 100,
+        select: {
+          acctuniqueid: true,
+          username: true,
+          acctstarttime: true,
+          acctstoptime: true,
+          accttotaloctets: true,
+        },
+      });
+
+      // Calculate total usage for current month
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+
+      const monthlySessions = await prisma.radAcct.findMany({
+        where: {
+          routerId: id,
+          acctstarttime: {
+            gte: startOfMonth,
+          },
+        },
+      });
+
+      const monthlyUsage = monthlySessions.reduce((sum: number, session) => {
+        return sum + Number(session.accttotaloctets || 0);
+      }, 0);
+
+      return {
+        router: {
+          id: router.id,
+          name: router.name,
+          status: router.status,
+          lastSeen: router.lastSeen,
+          totalUsage: router.totalUsage,
+        },
+        stats: {
+          monthlyUsageBytes: monthlyUsage,
+          monthlyUsageMB: monthlyUsage / (1024 * 1024),
+          recentSessionsCount: recentSessions.length,
+          recentSessions,
+        },
+      };
+    }
+  );
+}
+

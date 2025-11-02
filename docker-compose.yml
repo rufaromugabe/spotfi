@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: spotfi-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spotfi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
+      POSTGRES_DB: ${POSTGRES_DB:-spotfi_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spotfi}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  radius-db:
+    image: mysql:8.0
+    container_name: spotfi-radius-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${RADIUS_DB_ROOT_PASSWORD:-radius_root_pass}
+      MYSQL_DATABASE: ${RADIUS_DB_NAME:-spotfi_radius}
+      MYSQL_USER: ${RADIUS_DB_USER:-radius_user}
+      MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:-radius_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_radius_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  freeradius:
+    image: freeradius/freeradius-server:latest
+    container_name: spotfi-radius
+    depends_on:
+      radius-db:
+        condition: service_healthy
+    volumes:
+      - ./radius/config:/etc/freeradius/3.0
+    ports:
+      - "1812:1812/udp"  # Authentication
+      - "1813:1813/udp"  # Accounting
+    networks:
+      - spotfi-network
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: spotfi-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-spotfi}:${POSTGRES_PASSWORD:-spotfi_password}@db:5432/${POSTGRES_DB:-spotfi_db}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-secret-key}
+      PORT: ${PORT:-8080}
+      HOST: ${HOST:-0.0.0.0}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      BILLING_COST_PER_MB: ${BILLING_COST_PER_MB:-0.02}
+      RADIUS_DB_HOST: radius-db
+      RADIUS_DB_USER: ${RADIUS_DB_USER:-radius_user}
+      RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:-radius_password}
+      RADIUS_DB_NAME: ${RADIUS_DB_NAME:-spotfi_radius}
+    ports:
+      - "${PORT:-8080}:8080"
+    networks:
+      - spotfi-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mysql_radius_data:
+
+networks:
+  spotfi-network:
+    driver: bridge
+
