@@ -43,32 +43,7 @@ services:
       - "coolify.type=service"
       - "coolify.name=freeradius"
 
-  # Optional: Include database if running standalone (not using Coolify's database)
-  db:
-    image: postgres:15-alpine
-    container_name: ${DB_CONTAINER_NAME:-spotfi-radius-db}
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-spotfi}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
-      POSTGRES_DB: ${POSTGRES_DB:-spotfi_db}
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - radius_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spotfi}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - radius-network
-    labels:
-      - "coolify.managed=true"
-      - "coolify.type=database"
-      - "coolify.name=spotfi-radius-db"
-    profiles:
-      - with-db  # Only start if explicitly included
+ 
 
 volumes:
   radius_config:
