@@ -10,7 +10,7 @@ export const routerWebSocketConnections = new Map<string, WebSocket>();
 
 export function setupWebSocket(fastify: FastifyInstance) {
   fastify.register(async function (fastify: FastifyInstance) {
-    fastify.get('/ws', { websocket: true }, (connection: SocketStream, request: any) => {
+    fastify.get('/ws', { websocket: true }, (connection: { socket: WebSocket }, request: any) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       const routerId = url.searchParams.get('id');
       const token = url.searchParams.get('token');
@@ -88,7 +88,8 @@ export function setupWebSocket(fastify: FastifyInstance) {
               });
             })
             .catch((err) => {
-              fastify.log.error(err);
+              const errorMessage = err instanceof Error ? err.message : String(err);
+              fastify.log.error(`Error updating router ${routerId}: ${errorMessage}`);
             });
 
           fastify.log.info(`Router ${routerId} connected via WebSocket`);
@@ -142,7 +143,8 @@ export function setupWebSocket(fastify: FastifyInstance) {
                   fastify.log.warn(`Unknown message type from router ${routerId}:`, data.type);
               }
             } catch (err) {
-              fastify.log.error(`Error processing message from router ${routerId}:`, err);
+              const errorMessage = err instanceof Error ? err.message : String(err);
+              fastify.log.error(`Error processing message from router ${routerId}: ${errorMessage}`);
             }
           });
 
@@ -160,13 +162,13 @@ export function setupWebSocket(fastify: FastifyInstance) {
                 },
               })
               .catch((err: Error) => {
-                fastify.log.error(err);
+                fastify.log.error(`Error updating router status for ${routerId}:`, err.message);
               });
           });
 
           // Handle errors
           connection.socket.on('error', (err: Error) => {
-            fastify.log.error(`WebSocket error for router ${routerId}:`, err);
+            fastify.log.error(`WebSocket error for router ${routerId}: ${err.message}`);
           });
 
           // Send welcome message
@@ -179,7 +181,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
           );
         })
         .catch((err: Error) => {
-          fastify.log.error(`Error verifying router credentials:`, err);
+          fastify.log.error(`Error verifying router credentials: ${err.message}`);
           connection.socket.close(1011, 'Internal server error');
         });
     });
