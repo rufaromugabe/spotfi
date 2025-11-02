@@ -86,6 +86,29 @@ if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
   ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
 fi
 
+# Ensure default site is enabled
+if [ ! -L /etc/freeradius/3.0/sites-enabled/default ]; then
+  if [ -f /etc/freeradius/3.0/sites-available/default ]; then
+    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
+  elif [ -f /etc/freeradius/3.0.backup/sites-available/default ]; then
+    # Copy from backup if available
+    mkdir -p /etc/freeradius/3.0/sites-available
+    cp /etc/freeradius/3.0.backup/sites-available/default /etc/freeradius/3.0/sites-available/default 2>/dev/null || true
+    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
+  fi
+fi
+
+# Ensure inner-tunnel site is enabled (for EAP)
+if [ ! -L /etc/freeradius/3.0/sites-enabled/inner-tunnel ]; then
+  if [ -f /etc/freeradius/3.0/sites-available/inner-tunnel ]; then
+    ln -s /etc/freeradius/3.0/sites-available/inner-tunnel /etc/freeradius/3.0/sites-enabled/inner-tunnel
+  elif [ -f /etc/freeradius/3.0.backup/sites-available/inner-tunnel ]; then
+    mkdir -p /etc/freeradius/3.0/sites-available
+    cp /etc/freeradius/3.0.backup/sites-available/inner-tunnel /etc/freeradius/3.0/sites-available/inner-tunnel 2>/dev/null || true
+    ln -s /etc/freeradius/3.0/sites-available/inner-tunnel /etc/freeradius/3.0/sites-enabled/inner-tunnel
+  fi
+fi
+
 # Configure clients - allow connections from any IP with the shared secret
 # This is needed for initial testing. For production, configure specific clients.
 echo "🔐 Configuring RADIUS clients..."
