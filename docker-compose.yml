@@ -18,37 +18,26 @@ services:
       timeout: 5s
       retries: 5
 
-  radius-db:
-    image: mysql:8.0
-    container_name: spotfi-radius-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${RADIUS_DB_ROOT_PASSWORD:-radius_root_pass}
-      MYSQL_DATABASE: ${RADIUS_DB_NAME:-spotfi_radius}
-      MYSQL_USER: ${RADIUS_DB_USER:-radius_user}
-      MYSQL_PASSWORD: ${RADIUS_DB_PASSWORD:-radius_password}
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_radius_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   freeradius:
     image: freeradius/freeradius-server:latest
     container_name: spotfi-radius
     depends_on:
-      radius-db:
+      db:
         condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-spotfi_db}
+      DB_USER: ${POSTGRES_USER:-spotfi}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
     volumes:
-      - ./radius/config:/etc/freeradius/3.0
+      - ./radius/init-radius.sh:/init-radius.sh
     ports:
       - "1812:1812/udp"  # Authentication
       - "1813:1813/udp"  # Accounting
     networks:
       - spotfi-network
+    command: ["sh", "/init-radius.sh"]
 
   api:
     build:
@@ -66,10 +55,6 @@ services:
       HOST: ${HOST:-0.0.0.0}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       BILLING_COST_PER_MB: ${BILLING_COST_PER_MB:-0.02}
-      RADIUS_DB_HOST: radius-db
-      RADIUS_DB_USER: ${RADIUS_DB_USER:-radius_user}
-      RADIUS_DB_PASSWORD: ${RADIUS_DB_PASSWORD:-radius_password}
-      RADIUS_DB_NAME: ${RADIUS_DB_NAME:-spotfi_radius}
     ports:
       - "${PORT:-8080}:8080"
     networks:
@@ -78,7 +63,6 @@ services:
 
 volumes:
   postgres_data:
-  mysql_radius_data:
 
 networks:
   spotfi-network:

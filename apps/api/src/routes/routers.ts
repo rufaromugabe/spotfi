@@ -63,10 +63,46 @@ export async function routerRoutes(fastify: FastifyInstance) {
   // Get single router
   fastify.get(
     '/:id',
-    { preHandler: [fastify.authenticate] },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Get router by ID',
+        description: 'Get detailed information about a specific router',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              router: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                  status: { type: 'string' },
+                },
+              },
+            },
+          },
+          404: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
 
       const router = await prisma.router.findFirst({
         where: {
@@ -162,14 +198,53 @@ export async function routerRoutes(fastify: FastifyInstance) {
   // Update router
   fastify.put(
     '/:id',
-    { preHandler: [fastify.authenticate] },
-    async (
-      request: FastifyRequest<{ Params: { id: string }; Body: Partial<{ name: string; location: string }> }>,
-      reply: FastifyReply
-    ) => {
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Update router',
+        description: 'Update router information',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            location: { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              router: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                },
+              },
+            },
+          },
+          404: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
-      const body = request.body;
+      const { id } = request.params as { id: string };
+      const body = request.body as Partial<{ name: string; location: string }>;
 
       const router = await prisma.router.findFirst({
         where: {
@@ -205,10 +280,39 @@ export async function routerRoutes(fastify: FastifyInstance) {
   // Delete router
   fastify.delete(
     '/:id',
-    { preHandler: [fastify.authenticate] },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['routers'],
+        summary: 'Delete router',
+        description: 'Delete a router',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              message: { type: 'string' },
+            },
+          },
+          404: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
 
       const router = await prisma.router.findFirst({
         where: {
@@ -274,12 +378,9 @@ export async function routerRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (
-      request: FastifyRequest<{ Params: { id: string }; Body: { command: string; params?: Record<string, unknown> } }>,
-      reply: FastifyReply
-    ) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
       const body = RouterCommandSchema.parse(request.body);
 
       const router = await prisma.router.findFirst({
@@ -361,9 +462,9 @@ export async function routerRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
 
       const router = await prisma.router.findFirst({
         where: {

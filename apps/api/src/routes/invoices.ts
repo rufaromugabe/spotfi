@@ -62,6 +62,7 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
           properties: {
             id: { type: 'string' },
           },
+          required: ['id'],
         },
         response: {
           200: {
@@ -89,9 +90,9 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
 
       const invoice = await prisma.invoice.findFirst({
         where: {
@@ -138,6 +139,7 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
           properties: {
             id: { type: 'string' },
           },
+          required: ['id'],
         },
         response: {
           200: {
@@ -163,9 +165,9 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user as any;
-      const { id } = request.params;
+      const { id } = request.params as { id: string };
 
       try {
         const invoice = await markInvoicePaid(id, user.userId);

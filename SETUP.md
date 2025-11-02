@@ -51,9 +51,8 @@ docker-compose up -d
 ```
 
 This will start:
-- PostgreSQL database
-- MySQL for FreeRADIUS
-- FreeRADIUS server
+- PostgreSQL database (used for both application and RADIUS data)
+- FreeRADIUS server (connected to PostgreSQL)
 - API server
 
 ## API Endpoints
