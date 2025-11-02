@@ -86,6 +86,27 @@ if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
   ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
 fi
 
+# Configure clients - allow connections from any IP with the shared secret
+# This is needed for initial testing. For production, configure specific clients.
+echo "🔐 Configuring RADIUS clients..."
+mkdir -p /etc/freeradius/3.0/clients.d
+
+# Create a default client configuration that accepts connections from anywhere
+# This allows testing from any IP. For production, restrict to specific IPs.
+cat > /etc/freeradius/3.0/clients.d/default.conf <<EOF
+# Default client configuration for testing
+# Accept connections from any IP address with the shared secret
+# For production, create specific client entries for each router/NAS
+client default {
+    ipaddr = *
+    secret = ${RADIUS_SECRET:-testing123}
+    require_message_authenticator = no
+    nas_type = other
+}
+EOF
+
+echo "   ✅ Client configuration created"
+
 # Apply database trigger for router MAC tracking (if SQL file exists)
 if [ -f /migrations/ensure_router_mac.sql ]; then
   echo "📊 Applying router MAC tracking trigger..."
