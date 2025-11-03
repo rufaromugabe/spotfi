@@ -1,42 +1,31 @@
 FROM freeradius/freeradius-server:latest
 
-# Install PostgreSQL support and required packages
+# Install PostgreSQL client for health checks and migrations
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    freeradius-postgresql \
-    libpq-dev \
-    postgresql-client \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get install -y postgresql-client && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy initialization script and migration file
+# Create config directory
+RUN mkdir -p /config
+
+# Copy configuration files
+COPY sql /config/sql
+COPY clients.conf /config/clients.conf
+COPY postgres_schema_additional.sql /config/postgres_schema_additional.sql
+COPY postgres_radacct_migration.sql /config/postgres_radacct_migration.sql
+
+# Copy initialization script
 COPY init-radius.sh /init-radius.sh
 RUN chmod +x /init-radius.sh
 
-# Create migrations directory (migration file can be mounted as volume if needed)
-RUN mkdir -p /migrations
+# Copy router MAC tracking migration
+COPY ensure_router_mac.sql /config/ensure_router_mac.sql
 
-# Create directories for persistent config
-RUN mkdir -p /etc/freeradius/3.0/mods-enabled && \
-    mkdir -p /var/log/freeradius && \
-    chown -R freerad:freerad /var/log/freeradius
-
-# Backup base FreeRADIUS configuration (before volume mount overwrites it)
-# This will be restored in init-radius.sh if the volume is empty
-RUN cp -r /etc/freeradius/3.0 /etc/freeradius/3.0.backup || true
-
-# Expose RADIUS ports
 EXPOSE 1812/udp 1813/udp
 
-# Health check script
-RUN echo '#!/bin/sh\n\
-if [ "$1" = "healthcheck" ]; then\n\
-  radtest healthcheck healthcheck 127.0.0.1 0 testing123 > /dev/null 2>&1\n\
-  exit $?\n\
-fi\n\
-exec "$@"\n\
-' > /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD radtest healthcheck healthcheck 127.0.0.1 0 ${RADIUS_SECRET:-testing123} > /dev/null 2>&1 || exit 1
 
-# Run initialization and start FreeRADIUS
-CMD ["/init-radius.sh"]
+CMD ["sh", "/init-radius.sh"]
 

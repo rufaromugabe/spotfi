@@ -19,7 +19,9 @@ services:
       retries: 5
 
   freeradius:
-    image: freeradius/freeradius-server:latest
+    build:
+      context: ./radius
+      dockerfile: Dockerfile
     container_name: spotfi-radius
     depends_on:
       db:
@@ -30,14 +32,14 @@ services:
       DB_NAME: ${POSTGRES_DB:-spotfi_db}
       DB_USER: ${POSTGRES_USER:-spotfi}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
-    volumes:
-      - ./radius/init-radius.sh:/init-radius.sh
+      RADIUS_SECRET: ${RADIUS_SECRET:-testing123}
+      RADIUS_DEBUG: ${RADIUS_DEBUG:-no}
     ports:
       - "1812:1812/udp"  # Authentication
       - "1813:1813/udp"  # Accounting
     networks:
       - spotfi-network
-    command: ["sh", "/init-radius.sh"]
+    restart: unless-stopped
 
   api:
     build:

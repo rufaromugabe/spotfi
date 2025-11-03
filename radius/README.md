@@ -1,120 +1,131 @@
-# FreeRADIUS Configuration
+# FreeRADIUS Configuration for SpotFi
 
-FreeRADIUS is configured to use PostgreSQL as its database backend, sharing the same database as the SpotFi application.
+This directory contains the FreeRADIUS configuration and setup files for SpotFi.
 
-## Configuration
+## Files
 
-The `init-radius.sh` script automatically:
-1. Installs PostgreSQL support (`freeradius-postgresql`)
-2. Enables the SQL module
-3. Configures the SQL module to connect to PostgreSQL
-4. Sets up triggers to ensure router MAC addresses are always available
-5. Starts FreeRADIUS
+- **Dockerfile** - Custom FreeRADIUS Docker image with PostgreSQL client
+- **init-radius.sh** - Initialization script that runs on container startup
+- **sql** - FreeRADIUS SQL module configuration using PostgreSQL
+- **clients.conf** - RADIUS client definitions
+- **postgres_schema_additional.sql** - Additional FreeRADIUS tables (radpostauth, radgroupcheck, etc.)
+- **postgres_radacct_migration.sql** - Migration to add missing columns to radacct table
+- **ensure_router_mac.sql** - Router MAC address tracking trigger (copied from Prisma migrations)
 
-## Database Tables
+## How It Works
 
-FreeRADIUS uses these tables in PostgreSQL:
-- `radcheck` - User credentials for authentication
-- `radreply` - User attributes (bandwidth limits, quotas)
-- `radacct` - Accounting data (session start/stop, data usage)
-- `radpostauth` - Post-authentication records (optional, for debugging)
+### Initialization Process
 
-These tables are defined in the Prisma schema and created via migrations.
+1. Wait for PostgreSQL database to be ready
+2. Run SQL migrations to ensure all required FreeRADIUS tables exist
+3. Configure FreeRADIUS SQL module with database connection
+4. Configure RADIUS clients
+5. Start FreeRADIUS server
 
-## Router MAC Address Tracking
+### Database Schema
 
-**Important:** The system automatically ensures router MAC addresses are always available in accounting records through:
+FreeRADIUS uses the following PostgreSQL tables:
 
-1. **Database Trigger**: When accounting records are inserted, a trigger automatically looks up the router's MAC address based on IP and populates the `nasmacaddress` field.
+- **radcheck** - User credentials (password authentication)
+- **radreply** - User attributes (bandwidth limits, etc.)
+- **radacct** - Accounting data (sessions, usage tracking)
+- **radpostauth** - Post-authentication logging
+- **radgroupcheck** - Group-based authentication checks
+- **radgroupreply** - Group-based response attributes
+- **radusergroup** - User-to-group mapping
+- **nas** - RADIUS clients (Network Access Servers like MikroTik routers)
 
-2. **Auto-Population**: Even if the router doesn't send its MAC address in RADIUS attributes, the system will:
-   - Match accounting records by IP address
-   - Look up the router's stored MAC address
-   - Populate the `nasmacaddress` field automatically
+### Environment Variables
 
-3. **Reliable Matching**: This ensures that:
-   - Router MAC is always available for tracking (even with dynamic IPs)
-   - Records can be matched even after IP changes
-   - No manual configuration required on routers
+The configuration uses these environment variables:
 
-## Connection
+- `DB_HOST` - PostgreSQL host
+- `DB_PORT` - PostgreSQL port (default: 5432)
+- `DB_USER` - PostgreSQL username
+- `DB_PASS` - PostgreSQL password
+- `DB_NAME` - PostgreSQL database name
+- `RADIUS_SECRET` - RADIUS shared secret (default: testing123)
+- `RADIUS_DEBUG` - Enable debug mode (yes/no, default: no)
 
-FreeRADIUS connects to PostgreSQL using the same credentials as the API:
-- Host: `db` (Docker service name)
-- Port: `5432`
-- Database: From `POSTGRES_DB` environment variable
-- User: From `POSTGRES_USER` environment variable
-- Password: From `POSTGRES_PASSWORD` environment variable
+### Docker Deployment
 
-## Manual Setup (if not using Docker)
+The FreeRADIUS service is defined in `docker-compose.yml`:
 
-If setting up FreeRADIUS manually:
-
-1. Install PostgreSQL support:
-   ```bash
-   sudo apt-get install freeradius-postgresql libpq-dev
-   ```
-
-2. Enable SQL module:
-   ```bash
-   sudo ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
-   ```
-
-3. Edit `/etc/freeradius/3.0/mods-available/sql` and set:
-   ```
-   dialect = "postgresql"
-   server = "localhost"
-   port = 5432
-   login = "spotfi"
-   password = "spotfi_password"
-   radius_db = "spotfi_db"
-   ```
-
-4. Apply the database trigger for MAC address tracking:
-   ```bash
-   psql -U spotfi -d spotfi_db -f packages/prisma/migrations/ensure_router_mac.sql
-   ```
-
-5. Restart FreeRADIUS:
-   ```bash
-   sudo systemctl restart freeradius
-   ```
-
-## Router MAC Address Tracking
-
-### How It Works
-
-SpotFi ensures router MAC addresses are **always available** in accounting records through two methods:
-
-#### Method 1: WebSocket Capture (Primary) ✅
-
-**This works automatically - no router configuration needed!**
-
-1. Router connects via WebSocket with `?mac=AA:BB:CC:DD:EE:FF` parameter
-2. Server stores router MAC in `routers` table
-3. Database trigger looks up MAC by IP when accounting records arrive
-4. Trigger auto-populates `nasmacaddress` field in `radacct` table
-
-**Result:** Router MAC is always in accounting records, even if router doesn't send it in RADIUS packets!
-
-#### Method 2: RADIUS NAS-Identifier (Optional Enhancement)
-
-Routers can optionally include MAC address in `NAS-Identifier` attribute:
-
-**MikroTik:**
-```bash
-/system identity set name="MikroTik-$(/interface ethernet get ether1 mac-address)"
+```yaml
+freeradius:
+  build:
+    context: ./radius
+    dockerfile: Dockerfile
+  environment:
+    DB_HOST: db
+    DB_PORT: 5432
+    DB_NAME: ${POSTGRES_DB:-spotfi_db}
+    DB_USER: ${POSTGRES_USER:-spotfi}
+    DB_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
+    RADIUS_SECRET: ${RADIUS_SECRET:-testing123}
+    RADIUS_DEBUG: ${RADIUS_DEBUG:-no}
+  ports:
+    - "1812:1812/udp"  # Authentication
+    - "1813:1813/udp"  # Accounting
 ```
 
-**Result:** MAC appears in RADIUS `NAS-Identifier` field for additional visibility.
+### MikroTik Router Setup
 
-### Reliability
+To connect a MikroTik router to this FreeRADIUS server:
 
-| Scenario | Does It Work? | Method |
-|----------|---------------|--------|
-| Router doesn't send MAC in RADIUS | ✅ Yes | WebSocket + Database trigger |
-| Router IP changes (DHCP) | ✅ Yes | MAC-based matching |
-| Router sends MAC in NAS-Identifier | ✅ Yes | Direct matching + redundancy |
-| WebSocket connection temporarily down | ✅ Yes | IP matching (falls back) |
+1. **Add RADIUS server**:
+   ```
+   /ip radius add service=hotspot address=<FREERADIUS_IP> secret=<RADIUS_SECRET> 
+   ```
 
-**Conclusion:** Router MAC tracking is **100% reliable** because it doesn't depend on what the router sends in RADIUS packets - the database trigger ensures MAC is always available!
+2. **Configure hotspot profile**:
+   ```
+   /ip hotspot profile set hotspot1 radius=yes
+   ```
+
+3. **Register router in SpotFi**:
+   - Get router ID and token from SpotFi API
+   - Configure router IP address in SpotFi
+
+### Testing RADIUS
+
+To test the RADIUS server:
+
+```bash
+# Test authentication
+radtest username password localhost 0 testing123
+
+# Or from within the container
+docker exec spotfi-radius radtest username password 127.0.0.1 0 testing123
+```
+
+### Debugging
+
+To enable debug mode, set `RADIUS_DEBUG=yes` in environment variables:
+
+```bash
+RADIUS_DEBUG=yes docker-compose up freeradius
+```
+
+This will start FreeRADIUS in foreground mode (`-x` flag) with verbose logging.
+
+### Viewing Logs
+
+```bash
+# FreeRADIUS logs
+docker-compose logs -f freeradius
+
+# Database connection logs
+docker exec spotfi-radius freeradius -X
+```
+
+### Migrations
+
+The initialization script runs these migrations automatically:
+
+1. **postgres_schema_additional.sql** - Creates missing FreeRADIUS tables
+2. **postgres_radacct_migration.sql** - Adds missing columns to radacct table
+3. **ensure_router_mac.sql** - Sets up router MAC address tracking trigger
+
+Migrations are idempotent and will skip if tables/columns already exist.
+
