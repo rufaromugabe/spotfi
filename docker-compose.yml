@@ -25,7 +25,7 @@ services:
       - "1813:1813/udp"  # Accounting
     networks:
       - spotfi-network
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   postgres_data:
