@@ -15,6 +15,7 @@ done
 echo "Database is ready!"
 
 # Run SQL migrations to add missing FreeRADIUS tables and columns
+# Note: Password is provided via PGPASSWORD environment variable (set on line 7)
 echo "Running database migrations..."
 psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -f /config/postgres_schema_additional.sql || echo "Additional schema migration skipped (may already be applied)"
 psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -f /config/postgres_radacct_migration.sql || echo "radacct migration skipped (may already be applied)"
