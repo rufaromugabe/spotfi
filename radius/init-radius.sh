@@ -69,7 +69,7 @@ sql {
     password = "${DB_PASSWORD}"
     radius_db = "${DB_NAME}"
     
-    read_clients = yes
+    read_clients = no
     
     accounting_table = "radacct"
     postauth_table = "radpostauth"
