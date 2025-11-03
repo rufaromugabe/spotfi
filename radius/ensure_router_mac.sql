@@ -20,10 +20,10 @@ BEGIN
   -- Look up router MAC address by IP address
   -- This ensures router MAC is always available even if router doesn't send it
   IF NEW.nasmacaddress IS NULL OR NEW.nasmacaddress = '' THEN
-    SELECT mac_address INTO NEW.nasmacaddress
+    SELECT "macAddress" INTO NEW.nasmacaddress
     FROM routers
-    WHERE nasipaddress = NEW.nasipaddress
-      AND mac_address IS NOT NULL
+    WHERE "nasipaddress" = NEW.nasipaddress
+      AND "macAddress" IS NOT NULL
     LIMIT 1;
   END IF;
   
@@ -42,16 +42,16 @@ CREATE TRIGGER trigger_update_accounting_router_mac
 -- Backfill existing records with router MAC addresses
 UPDATE radacct 
 SET nasmacaddress = (
-  SELECT mac_address 
+  SELECT "macAddress" 
   FROM routers 
-  WHERE routers.nasipaddress = radacct.nasipaddress 
-    AND routers.mac_address IS NOT NULL
+  WHERE routers."nasipaddress" = radacct.nasipaddress 
+    AND routers."macAddress" IS NOT NULL
   LIMIT 1
 )
 WHERE nasmacaddress IS NULL 
   AND EXISTS (
     SELECT 1 FROM routers 
-    WHERE routers.nasipaddress = radacct.nasipaddress 
-      AND routers.mac_address IS NOT NULL
+    WHERE routers."nasipaddress" = radacct.nasipaddress 
+      AND routers."macAddress" IS NOT NULL
   );
 
