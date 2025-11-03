@@ -17,12 +17,7 @@ services:
       PGUSER: postgres
       PGHOST: 62.72.19.27
       PGPORT: 5998
-      PGNAME: spotfi
-      PGPASSWORD: passcode
-      PGUSER: postgres
-      PGHOST: 62.72.19.27
-      PGPORT: 5998
-      PGNAME: spotfi
+      PGDATABASE: spotfi
       RADIUS_SECRET: testing123
       RADIUS_DEBUG: no
     ports:
