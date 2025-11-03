@@ -41,28 +41,6 @@ services:
       - spotfi-network
     restart: unless-stopped
 
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    container_name: spotfi-api
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-spotfi}:${POSTGRES_PASSWORD:-spotfi_password}@db:5432/${POSTGRES_DB:-spotfi_db}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-secret-key}
-      PORT: ${PORT:-8080}
-      HOST: ${HOST:-0.0.0.0}
-      CORS_ORIGIN: ${CORS_ORIGIN:-*}
-      BILLING_COST_PER_MB: ${BILLING_COST_PER_MB:-0.02}
-    ports:
-      - "${PORT:-8080}:8080"
-    networks:
-      - spotfi-network
-    restart: unless-stopped
-
 volumes:
   postgres_data:
 
