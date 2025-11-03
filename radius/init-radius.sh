@@ -46,8 +46,22 @@ echo "✅ Database connection established"
 mkdir -p /etc/freeradius/3.0/mods-available
 mkdir -p /etc/freeradius/3.0/mods-enabled
 
-# Configure SQL module for PostgreSQL
-cat > /etc/freeradius/3.0/mods-available/sql <<EOF
+# Check if SQL module is already configured (lock file mechanism)
+INIT_LOCK=/etc/freeradius/3.0/.radius_sql_configured
+if [ -f "$INIT_LOCK" ] && [ -f /etc/freeradius/3.0/mods-available/sql ]; then
+  # Verify SQL module is properly configured with read_clients = no
+  if grep -q "read_clients = no" /etc/freeradius/3.0/mods-available/sql 2>/dev/null && \
+     grep -q "dialect = \"postgresql\"" /etc/freeradius/3.0/mods-available/sql 2>/dev/null; then
+    echo "📋 SQL module already configured (lock file exists), skipping SQL configuration..."
+  else
+    echo "⚠️  SQL module exists but configuration invalid, reconfiguring..."
+    rm -f "$INIT_LOCK"
+  fi
+fi
+
+# Configure SQL module for PostgreSQL (only if not already configured)
+if [ ! -f "$INIT_LOCK" ]; then
+  cat > /etc/freeradius/3.0/mods-available/sql <<EOF
 sql {
     dialect = "postgresql"
     driver = "rlm_sql_\${..dialect}"
@@ -84,7 +98,10 @@ sql {
 }
 EOF
 
-echo "   ✅ SQL module configured"
+  echo "   ✅ SQL module configured"
+  # Create lock file to indicate SQL module is configured
+  touch "$INIT_LOCK"
+fi
 
 # Ensure SQL module is enabled
 if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
@@ -238,9 +255,11 @@ fi
 echo "🔐 Configuring RADIUS clients..."
 mkdir -p /etc/freeradius/3.0/clients.d
 
-# Create a default client configuration that accepts connections from anywhere
-# This allows testing from any IP. For production, restrict to specific IPs.
-cat > /etc/freeradius/3.0/clients.d/default.conf <<EOF
+# Only create default client config if it doesn't exist (preserve manual changes)
+if [ ! -f /etc/freeradius/3.0/clients.d/default.conf ]; then
+  # Create a default client configuration that accepts connections from anywhere
+  # This allows testing from any IP. For production, restrict to specific IPs.
+  cat > /etc/freeradius/3.0/clients.d/default.conf <<EOF
 # Default client configuration for testing
 # Accept connections from any IP address with the shared secret
 # For production, create specific client entries for each router/NAS
@@ -252,7 +271,10 @@ client default {
 }
 EOF
 
-echo "   ✅ Client configuration created"
+  echo "   ✅ Client configuration created"
+else
+  echo "   ℹ️  Client configuration already exists, skipping..."
+fi
 
 # Apply database trigger for router MAC tracking (if SQL file exists)
 if [ -f /migrations/ensure_router_mac.sql ]; then
