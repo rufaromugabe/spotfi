@@ -32,8 +32,14 @@ if [ -f /etc/freeradius/mods-available/sql ]; then
   # Enable the module
   ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql
   
-  # Replace configuration with our custom SQL config that uses environment variables
-  cp /config/sql /etc/freeradius/mods-available/sql
+  # Replace configuration with our custom SQL config and substitute environment variables
+  # FreeRADIUS doesn't support ${env:VAR} syntax, so we need to replace them with actual values
+  sed -e "s|\${env:DB_HOST}|${DB_HOST}|g" \
+      -e "s|\${env:DB_PORT}|${DB_PORT}|g" \
+      -e "s|\${env:DB_USER}|${DB_USER}|g" \
+      -e "s|\${env:DB_PASSWORD}|${DB_PASSWORD}|g" \
+      -e "s|\${env:DB_NAME}|${DB_NAME}|g" \
+      /config/sql > /etc/freeradius/mods-available/sql
   
   echo "SQL module configured"
 fi
