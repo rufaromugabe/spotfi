@@ -19,7 +19,7 @@ services:
       PGPORT: 5998
       PGDATABASE: spotfi
       RADIUS_SECRET: testing123
-      RADIUS_DEBUG: no
+      RADIUS_DEBUG: yes
     ports:
       - "1812:1812/udp"  # Authentication
       - "1813:1813/udp"  # Accounting
