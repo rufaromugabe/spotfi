@@ -104,7 +104,8 @@ sql {
 	}
 
 	# Read radius clients from the database ('nas' table)
-	read_clients = yes
+	# Disabled temporarily to avoid config validation issues
+	read_clients = no
 
 	# Table to keep radius client info
 	client_table = "nas"

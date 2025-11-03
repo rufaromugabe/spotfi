@@ -61,19 +61,9 @@ if ! freeradius -CX > /tmp/radius-check.log 2>&1; then
 fi
 echo "Configuration validated successfully"
 
-# Configure clients
-if [ ! -f /etc/freeradius/clients-custom.conf ]; then
-  echo "Configuring FreeRADIUS clients..."
-  cp /config/clients.conf /etc/freeradius/clients-custom.conf
-  
-  # Include custom clients config
-  if ! grep -q "clients-custom.conf" /etc/freeradius/radiusd.conf; then
-    echo "" >> /etc/freeradius/radiusd.conf
-    echo "\$INCLUDE clients-custom.conf" >> /etc/freeradius/radiusd.conf
-  fi
-  
-  echo "Clients configured"
-fi
+# Configure clients - skip custom config to avoid duplicate localhost error
+# The default FreeRADIUS clients.conf already has localhost configured
+echo "Using default FreeRADIUS client configuration..."
 
 # Set debug level based on environment variable
 DEBUG_FLAG="-f"
