@@ -3,7 +3,17 @@
 
 set -e
 
+# Determine FreeRADIUS config directory
+if [ -d /etc/freeradius/mods-available ]; then
+  RADIUS_CONFIG_DIR="/etc/freeradius"
+elif [ -d /etc/freeradius/3.0/mods-available ]; then
+  RADIUS_CONFIG_DIR="/etc/freeradius/3.0"
+else
+  RADIUS_CONFIG_DIR="/etc/freeradius"
+fi
+
 echo "🔧 Configuring FreeRADIUS for PostgreSQL..."
+echo "   Using config directory: $RADIUS_CONFIG_DIR"
 
 # Initialize FreeRADIUS config directory structure if volume is empty
 # Check if the directory structure exists, if not, restore from backup
@@ -43,15 +53,15 @@ done
 echo "✅ Database connection established"
 
 # Ensure mods-available directory exists
-mkdir -p /etc/freeradius/3.0/mods-available
-mkdir -p /etc/freeradius/3.0/mods-enabled
+mkdir -p ${RADIUS_CONFIG_DIR}/mods-available
+mkdir -p ${RADIUS_CONFIG_DIR}/mods-enabled
 
 # Check if SQL module is already configured (lock file mechanism)
-INIT_LOCK=/etc/freeradius/3.0/.radius_sql_configured
-if [ -f "$INIT_LOCK" ] && [ -f /etc/freeradius/3.0/mods-available/sql ]; then
+INIT_LOCK=${RADIUS_CONFIG_DIR}/.radius_sql_configured
+if [ -f "$INIT_LOCK" ] && [ -f ${RADIUS_CONFIG_DIR}/mods-available/sql ]; then
   # Verify SQL module is properly configured with read_clients = no
-  if grep -q "read_clients = no" /etc/freeradius/3.0/mods-available/sql 2>/dev/null && \
-     grep -q "dialect = \"postgresql\"" /etc/freeradius/3.0/mods-available/sql 2>/dev/null; then
+  if grep -q "read_clients = no" ${RADIUS_CONFIG_DIR}/mods-available/sql 2>/dev/null && \
+     grep -q "dialect = \"postgresql\"" ${RADIUS_CONFIG_DIR}/mods-available/sql 2>/dev/null; then
     echo "📋 SQL module already configured (lock file exists), skipping SQL configuration..."
   else
     echo "⚠️  SQL module exists but configuration invalid, reconfiguring..."
@@ -61,7 +71,7 @@ fi
 
 # Configure SQL module for PostgreSQL (only if not already configured)
 if [ ! -f "$INIT_LOCK" ]; then
-  cat > /etc/freeradius/3.0/mods-available/sql <<EOF
+  cat > ${RADIUS_CONFIG_DIR}/mods-available/sql <<EOF
 sql {
     dialect = "postgresql"
     driver = "rlm_sql_\${..dialect}"
@@ -104,22 +114,22 @@ EOF
 fi
 
 # Ensure SQL module is enabled
-if [ ! -L /etc/freeradius/3.0/mods-enabled/sql ]; then
-  ln -s /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
+if [ ! -L ${RADIUS_CONFIG_DIR}/mods-enabled/sql ]; then
+  ln -s ${RADIUS_CONFIG_DIR}/mods-available/sql ${RADIUS_CONFIG_DIR}/mods-enabled/sql
 fi
 
 # Ensure SQL query templates exist (required for SQL module to work)
 # FreeRADIUS needs the query templates in mods-config/sql/main/postgresql/
-if [ ! -d /etc/freeradius/3.0/mods-config/sql/main/postgresql ]; then
-  mkdir -p /etc/freeradius/3.0/mods-config/sql/main/postgresql
+if [ ! -d ${RADIUS_CONFIG_DIR}/mods-config/sql/main/postgresql ]; then
+  mkdir -p ${RADIUS_CONFIG_DIR}/mods-config/sql/main/postgresql
   # Copy query templates from backup if available, or create minimal ones
-  if [ -d /etc/freeradius/3.0.backup/mods-config/sql/main/postgresql ]; then
-    cp -r /etc/freeradius/3.0.backup/mods-config/sql/main/postgresql/* /etc/freeradius/3.0/mods-config/sql/main/postgresql/ 2>/dev/null || true
+  if [ -d ${RADIUS_CONFIG_DIR}.backup/mods-config/sql/main/postgresql ]; then
+    cp -r ${RADIUS_CONFIG_DIR}.backup/mods-config/sql/main/postgresql/* ${RADIUS_CONFIG_DIR}/mods-config/sql/main/postgresql/ 2>/dev/null || true
   else
     # Create minimal query files if backup doesn't exist
     # FreeRADIUS 3.x queries.conf format - just query strings, no blocks
     echo "   📝 Creating SQL query templates..."
-    cat > /etc/freeradius/3.0/mods-config/sql/main/postgresql/queries.conf <<'QUERYEOF'
+    cat > ${RADIUS_CONFIG_DIR}/mods-config/sql/main/postgresql/queries.conf <<'QUERYEOF'
 # FreeRADIUS PostgreSQL Query Templates
 # This file contains SQL queries used by the SQL module
 # Column names match FreeRADIUS standard schema (UserName, Attribute, Value)
@@ -155,33 +165,33 @@ QUERYEOF
 fi
 
 # Ensure default site is enabled
-if [ ! -L /etc/freeradius/3.0/sites-enabled/default ]; then
-  if [ -f /etc/freeradius/3.0/sites-available/default ]; then
-    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
-  elif [ -f /etc/freeradius/3.0.backup/sites-available/default ]; then
+if [ ! -L ${RADIUS_CONFIG_DIR}/sites-enabled/default ]; then
+  if [ -f ${RADIUS_CONFIG_DIR}/sites-available/default ]; then
+    ln -s ${RADIUS_CONFIG_DIR}/sites-available/default ${RADIUS_CONFIG_DIR}/sites-enabled/default
+  elif [ -f ${RADIUS_CONFIG_DIR}.backup/sites-available/default ]; then
     # Copy from backup if available
-    mkdir -p /etc/freeradius/3.0/sites-available
-    cp /etc/freeradius/3.0.backup/sites-available/default /etc/freeradius/3.0/sites-available/default 2>/dev/null || true
-    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
+    mkdir -p ${RADIUS_CONFIG_DIR}/sites-available
+    cp ${RADIUS_CONFIG_DIR}.backup/sites-available/default ${RADIUS_CONFIG_DIR}/sites-available/default 2>/dev/null || true
+    ln -s ${RADIUS_CONFIG_DIR}/sites-available/default ${RADIUS_CONFIG_DIR}/sites-enabled/default
   fi
 fi
 
 # Ensure inner-tunnel site is enabled (for EAP)
-if [ ! -L /etc/freeradius/3.0/sites-enabled/inner-tunnel ]; then
-  if [ -f /etc/freeradius/3.0/sites-available/inner-tunnel ]; then
-    ln -s /etc/freeradius/3.0/sites-available/inner-tunnel /etc/freeradius/3.0/sites-enabled/inner-tunnel
-  elif [ -f /etc/freeradius/3.0.backup/sites-available/inner-tunnel ]; then
-    mkdir -p /etc/freeradius/3.0/sites-available
-    cp /etc/freeradius/3.0.backup/sites-available/inner-tunnel /etc/freeradius/3.0/sites-available/inner-tunnel 2>/dev/null || true
-    ln -s /etc/freeradius/3.0/sites-available/inner-tunnel /etc/freeradius/3.0/sites-enabled/inner-tunnel
+if [ ! -L ${RADIUS_CONFIG_DIR}/sites-enabled/inner-tunnel ]; then
+  if [ -f ${RADIUS_CONFIG_DIR}/sites-available/inner-tunnel ]; then
+    ln -s ${RADIUS_CONFIG_DIR}/sites-available/inner-tunnel ${RADIUS_CONFIG_DIR}/sites-enabled/inner-tunnel
+  elif [ -f ${RADIUS_CONFIG_DIR}.backup/sites-available/inner-tunnel ]; then
+    mkdir -p ${RADIUS_CONFIG_DIR}/sites-available
+    cp ${RADIUS_CONFIG_DIR}.backup/sites-available/inner-tunnel ${RADIUS_CONFIG_DIR}/sites-available/inner-tunnel 2>/dev/null || true
+    ln -s ${RADIUS_CONFIG_DIR}/sites-available/inner-tunnel ${RADIUS_CONFIG_DIR}/sites-enabled/inner-tunnel
   fi
 fi
 
 # If default site doesn't exist, create a minimal one that uses SQL
-if [ ! -f /etc/freeradius/3.0/sites-available/default ]; then
+if [ ! -f ${RADIUS_CONFIG_DIR}/sites-available/default ]; then
   echo "📝 Creating minimal default site configuration..."
-  mkdir -p /etc/freeradius/3.0/sites-available
-  cat > /etc/freeradius/3.0/sites-available/default <<'SITEEOF'
+  mkdir -p ${RADIUS_CONFIG_DIR}/sites-available
+  cat > ${RADIUS_CONFIG_DIR}/sites-available/default <<'SITEEOF'
 server default {
     listen {
         type = auth
@@ -242,10 +252,10 @@ server default {
 }
 SITEEOF
   # Ensure sites-enabled directory exists
-  mkdir -p /etc/freeradius/3.0/sites-enabled
+  mkdir -p ${RADIUS_CONFIG_DIR}/sites-enabled
   # Enable the site
-  if [ ! -L /etc/freeradius/3.0/sites-enabled/default ]; then
-    ln -s /etc/freeradius/3.0/sites-available/default /etc/freeradius/3.0/sites-enabled/default
+  if [ ! -L ${RADIUS_CONFIG_DIR}/sites-enabled/default ]; then
+    ln -s ${RADIUS_CONFIG_DIR}/sites-available/default ${RADIUS_CONFIG_DIR}/sites-enabled/default
   fi
   echo "   ✅ Default site created and enabled"
 fi
@@ -253,13 +263,13 @@ fi
 # Configure clients - allow connections from any IP with the shared secret
 # This is needed for initial testing. For production, configure specific clients.
 echo "🔐 Configuring RADIUS clients..."
-mkdir -p /etc/freeradius/3.0/clients.d
+mkdir -p ${RADIUS_CONFIG_DIR}/clients.d
 
 # Only create default client config if it doesn't exist (preserve manual changes)
-if [ ! -f /etc/freeradius/3.0/clients.d/default.conf ]; then
+if [ ! -f ${RADIUS_CONFIG_DIR}/clients.d/default.conf ]; then
   # Create a default client configuration that accepts connections from anywhere
   # This allows testing from any IP. For production, restrict to specific IPs.
-  cat > /etc/freeradius/3.0/clients.d/default.conf <<EOF
+  cat > ${RADIUS_CONFIG_DIR}/clients.d/default.conf <<EOF
 # Default client configuration for testing
 # Accept connections from any IP address with the shared secret
 # For production, create specific client entries for each router/NAS
