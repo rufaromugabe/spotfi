@@ -41,10 +41,19 @@ fi
 # Enable SQL in the default site authorize section
 if [ -f /etc/freeradius/sites-enabled/default ]; then
   echo "Enabling SQL module in default site..."
-  # Replace -sql with sql to enable SQL authentication
-  sed -i 's/^-sql$/sql/' /etc/freeradius/sites-enabled/default
+  # Replace -sql with sql to enable SQL authentication (use backup extension for Alpine compatibility)
+  sed -i.bak 's/^-sql$/sql/' /etc/freeradius/sites-enabled/default && rm -f /etc/freeradius/sites-enabled/default.bak
   echo "SQL enabled in authorize section"
 fi
+
+# Validate FreeRADIUS configuration before starting
+echo "Validating FreeRADIUS configuration..."
+if ! freeradius -CX > /tmp/radius-check.log 2>&1; then
+  echo "ERROR: FreeRADIUS configuration validation failed!"
+  cat /tmp/radius-check.log
+  exit 1
+fi
+echo "Configuration validated successfully"
 
 # Configure clients
 if [ ! -f /etc/freeradius/clients-custom.conf ]; then
