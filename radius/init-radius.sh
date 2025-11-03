@@ -23,31 +23,39 @@ psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -f /config/
 echo "Migrations completed"
 
 # Enable PostgreSQL module in FreeRADIUS
-if [ -f /etc/freeradius/3.0/mods-available/sql ]; then
+if [ -f /etc/freeradius/mods-available/sql ]; then
   echo "Configuring FreeRADIUS PostgreSQL connection..."
   
   # Backup original config
-  cp /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-available/sql.bak
+  cp /etc/freeradius/mods-available/sql /etc/freeradius/mods-available/sql.bak
   
   # Enable the module
-  ln -sf /etc/freeradius/3.0/mods-available/sql /etc/freeradius/3.0/mods-enabled/sql
+  ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql
   
   # Replace configuration with our custom SQL config that uses environment variables
-  cp /config/sql /etc/freeradius/3.0/mods-available/sql
+  cp /config/sql /etc/freeradius/mods-available/sql
   
   echo "SQL module configured"
 fi
 
+# Enable SQL in the default site authorize section
+if [ -f /etc/freeradius/sites-enabled/default ]; then
+  echo "Enabling SQL module in default site..."
+  # Replace -sql with sql to enable SQL authentication
+  sed -i 's/^-sql$/sql/' /etc/freeradius/sites-enabled/default
+  echo "SQL enabled in authorize section"
+fi
+
 # Configure clients
-if [ ! -f /etc/freeradius/3.0/clients-custom.conf ]; then
+if [ ! -f /etc/freeradius/clients-custom.conf ]; then
   echo "Configuring FreeRADIUS clients..."
-  # Ensure the directory exists
-  mkdir -p /etc/freeradius/3.0
-  cp /config/clients.conf /etc/freeradius/3.0/clients-custom.conf
+  cp /config/clients.conf /etc/freeradius/clients-custom.conf
   
   # Include custom clients config
-  echo "" >> /etc/freeradius/3.0/radiusd.conf
-  echo "\$INCLUDE clients-custom.conf" >> /etc/freeradius/3.0/radiusd.conf
+  if ! grep -q "clients-custom.conf" /etc/freeradius/radiusd.conf; then
+    echo "" >> /etc/freeradius/radiusd.conf
+    echo "\$INCLUDE clients-custom.conf" >> /etc/freeradius/radiusd.conf
+  fi
   
   echo "Clients configured"
 fi
