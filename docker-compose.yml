@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
       POSTGRES_DB: ${POSTGRES_DB:-spotfi_db}
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
         condition: service_healthy
     environment:
       DB_HOST: db
-      DB_PORT: 5432
+      DB_PORT: 5435
       DB_NAME: ${POSTGRES_DB:-spotfi_db}
       DB_USER: ${POSTGRES_USER:-spotfi}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-spotfi_password}
