@@ -3,6 +3,9 @@ set -e
 
 echo "Starting FreeRADIUS initialization..."
 
+# Export PostgreSQL password for non-interactive use
+export PGPASSWORD="${DB_PASSWORD}"
+
 # Wait for database to be ready
 echo "Waiting for PostgreSQL database to be ready..."
 until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}"; do
@@ -37,6 +40,8 @@ fi
 # Configure clients
 if [ ! -f /etc/freeradius/3.0/clients-custom.conf ]; then
   echo "Configuring FreeRADIUS clients..."
+  # Ensure the directory exists
+  mkdir -p /etc/freeradius/3.0
   cp /config/clients.conf /etc/freeradius/3.0/clients-custom.conf
   
   # Include custom clients config

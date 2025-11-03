@@ -12,6 +12,17 @@ services:
       DB_NAME: spotfi
       DB_USER: postgres
       DB_PASSWORD: passcode
+      DB_DIALECT: postgresql
+      PGPASSWORD: passcode
+      PGUSER: postgres
+      PGHOST: 62.72.19.27
+      PGPORT: 5998
+      PGNAME: spotfi
+      PGPASSWORD: passcode
+      PGUSER: postgres
+      PGHOST: 62.72.19.27
+      PGPORT: 5998
+      PGNAME: spotfi
       RADIUS_SECRET: testing123
       RADIUS_DEBUG: no
     ports:
