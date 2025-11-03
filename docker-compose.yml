@@ -1,14 +1,11 @@
 version: '3.8'
 
 services:
- 
-
   freeradius:
     build:
       context: ./radius
       dockerfile: Dockerfile
     container_name: spotfi-radius
-    depends_on:
     environment:
       DB_HOST: 62.72.19.27
       DB_PORT: 5998
