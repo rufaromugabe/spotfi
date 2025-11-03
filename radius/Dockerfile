@@ -27,5 +27,7 @@ EXPOSE 1812/udp 1813/udp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD radtest healthcheck healthcheck 127.0.0.1 0 ${RADIUS_SECRET:-testing123} > /dev/null 2>&1 || exit 1
 
+# Override the default entrypoint to use our custom init script
+ENTRYPOINT []
 CMD ["sh", "/init-radius.sh"]
 
