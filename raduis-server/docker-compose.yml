@@ -1,6 +1,8 @@
 services:
   freeradius:
-    image: freeradius/freeradius-server:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: freeradius
     environment:
       - DB_HOST=${DB_HOST}
@@ -9,8 +11,6 @@ services:
       - DB_PORT=${DB_PORT}
       - DB_DIALECT=${DB_DIALECT}
       - DB_NAME=${DB_NAME}
-    volumes:
-      - ./sql:/etc/freeradius/mods-available/sql
-      - ./docker-entrypoint.sh:/docker-entrypoint.sh
-    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
-    command: ["freeradius"]
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"

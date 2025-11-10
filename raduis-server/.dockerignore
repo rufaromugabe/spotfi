@@ -1,0 +1,17 @@
+# Git files
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# SQL setup files (not needed in runtime image)
+add-admin-user.sql
+add-test-user.sql
+postgres_schema.sql
+
+# Docker files
+docker-compose.yml
+.dockerignore
+
