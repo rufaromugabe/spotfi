@@ -1,0 +1,16 @@
+services:
+  freeradius:
+    image: freeradius/freeradius-server:latest
+    container_name: freeradius
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_PORT=${DB_PORT}
+      - DB_DIALECT=${DB_DIALECT}
+      - DB_NAME=${DB_NAME}
+    volumes:
+      - ./sql:/etc/freeradius/mods-available/sql
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    command: ["freeradius"]
