@@ -1,6 +1,6 @@
 # 🛰️ SpotFi – Cloud ISP Management Platform
 
-SpotFi is a cloud-based ISP management system for controlling MikroTik routers remotely, monitoring usage, and automating billing.
+SpotFi is a cloud-based ISP management system for controlling OpenWRT routers remotely, monitoring usage, and automating billing.
 
 ## Architecture
 
@@ -15,14 +15,15 @@ SpotFi is a cloud-based ISP management system for controlling MikroTik routers r
 │  Billing Engine                 │
 └─────────────────────────────────┘
               ▲
-              │ HTTPS / WSS
+              │ HTTPS / WSS / RADIUS
               ▼
 ┌─────────────────────────────────┐
-│      MikroTik Router            │
+│      OpenWRT Router             │
 ├─────────────────────────────────┤
+│  CoovaChilli (Captive Portal)   │
 │  RADIUS Client                  │
-│  WebSocket Agent                │
-│  Accounting & Usage Data        │
+│  Python WebSocket Bridge        │
+│  Real-time Metrics              │
 └─────────────────────────────────┘
 ```
 
@@ -42,7 +43,7 @@ SpotFi is a cloud-based ISP management system for controlling MikroTik routers r
 - **Database**: PostgreSQL (via Prisma)
 - **Authentication**: JWT
 - **Real-time**: WebSocket (ws)
-- **AAA**: FreeRADIUS (MySQL)
+- **AAA**: FreeRADIUS (PostgresSQL)
 - **Cron Jobs**: node-cron
 - **Containerization**: Docker
 
@@ -187,27 +188,55 @@ You can also access the OpenAPI JSON spec at:
 
 ## Router Integration
 
-### MikroTik Router Setup
+### OpenWRT Router Setup
 
-1. Register router in SpotFi dashboard (get router ID and token)
+SpotFi uses **OpenWRT** routers with **CoovaChilli** (captive portal) and a Python WebSocket bridge for real-time monitoring.
 
-2. Configure RADIUS on MikroTik:
+**📖 See [OpenWRT Setup Guide](docs/OPENWRT-SETUP.md) for detailed instructions**
+
+#### Quick Setup:
+
+1. **Create router in SpotFi** (get router ID, token, and RADIUS secret)
+
+2. **Run auto-setup script** on your OpenWRT router:
 
 ```bash
-/ip radius add service=hotspot address=<SPOTFI_RADIUS_IP> secret=<RADIUS_SECRET>
-/ip hotspot profile set hotspot1 radius=yes
+# SSH into router
+ssh root@192.168.1.1
+
+# Download and run setup script
+curl -O https://your-server.com/scripts/openwrt-setup.sh
+chmod +x openwrt-setup.sh
+
+# Run with your router credentials
+./openwrt-setup.sh ROUTER_ID TOKEN RADIUS_SECRET SERVER_IP MAC_ADDRESS
 ```
 
-3. Connect router to WebSocket (MikroTik script):
+The script automatically installs and configures:
+- ✅ CoovaChilli (captive portal with RADIUS support)
+- ✅ Python WebSocket bridge (real-time monitoring)
+- ✅ Network and firewall configuration
+- ✅ Auto-start services
 
-```bash
-:local routerId "YOUR_ROUTER_ID"
-:local token "YOUR_ROUTER_TOKEN"
-/tool fetch url="wss://api.spotfi.com/ws?id=$routerId&token=$token" \
-  http-method=websocket \
-  output=none \
-  http-header-field="Authorization: Bearer $token"
-```
+#### Manual Setup:
+
+See the [complete OpenWRT setup guide](docs/OPENWRT-SETUP.md) for step-by-step manual configuration.
+
+#### Supported Hardware:
+
+- **GL.iNet routers** (OpenWRT pre-installed) - Recommended
+- **TP-Link Archer C7**
+- **Linksys WRT series**
+- Any OpenWRT-compatible router with 128MB+ RAM
+
+#### Features:
+
+- ✅ **Full RADIUS AAA** (Authentication, Authorization, Accounting)
+- ✅ **Real-time WebSocket** connection for monitoring and control
+- ✅ **Captive Portal** with customizable login page
+- ✅ **Session Management** (bandwidth limits, timeouts from RADIUS)
+- ✅ **Live Metrics** (CPU, memory, active users)
+- ✅ **Remote Commands** (reboot, status, logs)
 
 ## FreeRADIUS Integration
 
