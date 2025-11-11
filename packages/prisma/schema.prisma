@@ -63,57 +63,152 @@ model Invoice {
   @@map("invoices")
 }
 
-// FreeRADIUS accounting table
+// FreeRADIUS accounting table - lowercase for PostgreSQL compatibility
 model RadAcct {
-  acctuniqueid    String   @id @map("acctuniqueid")
-  username        String
-  nasipaddress    String   @map("nasipaddress")
-  nasidentifier   String?  @map("nasidentifier") // NAS identifier (router hostname/ID/MAC)
-  callingstationid String? @map("callingstationid") // Client MAC address
-  nasmacaddress   String?  @map("nasmacaddress") // Router/NAS MAC address (populated via trigger)
-  routerId       String?
-  router          Router?  @relation(fields: [routerId], references: [id])
-  acctstarttime   DateTime? @map("acctstarttime")
-  acctstoptime    DateTime? @map("acctstoptime")
-  acctsessiontime BigInt?  @map("acctsessiontime")
-  acctinputoctets BigInt   @default(0) @map("acctinputoctets")
-  acctoutputoctets BigInt  @default(0) @map("acctoutputoctets")
-  accttotaloctets BigInt   @default(0) @map("accttotaloctets")
-  framedipaddress String?  @map("framedipaddress")
+  radAcctId           BigInt    @id @default(autoincrement()) @map("radacctid")
+  acctSessionId       String    @map("acctsessionid")
+  acctUniqueId        String    @unique @map("acctuniqueid")
+  userName            String?   @map("username")
+  realm               String?   @map("realm")
+  nasIpAddress        String    @map("nasipaddress")
+  nasPortId           String?   @map("nasportid")
+  nasPortType         String?   @map("nasporttype")
+  acctStartTime       DateTime? @map("acctstarttime")
+  acctUpdateTime      DateTime? @map("acctupdatetime")
+  acctStopTime        DateTime? @map("acctstoptime")
+  acctInterval        BigInt?   @map("acctinterval")
+  acctSessionTime     BigInt?   @map("acctsessiontime")
+  acctAuthentic       String?   @map("acctauthentic")
+  connectInfoStart    String?   @map("connectinfo_start")
+  connectInfoStop     String?   @map("connectinfo_stop")
+  acctInputOctets     BigInt?   @map("acctinputoctets")
+  acctOutputOctets    BigInt?   @map("acctoutputoctets")
+  calledStationId     String?   @map("calledstationid")
+  callingStationId    String?   @map("callingstationid")
+  acctTerminateCause  String?   @map("acctterminatecause")
+  serviceType         String?   @map("servicetype")
+  framedProtocol      String?   @map("framedprotocol")
+  framedIpAddress     String?   @map("framedipaddress")
+  framedIpv6Address   String?   @map("framedipv6address")
+  framedIpv6Prefix    String?   @map("framedipv6prefix")
+  framedInterfaceId   String?   @map("framedinterfaceid")
+  delegatedIpv6Prefix String?   @map("delegatedipv6prefix")
+  class               String?   @map("class")
+  
+  // Relations to your app models
+  routerId            String?
+  router              Router?   @relation(fields: [routerId], references: [id])
 
+  @@index([acctUniqueId], map: "radacct_active_session_idx")
+  @@index([nasIpAddress, acctStartTime], map: "radacct_bulk_close")
+  @@index([acctStartTime, userName], map: "radacct_start_user_idx")
+  @@index([class], map: "radacct_calss_idx")
   @@index([routerId])
-  @@index([nasipaddress])
-  @@index([nasidentifier])
-  @@index([nasmacaddress])
-  @@index([callingstationid])
-  @@index([acctstarttime])
-  @@index([routerId, acctstarttime])
   @@map("radacct")
 }
 
-// FreeRADIUS user credentials table
-// Following FreeRADIUS standard schema: camelCase in Prisma, uppercase in database
+// FreeRADIUS user check attributes - lowercase for PostgreSQL compatibility
 model RadCheck {
   id        Int    @id @default(autoincrement())
-  userName  String @map("UserName") @default("")
-  attribute String @map("Attribute") @default("Cleartext-Password")
-  op        String @map("op") @default(":=")
-  value     String @map("Value") @default("")
+  userName  String @map("username") @default("")
+  attribute String @map("attribute") @default("")
+  op        String @default("==") @db.VarChar(2)
+  value     String @map("value") @default("")
 
+  @@unique([userName, attribute], map: "radcheck_unique")
+  @@index([userName, attribute], map: "radcheck_username")
   @@map("radcheck")
-  @@index([userName, attribute])
 }
 
-// FreeRADIUS user attributes (bandwidth limits, quotas)
+// FreeRADIUS group check attributes - lowercase for PostgreSQL compatibility
+model RadGroupCheck {
+  id        Int    @id @default(autoincrement())
+  groupName String @map("groupname") @default("")
+  attribute String @map("attribute") @default("")
+  op        String @default("==") @db.VarChar(2)
+  value     String @map("value") @default("")
+
+  @@unique([groupName, attribute], map: "radgroupcheck_unique")
+  @@index([groupName, attribute], map: "radgroupcheck_groupname")
+  @@map("radgroupcheck")
+}
+
+// FreeRADIUS group reply attributes - lowercase for PostgreSQL compatibility
+model RadGroupReply {
+  id        Int    @id @default(autoincrement())
+  groupName String @map("groupname") @default("")
+  attribute String @map("attribute") @default("")
+  op        String @default("=") @db.VarChar(2)
+  value     String @map("value") @default("")
+
+  @@unique([groupName, attribute], map: "radgroupreply_unique")
+  @@index([groupName, attribute], map: "radgroupreply_groupname")
+  @@map("radgroupreply")
+}
+
+// FreeRADIUS user reply attributes - lowercase for PostgreSQL compatibility
 model RadReply {
   id        Int    @id @default(autoincrement())
-  userName  String @map("UserName") @default("")
-  attribute String @map("Attribute") @default("")
-  op        String @map("op") @default("=")
-  value     String @map("Value") @default("")
+  userName  String @map("username") @default("")
+  attribute String @map("attribute") @default("")
+  op        String @default("=") @db.VarChar(2)
+  value     String @map("value") @default("")
 
+  @@unique([userName, attribute], map: "radreply_unique")
+  @@index([userName, attribute], map: "radreply_username")
   @@map("radreply")
-  @@index([userName, attribute])
+}
+
+// FreeRADIUS user to group mapping - lowercase for PostgreSQL compatibility
+model RadUserGroup {
+  id        Int    @id @default(autoincrement())
+  userName  String @map("username") @default("")
+  groupName String @map("groupname") @default("")
+  priority  Int    @default(0)
+
+  @@unique([userName, groupName], map: "radusergroup_unique")
+  @@index([userName], map: "radusergroup_username")
+  @@map("radusergroup")
+}
+
+// FreeRADIUS post-authentication logging - lowercase for PostgreSQL compatibility
+model RadPostAuth {
+  id               BigInt   @id @default(autoincrement())
+  username         String
+  pass             String?
+  reply            String?
+  calledStationId  String?  @map("calledstationid")
+  callingStationId String?  @map("callingstationid")
+  authDate         DateTime @default(now()) @map("authdate")
+  class            String?  @map("class")
+
+  @@index([username], map: "radpostauth_username_idx")
+  @@index([class], map: "radpostauth_class_idx")
+  @@map("radpostauth")
+}
+
+// FreeRADIUS NAS (Network Access Server) clients - lowercase for PostgreSQL compatibility
+model Nas {
+  id          Int     @id @default(autoincrement())
+  nasName     String  @unique @map("nasname")
+  shortName   String  @map("shortname")
+  type        String  @default("other")
+  ports       Int?
+  secret      String
+  server      String?
+  community   String?
+  description String?
+
+  @@index([nasName], map: "nas_nasname")
+  @@map("nas")
+}
+
+// FreeRADIUS NAS reload tracking - lowercase for PostgreSQL compatibility
+model NasReload {
+  nasIpAddress String   @id @map("nasipaddress")
+  reloadTime   DateTime @map("reloadtime")
+
+  @@map("nasreload")
 }
 
 enum Role {
