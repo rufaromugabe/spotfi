@@ -21,21 +21,22 @@ model User {
 }
 
 model Router {
-  id          String    @id @default(cuid())
-  name        String
-  hostId      String
-  host        User      @relation(fields: [hostId], references: [id], onDelete: Cascade)
-  token       String    @unique
-  status      RouterStatus @default(OFFLINE)
-  lastSeen    DateTime?
-  totalUsage  Float     @default(0)
+  id           String    @id @default(cuid())
+  name         String
+  hostId       String
+  host         User      @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  token        String    @unique
+  radiusSecret String?   @unique  // Unique RADIUS secret for NAS authentication (optional for existing routers)
+  status       RouterStatus @default(OFFLINE)
+  lastSeen     DateTime?
+  totalUsage   Float     @default(0)
   nasipaddress String?
-  macAddress  String?   // Router MAC address for robust tracking (doesn't change like IP)
-  location    String?
-  invoices    Invoice[]
-  sessions    RadAcct[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  macAddress   String?   // Router MAC address for robust tracking (doesn't change like IP)
+  location     String?
+  invoices     Invoice[]
+  sessions     RadAcct[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([hostId])
   @@index([macAddress])

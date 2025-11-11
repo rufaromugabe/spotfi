@@ -9,7 +9,7 @@ import { routerRoutes } from './routes/routers.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { setupWebSocket } from './websocket/server.js';
-import { startCronJobs } from './jobs/index.js';
+import { startScheduler } from './jobs/scheduler.js';
 
 const prisma = new PrismaClient();
 
@@ -131,8 +131,8 @@ const start = async () => {
     
     console.log(`🚀 Server listening on ${host}:${port}`);
     
-    // Start cron jobs
-    startCronJobs(prisma);
+// Start production scheduler
+startScheduler();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

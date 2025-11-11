@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -36,6 +37,7 @@ async function main() {
   // ============================================
   // 2. CREATE SAMPLE ROUTER
   // ============================================
+  const testRouterSecret = randomBytes(16).toString('hex');
   const router = await prisma.router.upsert({
     where: { token: 'test-router-token-123' },
     update: {},
@@ -43,6 +45,7 @@ async function main() {
       name: 'Main Office Router',
       hostId: host.id,
       token: 'test-router-token-123',
+      radiusSecret: testRouterSecret,
       status: 'ONLINE',
       nasipaddress: '192.168.1.1',
       macAddress: '00:11:22:33:44:55',
@@ -65,17 +68,17 @@ async function main() {
     },
     {
       nasName: '192.168.1.1',
-      shortName: 'main-router',
+      shortName: `rtr-${router.id.substring(0, 8)}`,
       type: 'mikrotik',
-      secret: 'testing123',
-      description: 'Main Office Router',
+      secret: testRouterSecret, // Use router's unique RADIUS secret
+      description: 'Main Office Router (Auto-managed)',
     },
     {
       nasName: '0.0.0.0/0',
       shortName: 'any-client',
       type: 'other',
       secret: 'testing123',
-      description: 'Allow all clients - TESTING ONLY',
+      description: 'Allow all clients - TESTING ONLY (Remove in production)',
     },
   ];
 
