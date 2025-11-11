@@ -1,10 +1,13 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Connection pool optimization for production
+  // Configure via DATABASE_URL: ?connection_limit=20&pool_timeout=20
 }
 
 model User {

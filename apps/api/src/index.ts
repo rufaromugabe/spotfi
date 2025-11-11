@@ -4,14 +4,12 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from './lib/prisma.js';
 import { routerRoutes } from './routes/routers.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
-
-const prisma = new PrismaClient();
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {

@@ -1,10 +1,8 @@
 import { WebSocket } from 'ws';
-import { PrismaClient } from '@prisma/client';
 import { FastifyBaseLogger } from 'fastify';
 import { randomBytes } from 'crypto';
 import { NasService } from '../services/nas.js';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 export class RouterConnectionHandler {
   private routerId: string;

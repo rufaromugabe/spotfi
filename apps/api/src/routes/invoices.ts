@@ -1,9 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { PrismaClient } from '@prisma/client';
 import { getHostInvoices, markInvoicePaid } from '../services/billing.js';
 import { requireAdmin } from '../utils/auth.js';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 export async function invoiceRoutes(fastify: FastifyInstance) {
   // Get all invoices (earnings/payments due) for current user

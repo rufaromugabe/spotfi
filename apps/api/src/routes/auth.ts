@@ -1,9 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { PrismaClient } from '@prisma/client';
 import { LoginSchema, RegisterSchema } from '@spotfi/shared';
 import { hashPassword, verifyPassword } from '../utils/auth.js';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 export async function authRoutes(fastify: FastifyInstance) {
   // Register

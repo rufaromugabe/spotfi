@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 // Payment rate per MB in USD - what the platform pays hosts for data usage (configurable)
 const PAYMENT_RATE_PER_MB = parseFloat(process.env.PAYMENT_RATE_PER_MB || process.env.BILLING_COST_PER_MB || '0.02');

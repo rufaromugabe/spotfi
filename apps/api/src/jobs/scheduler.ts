@@ -1,8 +1,6 @@
 import cron from 'node-cron';
-import { PrismaClient } from '@prisma/client';
 import { generateInvoices } from '../services/billing.js';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 /**
  * Production-grade cron scheduler
@@ -45,9 +43,21 @@ export function startScheduler() {
     }
   });
 
+  // Daily stats refresh - 1 AM daily
+  cron.schedule('0 1 * * *', async () => {
+    console.log('📊 Refreshing materialized view (daily stats)');
+    try {
+      await prisma.$executeRaw`SELECT refresh_daily_stats()`;
+      console.log('✅ Daily stats refreshed');
+    } catch (error) {
+      console.error('❌ Stats refresh failed:', error);
+    }
+  });
+
   console.log('✅ Scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
   console.log('   → Status checks: Every 5 minutes');
+  console.log('   → Daily stats: Daily at 1 AM');
   console.log('   → Session tracking: Real-time (database triggers)');
 }
 

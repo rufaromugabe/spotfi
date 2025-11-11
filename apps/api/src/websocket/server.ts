@@ -1,9 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
-import { PrismaClient } from '@prisma/client';
 import { RouterConnectionHandler } from './connection-handler.js';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 export const activeConnections = new Map<string, WebSocket>();
 
 export function setupWebSocket(fastify: FastifyInstance) {

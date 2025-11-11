@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
 import { FastifyBaseLogger } from 'fastify';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 /**
  * NAS (Network Access Server) management service
