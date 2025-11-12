@@ -4,7 +4,7 @@
 
 1. **Install dependencies:**
    ```bash
-   pnpm install
+   npm install
    ```
 
 2. **Set up environment:**
@@ -16,23 +16,23 @@
 3. **Setup database:**
    ```bash
    # Generate Prisma Client
-   pnpm prisma:generate
+   npm run prisma:generate
 
    # Run migrations
-   pnpm prisma:migrate
+   npm run prisma:migrate
 
    # Seed database (creates default admin and host users)
-   pnpm prisma:seed
+   npm run prisma:seed
    ```
 
    Or use the all-in-one command:
    ```bash
-   pnpm setup
+   npm run setup
    ```
 
 4. **Start development server:**
    ```bash
-   pnpm dev
+   npm run dev
    ```
 
 ## Default Users (after seeding)

@@ -3,22 +3,28 @@
   "version": "1.0.0",
   "private": true,
   "description": "Cloud ISP Management Platform - Server Backend",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "pnpm --filter @spotfi/api dev",
-    "build": "pnpm --filter @spotfi/api build",
-    "start": "pnpm --filter @spotfi/api start",
-    "prisma:generate": "pnpm --filter @spotfi/prisma generate",
-    "prisma:migrate": "pnpm --filter @spotfi/prisma migrate",
-    "prisma:seed": "pnpm --filter @spotfi/prisma seed",
-    "setup": "pnpm install && pnpm prisma:generate && pnpm prisma:migrate && pnpm prisma:seed"
+    "dev": "npm run dev -w @spotfi/api",
+    "build": "npm run build:shared && npm run build:api",
+    "build:shared": "npm run build -w @spotfi/shared",
+    "build:api": "npm run build -w @spotfi/api",
+    "start": "npm run start -w @spotfi/api",
+    "prisma:generate": "npm run generate -w @spotfi/prisma",
+    "prisma:migrate": "npm run migrate -w @spotfi/prisma",
+    "prisma:migrate:deploy": "npm run migrate:deploy -w @spotfi/prisma",
+    "prisma:seed": "npm run seed -w @spotfi/prisma",
+    "setup": "npm install && npm run prisma:generate && npm run prisma:migrate && npm run prisma:seed"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
     "@types/node": "^20.11.5"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "pnpm": ">=8.0.0"
+    "node": ">=18.0.0"
   }
 }
 

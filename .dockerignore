@@ -1,0 +1,60 @@
+# Dependencies
+node_modules
+**/node_modules
+.pnpm-store
+
+# Build output
+dist
+**/dist
+build
+**/build
+
+# Development files
+.env
+.env.local
+.env.*.local
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage
+.nyc_output
+
+# Misc
+.cache
+tmp
+temp
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Scripts
+scripts
+
+# Radius server (separate service)
+raduis-server
