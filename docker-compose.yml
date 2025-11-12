@@ -1,1 +1,17 @@
+services:
+  api:
+    build:
+      context: .
+      target: runner
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-8080}
+      HOST: ${HOST:-0.0.0.0}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      DATABASE_URL: ${DATABASE_URL:?Define DATABASE_URL in your environment}
+      JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET in your environment}
+    ports:
+      - "${PORT:-8080}:8080"
 
