@@ -70,7 +70,7 @@ curl -X POST http://192.168.42.181:8080/api/routers \
 SSH into your OpenWRT router:
 
 ```bash
-ssh root@192.168.1.1
+ssh root@192.168.56.10
 
 # Update package list
 opkg update

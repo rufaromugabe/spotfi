@@ -10,6 +10,13 @@
 
 set -e  # Exit on error
 
+# Default SpotFi router configuration (used if no CLI arguments are supplied)
+DEFAULT_ROUTER_ID="cmhujj1f6000112soujpo0noz"
+DEFAULT_TOKEN="e26b8c19afa977503f6cf26f39f431e891e7398b0022a43347066b2270fcbf92"
+DEFAULT_RADIUS_SECRET="5d62856936faa4919a8ab07671b04103"
+DEFAULT_SERVER_IP="102.210.115.1"
+DEFAULT_MAC_ADDRESS="08:00:27:BA:FE:8D"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,20 +29,29 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Parse arguments
-if [ "$#" -ne 5 ]; then
-    echo "Usage: $0 ROUTER_ID TOKEN RADIUS_SECRET SERVER_IP MAC_ADDRESS"
+# Parse arguments (allow zero arguments to use defaults, otherwise require five)
+if [ "$#" -eq 0 ]; then
+    echo -e "${YELLOW}No arguments supplied. Using embedded SpotFi router settings.${NC}"
+    ROUTER_ID="$DEFAULT_ROUTER_ID"
+    TOKEN="$DEFAULT_TOKEN"
+    RADIUS_SECRET="$DEFAULT_RADIUS_SECRET"
+    SERVER_IP="$DEFAULT_SERVER_IP"
+    MAC_ADDRESS="$DEFAULT_MAC_ADDRESS"
+elif [ "$#" -eq 5 ]; then
+    ROUTER_ID="$1"
+    TOKEN="$2"
+    RADIUS_SECRET="$3"
+    SERVER_IP="$4"
+    MAC_ADDRESS="$5"
+else
+    echo "Usage: $0 [ROUTER_ID TOKEN RADIUS_SECRET SERVER_IP MAC_ADDRESS]"
+    echo ""
+    echo "Provide five arguments to use your own values, or run without arguments to use the embedded SpotFi router configuration."
     echo ""
     echo "Example:"
     echo "  $0 cmhujj1f6000112soujpo0noz e26b8c19afa977... 5d62856936faa... 192.168.42.181 08:00:27:BA:FE:8D"
     exit 1
 fi
-
-ROUTER_ID="$1"
-TOKEN="$2"
-RADIUS_SECRET="$3"
-SERVER_IP="$4"
-MAC_ADDRESS="$5"
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}SpotFi OpenWRT Router Setup${NC}"
