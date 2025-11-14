@@ -200,23 +200,31 @@ SpotFi uses **OpenWRT** routers with **CoovaChilli** (captive portal) and a Pyth
 
 2. **Run auto-setup script** on your OpenWRT router:
 
+**For WebSocket bridge only (cloud monitoring):**
 ```bash
 # SSH into router
 ssh root@192.168.1.1
 
-# Download and run setup script
-curl -O https://your-server.com/scripts/openwrt-setup.sh
-chmod +x openwrt-setup.sh
+# Download and run cloud setup script
+curl -O https://your-server.com/scripts/openwrt-setup-cloud.sh
+chmod +x openwrt-setup-cloud.sh
 
 # Run with your router credentials
-./openwrt-setup.sh ROUTER_ID TOKEN RADIUS_SECRET SERVER_IP MAC_ADDRESS
+./openwrt-setup-cloud.sh ROUTER_ID TOKEN SERVER_IP MAC_ADDRESS [WS_PORT]
 ```
 
-The script automatically installs and configures:
-- ✅ CoovaChilli (captive portal with RADIUS support)
-- ✅ Python WebSocket bridge (real-time monitoring)
-- ✅ Network and firewall configuration
-- ✅ Auto-start services
+**For CoovaChilli/RADIUS captive portal only:**
+```bash
+curl -O https://your-server.com/scripts/openwrt-setup-chilli.sh
+chmod +x openwrt-setup-chilli.sh
+
+# Run with your router credentials
+./openwrt-setup-chilli.sh ROUTER_ID RADIUS_SECRET SERVER_IP MAC_ADDRESS [WS_PORT]
+```
+
+The scripts automatically install and configure:
+- ✅ **Cloud script**: Python WebSocket bridge (real-time monitoring and remote control)
+- ✅ **Chilli script**: CoovaChilli (captive portal with RADIUS support), network and firewall configuration, auto-start services
 
 #### Manual Setup:
 
