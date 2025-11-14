@@ -144,38 +144,226 @@ if [ -f /etc/chilli/config ]; then
     cp /etc/chilli/config /etc/chilli/config.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Detect network interfaces with multiple fallbacks
-# WAN interface detection
-WAN_IF=$(uci get network.wan.ifname 2>/dev/null || \
-    uci get network.wan.device 2>/dev/null || \
-    ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || \
-    ip -4 route show default 2>/dev/null | head -n1 | awk '{print $5}' || \
-    echo "eth1")
+# Function to list all available network interfaces
+list_available_interfaces() {
+    # Try /sys/class/net first (most reliable on OpenWRT)
+    if [ -d /sys/class/net ]; then
+        ls /sys/class/net 2>/dev/null | grep -v "^lo$" | grep -v "^lo:"
+    # Fallback to ip link
+    elif command -v ip >/dev/null 2>&1; then
+        ip link show 2>/dev/null | awk -F': ' '/^[0-9]+:/ && $2 != "lo" {print $2}'
+    # Fallback to ifconfig
+    elif command -v ifconfig >/dev/null 2>&1; then
+        ifconfig 2>/dev/null | awk '/^[a-z]/ && $1 != "lo:" {print $1}' | sed 's/:$//'
+    fi
+}
+
+# Function to check if interface exists on system
+interface_exists() {
+    local iface="$1"
+    if [ -z "$iface" ]; then
+        return 1
+    fi
+    # Check if interface exists in /sys/class/net
+    [ -d "/sys/class/net/$iface" ] || {
+        # Fallback: check with ip link
+        ip link show "$iface" >/dev/null 2>&1
+    }
+}
+
+# Function to get first available physical interface
+get_first_available_interface() {
+    local interfaces
+    interfaces=$(list_available_interfaces)
+    if [ -n "$interfaces" ]; then
+        # Filter out virtual interfaces (bridges, VLANs) and prefer eth* or enp* style
+        for iface in $interfaces; do
+            # Skip loopback, bridges starting with br-, and VLAN interfaces
+            case "$iface" in
+                lo|lo:*|br-*|br:*|veth*|docker*|*.@*)
+                    continue
+                    ;;
+            esac
+            # Prefer interfaces that match common physical interface patterns
+            if echo "$iface" | grep -qE '^(eth|enp|ens|enx|wlan|wl)[0-9]'; then
+                echo "$iface"
+                return 0
+            fi
+        done
+        # If no preferred interface found, return first non-virtual interface
+        for iface in $interfaces; do
+            case "$iface" in
+                lo|lo:*|br-*|br:*|veth*|docker*|*.@*)
+                    continue
+                    ;;
+                *)
+                    echo "$iface"
+                    return 0
+                    ;;
+            esac
+        done
+    fi
+    return 1
+}
+
+# Detect network interfaces with multiple fallbacks and validation
+echo -e "${YELLOW}Detecting network interfaces...${NC}"
+
+# WAN interface detection with validation
+WAN_IF=""
+# Method 1: UCI network configuration
+if [ -z "$WAN_IF" ]; then
+    WAN_IF=$(uci get network.wan.ifname 2>/dev/null)
+    if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
+        WAN_IF=""
+    fi
+fi
+
+# Method 2: UCI network device
+if [ -z "$WAN_IF" ]; then
+    WAN_IF=$(uci get network.wan.device 2>/dev/null)
+    if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
+        WAN_IF=""
+    fi
+fi
+
+# Method 3: Default route interface (most reliable)
+if [ -z "$WAN_IF" ]; then
+    WAN_IF=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+    if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
+        WAN_IF=""
+    fi
+fi
+
+# Method 4: IPv4 default route
+if [ -z "$WAN_IF" ]; then
+    WAN_IF=$(ip -4 route show default 2>/dev/null | head -n1 | awk '{print $5}')
+    if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
+        WAN_IF=""
+    fi
+fi
+
+# Method 5: Get first available physical interface that's not LAN
+if [ -z "$WAN_IF" ]; then
+    WAN_IF=$(get_first_available_interface)
+    if [ -n "$WAN_IF" ]; then
+        echo -e "${YELLOW}  Warning: Using first available interface as WAN: $WAN_IF${NC}"
+    fi
+fi
+
+# Final fallback: validate and use eth0 if it exists
+if [ -z "$WAN_IF" ]; then
+    if interface_exists "eth0"; then
+        WAN_IF="eth0"
+        echo -e "${YELLOW}  Warning: Using eth0 as WAN (fallback)${NC}"
+    else
+        echo -e "${RED}Error: Could not detect WAN interface. Available interfaces:${NC}"
+        list_available_interfaces | while read -r iface; do
+            echo "    - $iface"
+        done
+        exit 1
+    fi
+fi
+
+# Validate WAN interface exists
+if ! interface_exists "$WAN_IF"; then
+    echo -e "${RED}Error: Detected WAN interface '$WAN_IF' does not exist on this system${NC}"
+    echo -e "${YELLOW}Available interfaces:${NC}"
+    list_available_interfaces | while read -r iface; do
+        echo "    - $iface"
+    done
+    exit 1
+fi
 
 # LAN/WiFi interface detection (for VMs without WiFi, will use LAN bridge)
 WIFI_IF=""
 HAS_WIRELESS=false
 
-# Try iw first (for wireless interfaces)
+# Method 1: Try iw first (for wireless interfaces)
 if command -v iw >/dev/null 2>&1; then
     WIFI_IF=$(iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
-    if [ -n "$WIFI_IF" ]; then
+    if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
         HAS_WIRELESS=true
+    else
+        WIFI_IF=""
     fi
 fi
 
-# If no wireless interface found, try UCI wireless config
+# Method 2: Try UCI wireless config
 if [ -z "$WIFI_IF" ]; then
     WIFI_IF=$(uci show wireless 2>/dev/null | grep -m1 "\.ifname=" | cut -d= -f2 | tr -d "'\"")
-    if [ -n "$WIFI_IF" ]; then
+    if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
         HAS_WIRELESS=true
+    else
+        WIFI_IF=""
     fi
 fi
 
-# If still not found (VM scenario), use LAN bridge for CoovaChilli
+# Method 3: Look for wlan* interfaces
 if [ -z "$WIFI_IF" ]; then
-    WIFI_IF=$(uci get network.lan.ifname 2>/dev/null || echo "br-lan")
-    echo -e "${YELLOW}  Note: No WiFi detected (VM detected), using LAN bridge: $WIFI_IF${NC}"
+    for iface in $(list_available_interfaces); do
+        if echo "$iface" | grep -qE '^wlan[0-9]'; then
+            if interface_exists "$iface"; then
+                WIFI_IF="$iface"
+                HAS_WIRELESS=true
+                break
+            fi
+        fi
+    done
+fi
+
+# Method 4: Use LAN bridge (VM scenario)
+if [ -z "$WIFI_IF" ]; then
+    # Try UCI LAN ifname
+    WIFI_IF=$(uci get network.lan.ifname 2>/dev/null)
+    if [ -n "$WIFI_IF" ] && ! interface_exists "$WIFI_IF"; then
+        WIFI_IF=""
+    fi
+    
+    # Try common bridge names
+    if [ -z "$WIFI_IF" ]; then
+        for bridge in br-lan br0; do
+            if interface_exists "$bridge"; then
+                WIFI_IF="$bridge"
+                break
+            fi
+        done
+    fi
+    
+    # Find any bridge interface
+    if [ -z "$WIFI_IF" ]; then
+        for iface in $(list_available_interfaces); do
+            if echo "$iface" | grep -qE '^br'; then
+                if interface_exists "$iface"; then
+                    WIFI_IF="$iface"
+                    break
+                fi
+            fi
+        done
+    fi
+    
+    if [ -z "$WIFI_IF" ]; then
+        echo -e "${RED}Error: Could not detect LAN/WiFi interface for CoovaChilli${NC}"
+        echo -e "${YELLOW}Available interfaces:${NC}"
+        list_available_interfaces | while read -r iface; do
+            echo "    - $iface"
+        done
+        exit 1
+    fi
+    
+    if [ "$HAS_WIRELESS" != "true" ]; then
+        echo -e "${YELLOW}  Note: No WiFi detected (VM detected), using LAN bridge: $WIFI_IF${NC}"
+    fi
+fi
+
+# Validate LAN/WiFi interface exists
+if ! interface_exists "$WIFI_IF"; then
+    echo -e "${RED}Error: Detected LAN/WiFi interface '$WIFI_IF' does not exist on this system${NC}"
+    echo -e "${YELLOW}Available interfaces:${NC}"
+    list_available_interfaces | while read -r iface; do
+        echo "    - $iface"
+    done
+    exit 1
 fi
 
 echo "  - Detected WAN interface: $WAN_IF"
@@ -247,10 +435,24 @@ if ! uci show network.hotspot >/dev/null 2>&1; then
     uci set network.hotspot.proto='static'
     uci set network.hotspot.ipaddr='10.1.0.1'
     uci set network.hotspot.netmask='255.255.255.0'
-    uci commit network || {
+    
+    # Commit network configuration with validation
+    if uci commit network; then
+        # Validate commit succeeded by checking if hotspot interface exists
+        if uci show network.hotspot >/dev/null 2>&1; then
+            echo "  - Network configuration committed successfully"
+        else
+            echo -e "${RED}Error: Network configuration committed but not saved correctly${NC}"
+            echo -e "${YELLOW}Attempting to revert changes...${NC}"
+            uci revert network 2>/dev/null || true
+            exit 1
+        fi
+    else
         echo -e "${RED}Error: Failed to commit network configuration${NC}"
+        echo -e "${YELLOW}Attempting to revert changes...${NC}"
+        uci revert network 2>/dev/null || true
         exit 1
-    }
+    fi
 else
     echo "  - Hotspot interface already exists, skipping creation"
 fi
@@ -280,10 +482,19 @@ if [ -n "$RADIO" ]; then
     uci set wireless.$IFACE.ssid='SpotFi-Guest'
     uci set wireless.$IFACE.encryption='none'
     
-    uci commit wireless || {
+    # Commit wireless configuration with validation
+    if uci commit wireless; then
+        # Validate commit succeeded by checking if configuration exists
+        if uci show wireless.$IFACE >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ WiFi configured (SSID: SpotFi-Guest)${NC}"
+        else
+            echo -e "${YELLOW}Warning: Wireless configuration committed but may not be saved correctly${NC}"
+        fi
+    else
         echo -e "${YELLOW}Warning: Failed to commit wireless configuration${NC}"
-    }
-    echo -e "${GREEN}✓ WiFi configured (SSID: SpotFi-Guest)${NC}"
+        echo -e "${YELLOW}  WiFi may not work, but CoovaChilli will use LAN bridge instead${NC}"
+        # Don't exit - WiFi is optional, especially in VMs
+    fi
 else
     echo -e "${YELLOW}⚠ Could not find WiFi radio, skipping WiFi configuration${NC}"
     echo -e "${YELLOW}  Note: If running in VM, this is normal. CoovaChilli will use LAN bridge.${NC}"
@@ -293,47 +504,168 @@ fi
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring firewall...${NC}"
 
-# Check if firewall zone exists (multiple ways to check)
+# Function to check if firewall zone exists
+check_firewall_zone_exists() {
+    local zone_name="$1"
+    
+    # Method 1: Use UCI to get all zones and check names
+    local zones
+    zones=$(uci show firewall 2>/dev/null | grep -E "^firewall\.@zone\[[0-9]+\]\.name=" | cut -d= -f2 | tr -d "'\"")
+    
+    if echo "$zones" | grep -qx "$zone_name"; then
+        return 0  # Zone exists
+    fi
+    
+    # Method 2: Try to get zone by name directly
+    local zone_id
+    zone_id=$(uci get firewall.@zone[0] 2>/dev/null | grep -E "\.name\s*=\s*['\"]?$zone_name['\"]?" 2>/dev/null)
+    if [ -n "$zone_id" ]; then
+        return 0
+    fi
+    
+    # Method 3: Iterate through all zone indices (more reliable)
+    local i=0
+    while true; do
+        local zone_name_check
+        zone_name_check=$(uci get "firewall.@zone[$i].name" 2>/dev/null || echo "")
+        if [ -z "$zone_name_check" ]; then
+            break  # No more zones
+        fi
+        if [ "$zone_name_check" = "$zone_name" ]; then
+            return 0  # Zone found
+        fi
+        i=$((i + 1))
+    done
+    
+    return 1  # Zone does not exist
+}
+
+# Function to check if firewall rule exists
+check_firewall_rule_exists() {
+    local rule_name="$1"
+    
+    # Get all rule names
+    local rules
+    rules=$(uci show firewall 2>/dev/null | grep -E "^firewall\.@rule\[[0-9]+\]\.name=" | cut -d= -f2 | tr -d "'\"")
+    
+    if echo "$rules" | grep -qx "$rule_name"; then
+        return 0  # Rule exists
+    fi
+    
+    # Check by iterating through all rule indices
+    local i=0
+    while true; do
+        local rule_name_check
+        rule_name_check=$(uci get "firewall.@rule[$i].name" 2>/dev/null || echo "")
+        if [ -z "$rule_name_check" ]; then
+            break  # No more rules
+        fi
+        if [ "$rule_name_check" = "$rule_name" ]; then
+            return 0  # Rule found
+        fi
+        i=$((i + 1))
+    done
+    
+    return 1  # Rule does not exist
+}
+
+# Check if firewall zone exists
 FIREWALL_ZONE_EXISTS=false
-if uci show firewall | grep -q "name='hotspot'"; then
+if check_firewall_zone_exists "hotspot"; then
     FIREWALL_ZONE_EXISTS=true
-elif uci show firewall 2>/dev/null | grep -q "\.name='hotspot'"; then
-    FIREWALL_ZONE_EXISTS=true
-elif uci get firewall.@zone[0].name 2>/dev/null | grep -q hotspot; then
-    FIREWALL_ZONE_EXISTS=true
+    echo "  - Firewall hotspot zone already exists"
+fi
+
+# Check if firewall forwarding rule exists
+FIREWALL_FORWARDING_EXISTS=false
+FORWARDING_COUNT=$(uci show firewall 2>/dev/null | grep -E "^firewall\.@forwarding\[[0-9]+\]\.src=" | wc -l)
+if [ "$FORWARDING_COUNT" -gt 0 ]; then
+    # Check if hotspot->wan forwarding exists
+    i=0
+    while true; do
+        src=$(uci get "firewall.@forwarding[$i].src" 2>/dev/null || echo "")
+        dest=$(uci get "firewall.@forwarding[$i].dest" 2>/dev/null || echo "")
+        if [ -z "$src" ]; then
+            break
+        fi
+        if [ "$src" = "hotspot" ] && [ "$dest" = "wan" ]; then
+            FIREWALL_FORWARDING_EXISTS=true
+            break
+        fi
+        i=$((i + 1))
+    done
 fi
 
 if [ "$FIREWALL_ZONE_EXISTS" = "false" ]; then
+    echo "  - Creating firewall hotspot zone..."
     uci add firewall zone
     uci set firewall.@zone[-1].name='hotspot'
     uci set firewall.@zone[-1].input='REJECT'
     uci set firewall.@zone[-1].output='ACCEPT'
     uci set firewall.@zone[-1].forward='REJECT'
     uci set firewall.@zone[-1].network='hotspot'
-    
+fi
+
+# Add forwarding rule if it doesn't exist
+if [ "$FIREWALL_FORWARDING_EXISTS" = "false" ]; then
+    echo "  - Creating firewall forwarding rule (hotspot -> wan)..."
     uci add firewall forwarding
     uci set firewall.@forwarding[-1].src='hotspot'
     uci set firewall.@forwarding[-1].dest='wan'
-    
+fi
+
+# Add RADIUS authentication rule if it doesn't exist
+if ! check_firewall_rule_exists "Allow-RADIUS-Auth"; then
+    echo "  - Creating firewall rule for RADIUS authentication (port 1812)..."
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-RADIUS-Auth'
     uci set firewall.@rule[-1].src='wan'
     uci set firewall.@rule[-1].dest_port='1812'
     uci set firewall.@rule[-1].proto='udp'
     uci set firewall.@rule[-1].target='ACCEPT'
-    
+else
+    echo "  - Firewall rule 'Allow-RADIUS-Auth' already exists, skipping"
+fi
+
+# Add RADIUS accounting rule if it doesn't exist
+if ! check_firewall_rule_exists "Allow-RADIUS-Acct"; then
+    echo "  - Creating firewall rule for RADIUS accounting (port 1813)..."
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-RADIUS-Acct'
     uci set firewall.@rule[-1].src='wan'
     uci set firewall.@rule[-1].dest_port='1813'
     uci set firewall.@rule[-1].proto='udp'
     uci set firewall.@rule[-1].target='ACCEPT'
-    
-    uci commit firewall || {
-        echo -e "${YELLOW}Warning: Failed to commit firewall configuration${NC}"
-    }
 else
-    echo "  - Firewall hotspot zone already exists, skipping creation"
+    echo "  - Firewall rule 'Allow-RADIUS-Acct' already exists, skipping"
+fi
+
+# Commit firewall configuration with validation (only if changes were made)
+if [ "$FIREWALL_ZONE_EXISTS" = "false" ] || [ "$FIREWALL_FORWARDING_EXISTS" = "false" ] || \
+   ! check_firewall_rule_exists "Allow-RADIUS-Auth" || ! check_firewall_rule_exists "Allow-RADIUS-Acct"; then
+    # Commit firewall configuration with validation
+    if uci commit firewall; then
+        # Validate commit succeeded by checking if hotspot zone exists
+        if check_firewall_zone_exists "hotspot"; then
+            echo "  - Firewall configuration committed successfully"
+        else
+            echo -e "${YELLOW}Warning: Firewall configuration committed but may not be saved correctly${NC}"
+            echo -e "${YELLOW}  Attempting rollback and retry...${NC}"
+            # Try to rollback and retry
+            uci revert firewall 2>/dev/null || true
+            echo -e "${RED}Error: Failed to commit firewall configuration${NC}"
+            echo -e "${YELLOW}You may need to configure firewall manually${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}Error: Failed to commit firewall configuration${NC}"
+        echo -e "${YELLOW}Attempting to revert changes...${NC}"
+        uci revert firewall 2>/dev/null || true
+        echo -e "${RED}Firewall configuration failed. Please check UCI configuration manually${NC}"
+        exit 1
+    fi
+else
+    echo "  - All firewall rules already configured, no changes needed"
 fi
 
 echo -e "${GREEN}✓ Firewall configured${NC}"

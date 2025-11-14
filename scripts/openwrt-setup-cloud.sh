@@ -156,6 +156,34 @@ TOKEN = os.getenv('SPOTFI_TOKEN')
 MAC = os.getenv('SPOTFI_MAC')
 WS_URL = os.getenv('SPOTFI_WS_URL')
 
+# Validate required environment variables
+def validate_environment():
+    """Validate all required environment variables are set"""
+    missing = []
+    
+    if not ROUTER_ID or ROUTER_ID.strip() == '':
+        missing.append('SPOTFI_ROUTER_ID')
+    if not TOKEN or TOKEN.strip() == '':
+        missing.append('SPOTFI_TOKEN')
+    if not MAC or MAC.strip() == '':
+        missing.append('SPOTFI_MAC')
+    if not WS_URL or WS_URL.strip() == '':
+        missing.append('SPOTFI_WS_URL')
+    
+    if missing:
+        print(f"Error: Missing required environment variables: {', '.join(missing)}", file=sys.stderr)
+        print("Please ensure /etc/spotfi.env exists and is properly configured.", file=sys.stderr)
+        print("Run the setup script again or check the configuration manually.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate WS_URL format
+    if not WS_URL.startswith(('ws://', 'wss://')):
+        print(f"Error: Invalid WebSocket URL format: {WS_URL}", file=sys.stderr)
+        print("WebSocket URL must start with ws:// or wss://", file=sys.stderr)
+        sys.exit(1)
+    
+    return True
+
 class SpotFiBridge:
     def __init__(self):
         self.ws = None
@@ -242,6 +270,11 @@ class SpotFiBridge:
             self.send_message({'type': 'metrics', 'metrics': metrics})
     
     def connect(self):
+        # Double-check environment variables before connecting
+        if not ROUTER_ID or not TOKEN or not MAC or not WS_URL:
+            print("Error: Environment variables not set. Cannot connect.", file=sys.stderr)
+            sys.exit(1)
+        
         url = f"{WS_URL}?id={ROUTER_ID}&token={TOKEN}&mac={MAC}"
         print(f"Connecting to {WS_URL}...")
         
@@ -267,6 +300,13 @@ class SpotFiBridge:
                 time.sleep(10)
 
 if __name__ == '__main__':
+    # Validate environment variables before starting
+    validate_environment()
+    
+    print(f"Starting SpotFi Bridge...")
+    print(f"  Router ID: {ROUTER_ID}")
+    print(f"  WebSocket: {WS_URL}")
+    
     bridge = SpotFiBridge()
     bridge.start()
 PYEOF
@@ -301,13 +341,31 @@ PROG=/root/spotfi-bridge/bridge.py
 start_service() {
     if [ ! -f /etc/spotfi.env ]; then
         echo "Error: /etc/spotfi.env not found"
+        echo "Please run the setup script to create the configuration file."
         exit 1
     fi
     
+    # Source environment file
     . /etc/spotfi.env
     
-    if [ -z "$SPOTFI_ROUTER_ID" ] || [ -z "$SPOTFI_TOKEN" ] || [ -z "$SPOTFI_WS_URL" ]; then
-        echo "Error: Missing required environment variables"
+    # Validate all required environment variables
+    MISSING_VARS=""
+    [ -z "$SPOTFI_ROUTER_ID" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_ROUTER_ID"
+    [ -z "$SPOTFI_TOKEN" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_TOKEN"
+    [ -z "$SPOTFI_MAC" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_MAC"
+    [ -z "$SPOTFI_WS_URL" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_WS_URL"
+    
+    if [ -n "$MISSING_VARS" ]; then
+        echo "Error: Missing required environment variables:$MISSING_VARS"
+        echo "Please check /etc/spotfi.env and ensure all variables are set."
+        echo "Run the setup script again to regenerate the configuration."
+        exit 1
+    fi
+    
+    # Validate WebSocket URL format
+    if ! echo "$SPOTFI_WS_URL" | grep -qE '^(ws|wss)://'; then
+        echo "Error: Invalid WebSocket URL format: $SPOTFI_WS_URL"
+        echo "WebSocket URL must start with ws:// or wss://"
         exit 1
     fi
     
