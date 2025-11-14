@@ -152,26 +152,30 @@ WAN_IF=$(uci get network.wan.ifname 2>/dev/null || \
     ip -4 route show default 2>/dev/null | head -n1 | awk '{print $5}' || \
     echo "eth1")
 
-# LAN/WiFi interface detection
+# LAN/WiFi interface detection (for VMs without WiFi, will use LAN bridge)
 WIFI_IF=""
+HAS_WIRELESS=false
+
 # Try iw first (for wireless interfaces)
 if command -v iw >/dev/null 2>&1; then
     WIFI_IF=$(iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
+    if [ -n "$WIFI_IF" ]; then
+        HAS_WIRELESS=true
+    fi
 fi
 
 # If no wireless interface found, try UCI wireless config
 if [ -z "$WIFI_IF" ]; then
     WIFI_IF=$(uci show wireless 2>/dev/null | grep -m1 "\.ifname=" | cut -d= -f2 | tr -d "'\"")
+    if [ -n "$WIFI_IF" ]; then
+        HAS_WIRELESS=true
+    fi
 fi
 
-# If still not found, try LAN bridge
+# If still not found (VM scenario), use LAN bridge for CoovaChilli
 if [ -z "$WIFI_IF" ]; then
     WIFI_IF=$(uci get network.lan.ifname 2>/dev/null || echo "br-lan")
-fi
-
-# Final fallback
-if [ -z "$WIFI_IF" ]; then
-    WIFI_IF="wlan0"
+    echo -e "${YELLOW}  Note: No WiFi detected (VM detected), using LAN bridge: $WIFI_IF${NC}"
 fi
 
 echo "  - Detected WAN interface: $WAN_IF"
@@ -253,7 +257,7 @@ fi
 
 echo -e "${GREEN}✓ Network configured${NC}"
 
-# Step 5: Configure WiFi
+# Step 5: Configure WiFi (skipped in VMs without WiFi)
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring WiFi...${NC}"
 
@@ -282,6 +286,7 @@ if [ -n "$RADIO" ]; then
     echo -e "${GREEN}✓ WiFi configured (SSID: SpotFi-Guest)${NC}"
 else
     echo -e "${YELLOW}⚠ Could not find WiFi radio, skipping WiFi configuration${NC}"
+    echo -e "${YELLOW}  Note: If running in VM, this is normal. CoovaChilli will use LAN bridge.${NC}"
 fi
 
 # Step 6: Configure firewall
@@ -374,7 +379,11 @@ echo "CoovaChilli Status:"
 echo "  - Router ID: $ROUTER_ID"
 echo "  - RADIUS Server: $RADIUS_IP"
 echo "  - Portal: https://$PORTAL_DOMAIN/portal"
-echo "  - WiFi SSID: SpotFi-Guest"
+if [ "$HAS_WIRELESS" = "true" ]; then
+    echo "  - WiFi SSID: SpotFi-Guest"
+else
+    echo "  - WiFi: Not available (VM detected, using LAN bridge)"
+fi
 echo "  - Gateway: 10.1.0.1"
 echo ""
 echo "Verification:"

@@ -481,6 +481,253 @@ sysupgrade -b /tmp/backup.tar.gz
 
 ---
 
+## 🧪 Testing in VirtualBox VM
+
+This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
+
+### Prerequisites
+
+- VirtualBox installed
+- OpenWRT image (x86/64)
+- Host machine with internet access
+
+### Step 1: Download OpenWRT Image
+
+1. Download OpenWRT x86/64 image:
+   ```bash
+   # Download from https://downloads.openwrt.org/releases/
+   # For example, OpenWRT 23.05.5:
+   wget https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img.gz
+   
+   # Extract the image
+   gunzip openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img.gz
+   ```
+
+2. Convert to VDI (VirtualBox format):
+   ```bash
+   # On Linux/Mac
+   VBoxManage convertfromraw openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img openwrt.vdi --format VDI
+   
+   # On Windows (use VBoxManage from VirtualBox installation directory)
+   "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" convertfromraw openwrt.img openwrt.vdi --format VDI
+   ```
+
+### Step 2: Create VirtualBox VM
+
+1. **Create New VM:**
+   - Open VirtualBox → New
+   - Name: `OpenWRT-Test`
+   - Type: Linux
+   - Version: Linux 2.6 / 3.x / 4.x (64-bit)
+   - Memory: 512 MB (minimum)
+   - Hard disk: Use existing → Select `openwrt.vdi`
+
+2. **Configure Network:**
+   
+   **Adapter 1 (WAN):**
+   - Enable Network Adapter
+   - Attached to: Bridged Adapter
+   - Name: Your host network adapter (e.g., Ethernet or Wi-Fi)
+   - This will get an IP from your router (for internet access)
+
+   **Adapter 2 (LAN/Hotspot):**
+   - Enable Network Adapter
+   - Attached to: Internal Network
+   - Name: `intnet` (create if needed)
+   - This will be used for the hotspot network
+
+   **Adapter 3 (Optional - for management):**
+   - Enable Network Adapter
+   - Attached to: Host-only Adapter
+   - Name: `VirtualBox Host-Only Ethernet Adapter`
+   - This allows direct SSH access from host
+
+### Step 3: Start VM and Get IP Address
+
+1. **Start the VM:**
+   - Power on the VM
+   - Wait for OpenWRT to boot
+
+2. **Get IP address:**
+   ```bash
+   # In the VM console, run:
+   ip addr show
+   ```
+
+   You'll see interfaces like:
+   - `eth0` - WAN (bridged adapter - gets IP from your router)
+   - `eth1` - LAN (internal network)
+   - `eth2` - Host-only (management)
+
+3. **Note the IP addresses:**
+   - WAN IP: Usually `192.168.x.x` (from your router's DHCP)
+   - Host-only IP: Usually `192.168.56.10` (default)
+
+### Step 4: SSH into OpenWRT VM
+
+From your host machine:
+
+```bash
+# Via host-only adapter (recommended for testing)
+ssh root@192.168.56.10
+
+# Or via WAN IP (if accessible)
+ssh root@<WAN_IP>
+```
+
+**Default password:** None (OpenWRT has no password by default - set one!)
+
+```bash
+# Set root password (inside VM)
+passwd
+```
+
+### Step 5: Test Cloud Script
+
+1. **Download and run cloud script:**
+   ```bash
+   # SSH into VM
+   ssh root@192.168.56.10
+   
+   # Download script
+   wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
+   chmod +x /tmp/openwrt-setup-cloud.sh
+   
+   # Run script (replace with your actual values)
+   /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
+   ```
+
+2. **Verify it works:**
+   ```bash
+   # Check WebSocket bridge is running
+   ps | grep bridge.py
+   
+   # Check service status
+   /etc/init.d/spotfi-bridge status
+   
+   # View logs
+   logread | tail -n 50
+   ```
+
+3. **Check SpotFi dashboard:**
+   - Router should appear as ONLINE
+   - Metrics should be updating
+
+### Step 6: Test Chilli Script (Optional)
+
+**Note:** In a VM, there's no WiFi, but CoovaChilli will use the LAN bridge.
+
+1. **Download and run chilli script:**
+   ```bash
+   # Download script
+   wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
+   chmod +x /tmp/openwrt-setup-chilli.sh
+   
+   # Run script (replace with your actual values)
+   /tmp/openwrt-setup-chilli.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP
+   ```
+
+2. **Expected behavior in VM:**
+   - WiFi configuration will be skipped (normal for VMs)
+   - CoovaChilli will use LAN bridge (`br-lan`)
+   - Script will show: "No WiFi detected (VM detected), using LAN bridge"
+
+3. **Test captive portal:**
+   ```bash
+   # Check CoovaChilli status
+   /etc/init.d/chilli status
+   
+   # Check active sessions
+   chilli_query list
+   
+   # View logs
+   logread | grep chilli
+   ```
+
+4. **Connect test client:**
+   - Create another VM or use host machine
+   - Connect to internal network (`intnet`)
+   - Set static IP: `10.1.0.2/24` (gateway: `10.1.0.1`)
+   - Try to access any website → Should redirect to captive portal
+
+### Step 7: Verify Network Setup
+
+Inside OpenWRT VM:
+
+```bash
+# Check interfaces
+ip addr show
+
+# Expected output:
+# eth0: WAN (bridged) - has IP from your router
+# eth1: LAN (internal) - no IP yet
+# br-lan: LAN bridge - used by CoovaChilli in VM
+```
+
+### Common Issues and Solutions
+
+**Issue: Can't SSH into VM**
+- **Solution:** Use host-only adapter, not bridged
+- Check VM network adapter is enabled
+- Verify IP: `ip addr show` in VM
+
+**Issue: No internet in VM**
+- **Solution:** Check WAN adapter (eth0) is bridged to your network
+- Verify it got an IP: `ip addr show eth0`
+- Test: `ping google.com`
+
+**Issue: WiFi configuration skipped**
+- **Solution:** This is normal! VMs don't have WiFi hardware
+- CoovaChilli will use LAN bridge instead
+- Check: `ip addr show br-lan`
+
+**Issue: Can't reach SpotFi server**
+- **Solution:** Verify VM has internet access
+- Check server IP/hostname is reachable: `ping api.spotfi.com`
+- For local testing, use your host's IP: `192.168.56.1` (host-only network)
+
+### Testing Tips
+
+1. **Use host-only network for management:**
+   - Easier SSH access from host
+   - Stable IP address
+
+2. **Use bridged adapter for WAN:**
+   - Allows internet access
+   - Can test real server connectivity
+
+3. **Internal network for hotspot:**
+   - Isolated network for captive portal testing
+   - Connect test clients here
+
+4. **Quick restart after script:**
+   ```bash
+   # Restart VM or services
+   reboot
+   # Or restart services individually
+   /etc/init.d/network restart
+   /etc/init.d/firewall restart
+   ```
+
+### VM Network Configuration Example
+
+```
+Host Machine
+├── Network Adapter (192.168.1.x)
+│   └── Bridged to VM eth0 (WAN)
+│
+├── Host-Only Adapter (192.168.56.1)
+│   └── Connected to VM eth2 (Management)
+│       └── VM IP: 192.168.56.10
+│
+└── Internal Network (intnet)
+    └── VM eth1 (LAN/Hotspot)
+        └── Gateway: 10.1.0.1
+            └── Test Client: 10.1.0.2
+```
+
+---
+
 ## 📚 Additional Resources
 
 - [OpenWRT Documentation](https://openwrt.org/docs/start)
