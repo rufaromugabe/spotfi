@@ -8,6 +8,7 @@ import { prisma } from './lib/prisma.js';
 import { routerRoutes } from './routes/routers.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
+import { portalRoutes } from './routes/portal.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 
@@ -95,6 +96,7 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
 await fastify.register(authRoutes);
 await fastify.register(routerRoutes, { prefix: '/api/routers' });
 await fastify.register(invoiceRoutes);
+await fastify.register(portalRoutes);
 
 // Setup WebSocket server
 setupWebSocket(fastify);
