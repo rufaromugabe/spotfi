@@ -285,10 +285,21 @@ export async function portalRoutes(fastify: FastifyInstance) {
             
             // Submit form
             try {
+                // Convert form data to URL-encoded format (Fastify supports this by default)
                 const formData = new FormData(form);
+                const urlEncodedData = new URLSearchParams();
+                
+                // Extract all form fields
+                for (const [key, value] of formData.entries()) {
+                    urlEncodedData.append(key, value.toString());
+                }
+                
                 const response = await fetch('/portal/login', {
                     method: 'POST',
-                    body: formData
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: urlEncodedData.toString()
                 });
                 
                 if (response.ok) {

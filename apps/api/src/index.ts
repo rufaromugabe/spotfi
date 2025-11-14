@@ -2,6 +2,7 @@ import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
+import formbody from '@fastify/formbody';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { prisma } from './lib/prisma.js';
@@ -29,6 +30,8 @@ const fastify = Fastify({
 await fastify.register(cors, {
   origin: process.env.CORS_ORIGIN || '*',
 });
+
+await fastify.register(formbody); // Support application/x-www-form-urlencoded
 
 await fastify.register(jwt, {
   secret: process.env.JWT_SECRET || 'change-me-in-production-secret-key',
