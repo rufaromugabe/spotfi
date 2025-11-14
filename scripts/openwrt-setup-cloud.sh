@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # SpotFi OpenWRT Router Auto-Setup Script - Cloud Mode
 # 
@@ -322,6 +322,39 @@ export SPOTFI_WS_URL="$WS_URL"
 EOF
 
 chmod 600 /etc/spotfi.env
+
+# Extract hostname from WebSocket URL and check DNS resolution
+WS_HOST=$(echo "$WS_URL" | sed -E 's|^[^/]*//([^:/]+).*|\1|')
+if [ -n "$WS_HOST" ] && [ "$WS_HOST" != "api.spotfi.com" ]; then
+    echo -e "${YELLOW}Checking DNS resolution for $WS_HOST...${NC}"
+    
+    # Try to resolve the hostname
+    if ! nslookup "$WS_HOST" >/dev/null 2>&1; then
+        echo -e "${YELLOW}DNS resolution failed. Attempting to resolve via ping...${NC}"
+        
+        # Try to ping and extract IP (if hostname contains IP pattern)
+        if echo "$WS_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; then
+            WS_IP=$(echo "$WS_HOST" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        else
+            # Try to extract IP from hostname (e.g., subdomain.IP format)
+            WS_IP=$(echo "$WS_HOST" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | tail -1)
+        fi
+        
+        if [ -n "$WS_IP" ]; then
+            echo -e "${YELLOW}Adding hosts entry: $WS_IP $WS_HOST${NC}"
+            # Remove existing entry if present
+            sed -i "/[[:space:]]$WS_HOST$/d" /etc/hosts 2>/dev/null
+            # Add new entry
+            echo "$WS_IP $WS_HOST" >> /etc/hosts
+            echo -e "${GREEN}✓ Hosts entry added${NC}"
+        else
+            echo -e "${YELLOW}Warning: Could not determine IP address for $WS_HOST${NC}"
+            echo -e "${YELLOW}You may need to manually add it to /etc/hosts${NC}"
+        fi
+    else
+        echo -e "${GREEN}✓ DNS resolution OK${NC}"
+    fi
+fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
 

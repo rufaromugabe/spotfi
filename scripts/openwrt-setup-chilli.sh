@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # SpotFi OpenWRT CoovaChilli Setup Script
 # 

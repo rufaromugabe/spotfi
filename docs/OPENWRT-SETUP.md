@@ -80,19 +80,17 @@ ssh root@192.168.56.10
 For routers that only need real-time monitoring and remote control (no captive portal):
 
 ```bash
-# Download the cloud setup script from GitHub
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
-
-# Make it executable
-chmod +x /tmp/openwrt-setup-cloud.sh
-
-# Run the script (replace with your actual values)
+# Download and run the cloud setup script (replace with your actual values)
 # Server domain is optional - defaults to wss://api.spotfi.com/ws
-/tmp/openwrt-setup-cloud.sh \
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh \
   cmhujj1f6000112soujpo0noz \
   e26b8c19afa977503f6cf26f39f431e891e7398b0022a43347066b2270fcbf92 \
-  08:00:27:BA:FE:8D
+  08:00:27:BA:FE:8D \
+  ws://c40g8skkog0g0ws44wo0c40s.62.72.19.27
 ```
+
+**Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.
 
 **Parameters:**
 - `ROUTER_ID` - Router ID from Step 1
@@ -105,24 +103,47 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS wss://your-server.com/ws
 ```
 
+**Troubleshooting "not found" error:**
+
+If you get an error like `-ash: /tmp/openwrt-setup-cloud.sh: not found` after downloading the script, use one of these solutions:
+
+**Quick fix (recommended):** Run the script with `sh` explicitly:
+```bash
+sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
+```
+
+**Alternative fix:** The issue is often due to Windows line endings (CRLF). Fix it with:
+```bash
+# Convert line endings from CRLF to LF using tr (more reliable on BusyBox)
+tr -d '\r' < /tmp/openwrt-setup-cloud.sh > /tmp/openwrt-setup-cloud-fixed.sh
+mv /tmp/openwrt-setup-cloud-fixed.sh /tmp/openwrt-setup-cloud.sh
+chmod +x /tmp/openwrt-setup-cloud.sh
+
+# Then run the script
+/tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
+```
+
+**One-liner with sh (easiest):**
+```bash
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
+```
+
 #### Option B: CoovaChilli/RADIUS Only (Captive Portal)
 
 For routers that only need captive portal with RADIUS authentication (no WebSocket bridge):
 
 ```bash
-# Download the chilli setup script from GitHub
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
-
-# Make it executable
-chmod +x /tmp/openwrt-setup-chilli.sh
-
-# Run the script (replace with your actual values)
+# Download and run the chilli setup script (replace with your actual values)
 # Server domain is optional - defaults to https://api.spotfi.com
-/tmp/openwrt-setup-chilli.sh \
+wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh && \
+sh /tmp/openwrt-setup-chilli.sh \
   cmhujj1f6000112soujpo0noz \
   5d62856936faa4919a8ab07671b04103 \
   08:00:27:BA:FE:8D
 ```
+
+**Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems.
 
 **Parameters:**
 - `ROUTER_ID` - Router ID from Step 1
