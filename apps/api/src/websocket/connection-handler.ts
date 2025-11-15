@@ -10,10 +10,11 @@ export class RouterConnectionHandler {
   private logger: FastifyBaseLogger;
   private nasService: NasService;
   private lastPongTime: number;
+  private lastPingTime: number;
   private lastSeenUpdate: number;
   private healthCheckInterval: NodeJS.Timeout | null = null;
-  private readonly PING_INTERVAL = 30000; // 30 seconds
-  private readonly PONG_TIMEOUT = 60000; // 60 seconds - mark offline if no pong
+  private readonly PING_INTERVAL = 20000; // 20 seconds - more frequent checks
+  private readonly PONG_TIMEOUT = 45000; // 45 seconds - mark offline if no pong (2 missed pings)
   private readonly LAST_SEEN_UPDATE_INTERVAL = 600000; // 10 minutes
 
   constructor(
@@ -26,6 +27,7 @@ export class RouterConnectionHandler {
     this.logger = logger;
     this.nasService = new NasService(logger);
     this.lastPongTime = Date.now();
+    this.lastPingTime = 0;
     this.lastSeenUpdate = Date.now();
   }
 
@@ -95,6 +97,13 @@ export class RouterConnectionHandler {
       }
     });
 
+    // Also handle socket-level errors and close events more aggressively
+    this.socket.on('close', async (code, reason) => {
+      this.logger.info(`Router ${this.routerId} socket closed (code: ${code})`);
+      this.cleanup();
+      await this.markOffline();
+    });
+
     this.socket.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString());
@@ -114,11 +123,7 @@ export class RouterConnectionHandler {
       }
     });
 
-    this.socket.on('close', async () => {
-      this.cleanup();
-      await this.markOffline();
-      this.logger.info(`Router ${this.routerId} disconnected`);
-    });
+    // Note: close handler is now above to catch it earlier
 
     this.socket.on('error', async (error: Error) => {
       this.logger.error(`Router ${this.routerId} socket error: ${error.message}`);
@@ -134,24 +139,60 @@ export class RouterConnectionHandler {
     this.healthCheckInterval = setInterval(async () => {
       // Check if connection is still alive
       if (this.socket.readyState !== WebSocket.OPEN) {
+        this.logger.warn(`Router ${this.routerId} socket not OPEN (state: ${this.socket.readyState})`);
         this.cleanup();
         await this.markOffline();
         return;
       }
 
-      // Check if we haven't received a pong in too long
+      // Check if we haven't received a pong since the last ping
       const timeSinceLastPong = Date.now() - this.lastPongTime;
-      if (timeSinceLastPong > this.PONG_TIMEOUT) {
+      const timeSinceLastPing = this.lastPingTime > 0 ? Date.now() - this.lastPingTime : 0;
+      
+      // If we sent a ping but haven't received a pong within timeout, mark as dead
+      if (this.lastPingTime > 0 && timeSinceLastPing > this.PONG_TIMEOUT) {
+        this.logger.warn(`Router ${this.routerId} appears dead (no pong for ${timeSinceLastPing}ms, last pong was ${timeSinceLastPong}ms ago)`);
+        this.cleanup();
+        await this.markOffline();
+        try {
+          this.socket.terminate();
+        } catch (e) {
+          // Socket might already be closed
+        }
+        return;
+      }
+
+      // Also check if we haven't received ANY pong in too long (backup check)
+      // This catches cases where the connection dies before we send the first ping
+      if (timeSinceLastPong > this.PONG_TIMEOUT * 1.5) {
         this.logger.warn(`Router ${this.routerId} appears dead (no pong for ${timeSinceLastPong}ms)`);
         this.cleanup();
         await this.markOffline();
-        this.socket.terminate();
+        try {
+          this.socket.terminate();
+        } catch (e) {
+          // Socket might already be closed
+        }
         return;
       }
 
       // Use native WebSocket ping frame (more efficient than JSON message)
       try {
-        this.socket.ping();
+        // Check if socket is actually writable before pinging
+        if (this.socket.readyState === WebSocket.OPEN && this.socket.bufferedAmount === 0) {
+          this.socket.ping();
+          this.lastPingTime = Date.now();
+        } else {
+          // Socket appears to be stuck, mark as dead
+          this.logger.warn(`Router ${this.routerId} socket appears stuck (buffered: ${this.socket.bufferedAmount})`);
+          this.cleanup();
+          await this.markOffline();
+          try {
+            this.socket.terminate();
+          } catch (e) {
+            // Socket might already be closed
+          }
+        }
       } catch (error) {
         this.logger.error(`Failed to send ping to router ${this.routerId}: ${error}`);
         this.cleanup();
