@@ -87,7 +87,7 @@ sh /tmp/openwrt-setup-cloud.sh \
   cmhujj1f6000112soujpo0noz \
   e26b8c19afa977503f6cf26f39f431e891e7398b0022a43347066b2270fcbf92 \
   08:00:27:BA:FE:8D \
-  ws://c40g8skkog0g0ws44wo0c40s.62.72.19.27
+  wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27
 ```
 
 **Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.

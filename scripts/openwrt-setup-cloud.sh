@@ -323,6 +323,35 @@ EOF
 
 chmod 600 /etc/spotfi.env
 
+# Configure Google DNS for better DNS resolution
+echo -e "${YELLOW}Configuring DNS servers...${NC}"
+# Add Google DNS to resolv.conf (temporary)
+if ! grep -q "8.8.8.8" /etc/resolv.conf 2>/dev/null; then
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+fi
+
+# Configure DNS via UCI (persistent across reboots)
+if command -v uci >/dev/null 2>&1; then
+    # Get current DNS
+    CURRENT_DNS=$(uci get network.lan.dns 2>/dev/null || echo "")
+    
+    # Add Google DNS if not already present
+    if ! echo "$CURRENT_DNS" | grep -q "8.8.8.8"; then
+        if [ -z "$CURRENT_DNS" ]; then
+            uci set network.lan.dns="8.8.8.8 8.8.4.4"
+        else
+            uci set network.lan.dns="$CURRENT_DNS 8.8.8.8 8.8.4.4"
+        fi
+        uci commit network
+        echo -e "${GREEN}✓ DNS servers configured (8.8.8.8, 8.8.4.4)${NC}"
+    else
+        echo -e "${GREEN}✓ DNS servers already configured${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: uci not available, DNS configured in /etc/resolv.conf only${NC}"
+fi
+
 # Extract hostname from WebSocket URL and check DNS resolution
 WS_HOST=$(echo "$WS_URL" | sed -E 's|^[^/]*//([^:/]+).*|\1|')
 if [ -n "$WS_HOST" ] && [ "$WS_HOST" != "api.spotfi.com" ]; then
