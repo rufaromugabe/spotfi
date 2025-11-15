@@ -248,6 +248,7 @@ class SpotFiBridge:
     def __init__(self):
         self.ws = None
         self.running = True
+        self.connection_error = False
         
     def get_router_metrics(self):
         """Get router metrics"""
@@ -309,15 +310,25 @@ class SpotFiBridge:
     
     def on_error(self, ws, error):
         print(f"WebSocket error: {error}", file=sys.stderr)
+        # Mark connection as having an error to trigger reconnection
+        self.connection_error = True
+        # Close the connection to trigger on_close and reconnection
+        try:
+            if self.ws and self.ws.sock:
+                self.ws.sock.close()
+        except:
+            pass
     
     def on_close(self, ws, close_status_code, close_msg):
         if self.running:
-            print(f"WebSocket closed (code: {close_status_code}). Reconnecting in 5s...")
-            # Don't reconnect here - let the start() loop handle it
-            # This prevents nested reconnection attempts
+            print(f"WebSocket closed (code: {close_status_code}). Will reconnect...")
+            # Reset error flag
+            self.connection_error = False
     
     def on_open(self, ws):
         print("✓ WebSocket connected")
+        # Reset connection error flag on successful connection
+        self.connection_error = False
         self.send_metrics()
     
     def send_message(self, data):
@@ -345,6 +356,7 @@ class SpotFiBridge:
         print(f"Connecting to {WS_URL}...")
         
         try:
+            self.connection_error = False
             self.ws = websocket.WebSocketApp(
                 url,
                 on_message=self.on_message,
@@ -353,7 +365,14 @@ class SpotFiBridge:
                 on_open=self.on_open
             )
             # Use run_forever with better error handling
+            # If connection_error is set, run_forever will exit and trigger reconnection
             self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            
+            # If we exit run_forever due to an error, raise exception to trigger reconnection
+            if self.connection_error:
+                raise Exception("Connection error detected, reconnecting...")
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             print(f"Connection error: {e}", file=sys.stderr)
             raise
@@ -363,10 +382,13 @@ class SpotFiBridge:
         print(f"Router ID: {ROUTER_ID}")
         reconnect_delay = 5
         max_reconnect_delay = 60
+        initial_delay = 5
         
         while self.running:
             try:
                 self.connect()
+                # If we exit connect() without error, reset delay
+                reconnect_delay = initial_delay
             except KeyboardInterrupt:
                 self.running = False
                 break
