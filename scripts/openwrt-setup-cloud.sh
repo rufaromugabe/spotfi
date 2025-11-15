@@ -356,26 +356,16 @@ class SpotFiBridge:
             # Use /bin/sh as it's available on all OpenWrt systems
             shell = os.environ.get('SHELL', '/bin/sh')
             
-            # Try to use setsid, but fallback if not available (some OpenWrt systems)
-            try:
-                process = subprocess.Popen(
-                    [shell],
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    start_new_session=True,
-                    preexec_fn=os.setsid
-                )
-            except (AttributeError, OSError):
-                # Fallback if setsid not available
-                print(f"Warning: os.setsid not available, using fallback", file=sys.stderr)
-                process = subprocess.Popen(
-                    [shell],
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    start_new_session=True
-                )
+            # Don't use preexec_fn on OpenWrt - it causes "Exception occurred in preexec_fn" error
+            # start_new_session=True is sufficient for creating a new process group
+            process = subprocess.Popen(
+                [shell],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True
+                # Note: preexec_fn=os.setsid removed - causes errors on OpenWrt/BusyBox
+            )
             
             # Close slave_fd in parent (we use master_fd)
             os.close(slave_fd)
@@ -398,6 +388,11 @@ class SpotFiBridge:
             )
             read_thread.start()
             
+            # Verify process started successfully
+            if process.poll() is not None:
+                # Process already died
+                raise Exception(f"Shell process died immediately with exit code {process.returncode}")
+            
             # Store session BEFORE sending confirmation (important!)
             self.ssh_sessions[session_id] = {
                 'master_fd': master_fd,
@@ -406,7 +401,8 @@ class SpotFiBridge:
             }
             
             print(f"SSH session started: {session_id}, PID: {process.pid}, Shell: {shell}")
-            print(f"SSH session stored. Total active sessions: {len(self.ssh_sessions)}")
+            print(f"SSH session stored successfully. Total active sessions: {len(self.ssh_sessions)}")
+            print(f"Session details: master_fd={master_fd}, process_alive={process.poll() is None}")
             
             # Send confirmation to server
             self.send_message({
