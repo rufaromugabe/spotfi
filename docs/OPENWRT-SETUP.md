@@ -310,6 +310,69 @@ cat /etc/spotfi.env
 
 ---
 
+### Problem: "Error starting SSH session: Exception occurred in preexec_fn"
+
+**Error Message:**
+```
+Error starting SSH session: Exception occurred in preexec_fn.
+File "/root/spotfi-bridge/bridge.py", line 260, in handle_ssh_start
+```
+
+**Cause:**
+This error indicates your router is running an **old version** of `bridge.py` that still uses `preexec_fn`, which is not supported on OpenWrt/BusyBox systems.
+
+**Fix:**
+Re-run the setup script to update `bridge.py` with the latest version:
+
+```bash
+# For cloud setup (WebSocket bridge only)
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh \
+  YOUR_ROUTER_ID \
+  YOUR_TOKEN \
+  YOUR_MAC_ADDRESS \
+  wss://your-server.com/ws
+
+# Or for chilli setup (captive portal)
+wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh && \
+sh /tmp/openwrt-setup-chilli.sh \
+  YOUR_ROUTER_ID \
+  YOUR_RADIUS_SECRET \
+  YOUR_MAC_ADDRESS \
+  YOUR_RADIUS_IP \
+  https://your-portal-url.com
+```
+
+**Alternative: Quick Update (Bridge Only)**
+If you only need to update the bridge.py file:
+
+```bash
+# Stop the service
+/etc/init.d/spotfi-bridge stop
+
+# Download and update bridge.py
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
+
+# Extract just the bridge.py part (lines 101-645)
+# Or re-run the full setup script - it's safe to run multiple times
+
+# Start the service
+/etc/init.d/spotfi-bridge start
+
+# Verify
+logread -f | grep -i ssh
+```
+
+**Verification:**
+After updating, SSH sessions should work without errors. You can verify by checking logs:
+
+```bash
+# Should NOT show preexec_fn errors anymore
+logread | grep -i ssh
+```
+
+---
+
 ### Problem: "Users can't authenticate"
 
 **Check:**

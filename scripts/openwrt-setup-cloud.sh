@@ -356,16 +356,33 @@ class SpotFiBridge:
             # Use /bin/sh as it's available on all OpenWrt systems
             shell = os.environ.get('SHELL', '/bin/sh')
             
-            # Don't use preexec_fn on OpenWrt - it causes "Exception occurred in preexec_fn" error
-            # start_new_session=True is sufficient for creating a new process group
-            process = subprocess.Popen(
-                [shell],
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True
-                # Note: preexec_fn=os.setsid removed - causes errors on OpenWrt/BusyBox
-            )
+            # CRITICAL: Don't use preexec_fn on OpenWrt/BusyBox - it causes "Exception occurred in preexec_fn" error
+            # This is because BusyBox's limited shell doesn't support all POSIX features
+            # start_new_session=True is sufficient for creating a new process group on OpenWrt
+            # DO NOT ADD preexec_fn=os.setsid or any other preexec_fn - it will fail!
+            try:
+                process = subprocess.Popen(
+                    [shell],
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    start_new_session=True
+                    # NOTE: preexec_fn removed - causes "Exception occurred in preexec_fn" on OpenWrt/BusyBox
+                    # If you see this error, it means you're running an old version of bridge.py
+                    # Solution: Re-run the setup script to update bridge.py
+                )
+            except Exception as popen_error:
+                # If start_new_session fails, try without it as a fallback
+                if 'preexec_fn' in str(popen_error) or 'Exception occurred in preexec_fn' in str(popen_error):
+                    raise Exception(f"preexec_fn error detected - you're running an old bridge.py version. Please re-run setup script to update. Original error: {popen_error}")
+                # Try without start_new_session as fallback
+                print(f"Warning: start_new_session failed, trying without it: {popen_error}", file=sys.stderr)
+                process = subprocess.Popen(
+                    [shell],
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd
+                )
             
             # Close slave_fd in parent (we use master_fd)
             os.close(slave_fd)
