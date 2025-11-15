@@ -194,6 +194,8 @@ SpotFi uses **OpenWRT** routers with **CoovaChilli** (captive portal) and a Pyth
 
 **📖 See [OpenWRT Setup Guide](docs/OPENWRT-SETUP.md) for detailed instructions**
 
+**🔧 See [SSH Tunnel Testing Guide](docs/SSH-TUNNEL-TESTING.md) for testing remote terminal access**
+
 #### Quick Setup:
 
 1. **Create router in SpotFi** (get router ID, token, and RADIUS secret)
