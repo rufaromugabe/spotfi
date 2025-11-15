@@ -132,6 +132,16 @@ if ! python3 -c "import websocket" 2>/dev/null; then
     exit 1
 fi
 
+# Install python-dotenv for environment variable loading
+echo "  - Installing python-dotenv..."
+if command -v pip3 >/dev/null 2>&1; then
+    pip3 install python-dotenv 2>/dev/null || {
+        echo -e "${YELLOW}Warning: Failed to install python-dotenv via pip3, will use fallback method${NC}"
+    }
+else
+    echo -e "${YELLOW}Warning: pip3 not available, will use fallback method for loading env${NC}"
+fi
+
 echo -e "${GREEN}✓ Packages installed${NC}"
 
 # Step 3: Install WebSocket bridge
@@ -150,7 +160,6 @@ import time
 import subprocess
 import os
 import sys
-import re
 
 def load_config():
     """Load configuration from environment variables or /etc/spotfi.env file"""
@@ -160,27 +169,46 @@ def load_config():
     mac = os.getenv('SPOTFI_MAC')
     ws_url = os.getenv('SPOTFI_WS_URL')
     
-    # If not all variables are set, try reading from /etc/spotfi.env
+    # If not all variables are set, try loading from /etc/spotfi.env using dotenv
     if not all([router_id, token, mac, ws_url]):
         env_file = '/etc/spotfi.env'
         if os.path.exists(env_file):
             try:
-                with open(env_file, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('export '):
-                            # Parse export VAR="value" format
-                            match = re.match(r'export\s+(\w+)="([^"]+)"', line)
-                            if match:
-                                var_name, var_value = match.groups()
-                                if var_name == 'SPOTFI_ROUTER_ID' and not router_id:
-                                    router_id = var_value
-                                elif var_name == 'SPOTFI_TOKEN' and not token:
-                                    token = var_value
-                                elif var_name == 'SPOTFI_MAC' and not mac:
-                                    mac = var_value
-                                elif var_name == 'SPOTFI_WS_URL' and not ws_url:
-                                    ws_url = var_value
+                # Try using python-dotenv library
+                try:
+                    from dotenv import dotenv_values
+                    config = dotenv_values(env_file)
+                    if not router_id:
+                        router_id = config.get('SPOTFI_ROUTER_ID') or os.getenv('SPOTFI_ROUTER_ID')
+                    if not token:
+                        token = config.get('SPOTFI_TOKEN') or os.getenv('SPOTFI_TOKEN')
+                    if not mac:
+                        mac = config.get('SPOTFI_MAC') or os.getenv('SPOTFI_MAC')
+                    if not ws_url:
+                        ws_url = config.get('SPOTFI_WS_URL') or os.getenv('SPOTFI_WS_URL')
+                except ImportError:
+                    # Fallback: manually parse the file
+                    with open(env_file, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            # Handle both export VAR="value" and VAR="value" formats
+                            if line.startswith('export '):
+                                line = line[7:].strip()  # Remove 'export '
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                key = key.strip()
+                                # Remove quotes from value
+                                value = value.strip().strip('"').strip("'")
+                                if key == 'SPOTFI_ROUTER_ID' and not router_id:
+                                    router_id = value
+                                elif key == 'SPOTFI_TOKEN' and not token:
+                                    token = value
+                                elif key == 'SPOTFI_MAC' and not mac:
+                                    mac = value
+                                elif key == 'SPOTFI_WS_URL' and not ws_url:
+                                    ws_url = value
             except Exception as e:
                 print(f"Warning: Could not read {env_file}: {e}", file=sys.stderr)
     
@@ -345,12 +373,12 @@ PYEOF
 
 chmod +x /root/spotfi-bridge/bridge.py
 
-# Create environment file
+# Create environment file (standard .env format, compatible with dotenv)
 cat > /etc/spotfi.env << EOF
-export SPOTFI_ROUTER_ID="$ROUTER_ID"
-export SPOTFI_TOKEN="$TOKEN"
-export SPOTFI_MAC="$MAC_ADDRESS"
-export SPOTFI_WS_URL="$WS_URL"
+SPOTFI_ROUTER_ID="$ROUTER_ID"
+SPOTFI_TOKEN="$TOKEN"
+SPOTFI_MAC="$MAC_ADDRESS"
+SPOTFI_WS_URL="$WS_URL"
 EOF
 
 chmod 600 /etc/spotfi.env
@@ -440,10 +468,11 @@ start_service() {
     fi
     
     # Read environment variables directly from file (more reliable than sourcing)
-    SPOTFI_ROUTER_ID=$(grep "^export SPOTFI_ROUTER_ID=" /etc/spotfi.env | cut -d'"' -f2)
-    SPOTFI_TOKEN=$(grep "^export SPOTFI_TOKEN=" /etc/spotfi.env | cut -d'"' -f2)
-    SPOTFI_MAC=$(grep "^export SPOTFI_MAC=" /etc/spotfi.env | cut -d'"' -f2)
-    SPOTFI_WS_URL=$(grep "^export SPOTFI_WS_URL=" /etc/spotfi.env | cut -d'"' -f2)
+    # Handle both export VAR="value" and VAR="value" formats
+    SPOTFI_ROUTER_ID=$(grep -E "^export SPOTFI_ROUTER_ID=|^SPOTFI_ROUTER_ID=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_ROUTER_ID="?([^"]+)"?/\2/' | head -1)
+    SPOTFI_TOKEN=$(grep -E "^export SPOTFI_TOKEN=|^SPOTFI_TOKEN=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_TOKEN="?([^"]+)"?/\2/' | head -1)
+    SPOTFI_MAC=$(grep -E "^export SPOTFI_MAC=|^SPOTFI_MAC=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_MAC="?([^"]+)"?/\2/' | head -1)
+    SPOTFI_WS_URL=$(grep -E "^export SPOTFI_WS_URL=|^SPOTFI_WS_URL=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_WS_URL="?([^"]+)"?/\2/' | head -1)
     
     # Validate all required environment variables
     MISSING_VARS=""
