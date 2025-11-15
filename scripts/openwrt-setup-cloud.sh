@@ -150,11 +150,43 @@ import time
 import subprocess
 import os
 import sys
+import re
 
-ROUTER_ID = os.getenv('SPOTFI_ROUTER_ID')
-TOKEN = os.getenv('SPOTFI_TOKEN')
-MAC = os.getenv('SPOTFI_MAC')
-WS_URL = os.getenv('SPOTFI_WS_URL')
+def load_config():
+    """Load configuration from environment variables or /etc/spotfi.env file"""
+    # Try environment variables first
+    router_id = os.getenv('SPOTFI_ROUTER_ID')
+    token = os.getenv('SPOTFI_TOKEN')
+    mac = os.getenv('SPOTFI_MAC')
+    ws_url = os.getenv('SPOTFI_WS_URL')
+    
+    # If not all variables are set, try reading from /etc/spotfi.env
+    if not all([router_id, token, mac, ws_url]):
+        env_file = '/etc/spotfi.env'
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('export '):
+                            # Parse export VAR="value" format
+                            match = re.match(r'export\s+(\w+)="([^"]+)"', line)
+                            if match:
+                                var_name, var_value = match.groups()
+                                if var_name == 'SPOTFI_ROUTER_ID' and not router_id:
+                                    router_id = var_value
+                                elif var_name == 'SPOTFI_TOKEN' and not token:
+                                    token = var_value
+                                elif var_name == 'SPOTFI_MAC' and not mac:
+                                    mac = var_value
+                                elif var_name == 'SPOTFI_WS_URL' and not ws_url:
+                                    ws_url = var_value
+            except Exception as e:
+                print(f"Warning: Could not read {env_file}: {e}", file=sys.stderr)
+    
+    return router_id, token, mac, ws_url
+
+ROUTER_ID, TOKEN, MAC, WS_URL = load_config()
 
 # Validate required environment variables
 def validate_environment():
