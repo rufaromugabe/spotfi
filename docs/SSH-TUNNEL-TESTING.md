@@ -381,21 +381,85 @@ curl http://localhost:8080/api/auth/me \
 
 ### Issue: No Response to Commands
 
+**Symptoms:**
+- Connection succeeds
+- Commands sent but no output received
+- Terminal appears "dead"
+
 **Possible Causes:**
-1. Router bridge doesn't handle SSH messages
-2. PTY module not available
+1. Router bridge not receiving `ssh-start` message
+2. PTY module not available on router
 3. Shell process not starting
+4. Data not being sent correctly (text vs binary)
 
-**Solutions:**
+**Debugging Steps:**
+
+**1. Check Router Logs:**
 ```bash
-# Check router logs
-logread | grep -i ssh
+# SSH into router
+ssh root@router-ip
 
-# Test PTY availability on router
+# Check if bridge received ssh-start
+logread | grep -i ssh
+# Should see: "Received: ssh-start" and "SSH session started: {sessionId}"
+
+# Check bridge process output directly
+ps aux | grep bridge.py
+# Or check service logs
+/etc/init.d/spotfi-bridge status
+```
+
+**2. Test PTY Availability:**
+```bash
+# On router, test if PTY module is available
 python3 -c "import pty; print('PTY available')"
 
-# Check if bridge is receiving messages
-# Look for "Received: ssh-start" in logs
+# If error, install full Python package:
+opkg update
+opkg install python3-full
+# Then restart bridge service
+/etc/init.d/spotfi-bridge restart
+```
+
+**3. Verify SSH Session Creation:**
+```bash
+# On router, check if session was created
+# Look for these log messages:
+# - "Received: ssh-start"
+# - "PTY created for session {sessionId}"
+# - "SSH session started: {sessionId}, PID: {pid}"
+```
+
+**4. Test Data Flow:**
+```bash
+# When you send a command, check router logs for:
+# - "Received: ssh-data"
+# - "Received {N} bytes for session {sessionId}"
+# - "Wrote {N} bytes to PTY"
+# - "Sent {N} bytes from PTY"
+```
+
+**5. Postman Data Format:**
+- **Important:** In Postman, when sending commands:
+  - Use **Binary** message type (not Text)
+  - Send actual bytes: `65 63 68 6F 20 22 74 65 73 74 22 0A` (hex for `echo "test"\n`)
+  - Or use Text mode but ensure newline is included: `echo "test"` + Enter key
+
+**6. Check Backend Logs:**
+```bash
+# Should see:
+# - "Pinging router {id} before SSH session creation..."
+# - "Router {id} is responsive"
+# - "SSH session start sent to router: {sessionId}"
+# - "SSH tunnel established: {sessionId}"
+```
+
+**Quick Fix:**
+If PTY is not available, install full Python:
+```bash
+opkg update
+opkg install python3-full
+/etc/init.d/spotfi-bridge restart
 ```
 
 ### Issue: "PTY module not available"

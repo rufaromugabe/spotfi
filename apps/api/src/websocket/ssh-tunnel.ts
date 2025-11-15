@@ -80,15 +80,17 @@ export class SshTunnelManager {
     }
 
     // Ping router to verify it's responsive
-    logger.info(`Pinging router ${routerId} before SSH session creation...`);
-    const isResponsive = await this.pingRouter(routerSocket, routerId, 5000);
+    logger.info(`[SSH] Pinging router ${routerId} before SSH session creation...`);
+    const pingStartTime = Date.now();
+    const isResponsive = await this.pingRouter(routerSocket, routerId, 3000);
+    const pingDuration = Date.now() - pingStartTime;
     
     if (!isResponsive) {
-      logger.warn(`Router ${routerId} did not respond to ping, rejecting SSH connection`);
+      logger.warn(`[SSH] Router ${routerId} did not respond to ping after ${pingDuration}ms, rejecting SSH connection`);
       throw new Error('Router is not responding');
     }
 
-    logger.info(`Router ${routerId} is responsive, proceeding with SSH session creation`);
+    logger.info(`[SSH] Router ${routerId} is responsive (ping: ${pingDuration}ms), proceeding with SSH session creation`);
 
     // Verify user has access to router
     const router = await prisma.router.findFirst({
@@ -112,16 +114,17 @@ export class SshTunnelManager {
     );
 
     this.sessions.set(sessionId, session);
+    logger.debug(`[SSH] Active sessions: ${this.sessions.size}`);
 
     // Cleanup on timeout
     setTimeout(() => {
       if (this.sessions.has(sessionId)) {
-        logger.info(`SSH session ${sessionId} timed out`);
+        logger.info(`[SSH] SSH session ${sessionId} timed out after ${this.SESSION_TIMEOUT / 1000}s`);
         session.close();
       }
     }, this.SESSION_TIMEOUT);
 
-    logger.info(`SSH tunnel session created: ${sessionId} for router ${routerId}`);
+    logger.info(`[SSH] SSH tunnel session created: ${sessionId} for router ${routerId}`);
     return session;
   }
 
@@ -140,6 +143,9 @@ export class SshTunnelManager {
     if (session) {
       session.close();
       this.sessions.delete(sessionId);
+      // Note: logger is not available in static context, but session.close() will log
+    } else {
+      // Session not found - might already be closed
     }
   }
 
@@ -203,15 +209,19 @@ export class SshTunnelSession {
   private setupClientHandlers(): void {
     // Forward data from frontend to router
     this.clientSocket.on('message', (data: Buffer | string) => {
-      if (this.isClosed) return;
+      if (this.isClosed) {
+        this.logger.debug(`[SSH ${this.sessionId}] Ignoring message from client (session closed)`);
+        return;
+      }
 
       try {
         // Convert to Buffer if string (shouldn't happen with xterm.js, but be safe)
         const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+        this.logger.debug(`[SSH ${this.sessionId}] Received ${buffer.length} bytes from client, forwarding to router`);
         // Send SSH data to router
         this.sendToRouter(buffer);
       } catch (error) {
-        this.logger.error(`Error forwarding client data: ${error}`);
+        this.logger.error(`[SSH ${this.sessionId}] Error forwarding client data: ${error}`);
         this.close();
       }
     });
@@ -240,10 +250,12 @@ export class SshTunnelSession {
         timestamp: new Date().toISOString()
       };
 
-      this.routerSocket.send(JSON.stringify(startCommand));
-      this.logger.info(`SSH session start sent to router: ${this.sessionId}`);
+      const commandStr = JSON.stringify(startCommand);
+      this.logger.info(`[SSH ${this.sessionId}] Sending ssh-start command to router`);
+      this.logger.debug(`[SSH ${this.sessionId}] Start command: ${commandStr}`);
+      this.routerSocket.send(commandStr);
     } catch (error) {
-      this.logger.error(`Error starting SSH session: ${error}`);
+      this.logger.error(`[SSH ${this.sessionId}] Error starting SSH session: ${error}`);
       this.close();
     }
   }
@@ -253,6 +265,7 @@ export class SshTunnelSession {
    */
   private sendToRouter(data: Buffer): void {
     if (this.routerSocket.readyState !== WebSocket.OPEN) {
+      this.logger.warn(`[SSH ${this.sessionId}] Router socket not open (state: ${this.routerSocket.readyState})`);
       throw new Error('Router socket not open');
     }
 
@@ -263,7 +276,9 @@ export class SshTunnelSession {
       data: data.toString('base64') // Base64 encode binary data
     };
 
-    this.routerSocket.send(JSON.stringify(message));
+    const messageStr = JSON.stringify(message);
+    this.logger.debug(`[SSH ${this.sessionId}] Sending ${data.length} bytes to router (encoded: ${messageStr.length} chars)`);
+    this.routerSocket.send(messageStr);
   }
 
   /**
@@ -271,15 +286,22 @@ export class SshTunnelSession {
    * Called by connection handler when router sends SSH data
    */
   public sendToClient(data: Buffer): void {
-    if (this.isClosed || this.clientSocket.readyState !== WebSocket.OPEN) {
+    if (this.isClosed) {
+      this.logger.debug(`[SSH ${this.sessionId}] Ignoring data to client (session closed)`);
+      return;
+    }
+
+    if (this.clientSocket.readyState !== WebSocket.OPEN) {
+      this.logger.warn(`[SSH ${this.sessionId}] Client socket not open (state: ${this.clientSocket.readyState}), cannot send ${data.length} bytes`);
       return;
     }
 
     try {
       // Send binary data directly to frontend (xterm.js expects binary)
+      this.logger.debug(`[SSH ${this.sessionId}] Sending ${data.length} bytes to client`);
       this.clientSocket.send(data);
     } catch (error) {
-      this.logger.error(`Error sending data to client: ${error}`);
+      this.logger.error(`[SSH ${this.sessionId}] Error sending data to client: ${error}`);
       this.close();
     }
   }
@@ -288,8 +310,12 @@ export class SshTunnelSession {
    * Close SSH session
    */
   public close(): void {
-    if (this.isClosed) return;
+    if (this.isClosed) {
+      this.logger.debug(`[SSH ${this.sessionId}] Session already closed`);
+      return;
+    }
     this.isClosed = true;
+    this.logger.info(`[SSH ${this.sessionId}] Closing SSH session`);
 
     try {
       // Send SSH stop command to router
@@ -299,18 +325,24 @@ export class SshTunnelSession {
           sessionId: this.sessionId,
           timestamp: new Date().toISOString()
         };
+        this.logger.debug(`[SSH ${this.sessionId}] Sending ssh-stop command to router`);
         this.routerSocket.send(JSON.stringify(stopCommand));
+      } else {
+        this.logger.debug(`[SSH ${this.sessionId}] Router socket not open, skipping ssh-stop`);
       }
 
       // Close client connection
       if (this.clientSocket.readyState === WebSocket.OPEN) {
+        this.logger.debug(`[SSH ${this.sessionId}] Closing client socket`);
         this.clientSocket.close();
+      } else {
+        this.logger.debug(`[SSH ${this.sessionId}] Client socket already closed (state: ${this.clientSocket.readyState})`);
       }
     } catch (error) {
-      this.logger.error(`Error closing SSH session: ${error}`);
+      this.logger.error(`[SSH ${this.sessionId}] Error closing SSH session: ${error}`);
     }
 
-    this.logger.info(`SSH session closed: ${this.sessionId}`);
+    this.logger.info(`[SSH ${this.sessionId}] SSH session closed`);
   }
 }
 

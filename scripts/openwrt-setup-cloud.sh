@@ -331,8 +331,21 @@ class SpotFiBridge:
             self.handle_ssh_stop(data)
         
         try:
+            # Check if PTY is available
+            try:
+                import pty
+            except ImportError:
+                print(f"Error: PTY module not available. Install python3-full: opkg install python3-full", file=sys.stderr)
+                self.send_message({
+                    'type': 'ssh-error',
+                    'sessionId': session_id,
+                    'error': 'PTY module not available. Install python3-full package.'
+                })
+                return
+            
             # Create PTY (pseudo-terminal)
             master_fd, slave_fd = pty.openpty()
+            print(f"PTY created for session {session_id}: master={master_fd}, slave={slave_fd}")
             
             # Spawn shell process attached to slave PTY
             # Use /bin/sh as it's available on all OpenWrt systems
@@ -374,7 +387,14 @@ class SpotFiBridge:
                 'thread': read_thread
             }
             
-            print(f"SSH session started: {session_id}")
+            print(f"SSH session started: {session_id}, PID: {process.pid}, Shell: {shell}")
+            
+            # Send confirmation to server
+            self.send_message({
+                'type': 'ssh-started',
+                'sessionId': session_id,
+                'status': 'ready'
+            })
         except Exception as e:
             print(f"Error starting SSH session: {e}", file=sys.stderr)
             if 'master_fd' in locals():
@@ -403,11 +423,13 @@ class SpotFiBridge:
                         if data:
                             # Send data to server (base64 encoded as backend expects)
                             import base64
+                            encoded_data = base64.b64encode(data).decode('ascii')
                             self.send_message({
                                 'type': 'ssh-data',
                                 'sessionId': session_id,
-                                'data': base64.b64encode(data).decode('ascii')
+                                'data': encoded_data
                             })
+                            print(f"Sent {len(data)} bytes from PTY for session {session_id}")
                 except OSError:
                     # PTY closed
                     break
@@ -442,12 +464,14 @@ class SpotFiBridge:
             import base64
             try:
                 binary_data = base64.b64decode(ssh_data)
+                print(f"Received {len(binary_data)} bytes for session {session_id}")
             except Exception as e:
                 print(f"Error decoding base64 SSH data: {e}", file=sys.stderr)
                 return
             
             # Write to PTY
-            os.write(master_fd, binary_data)
+            written = os.write(master_fd, binary_data)
+            print(f"Wrote {written} bytes to PTY for session {session_id}")
         except Exception as e:
             print(f"Error writing to SSH session: {e}", file=sys.stderr)
             self._cleanup_ssh_session(session_id)

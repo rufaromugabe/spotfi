@@ -99,6 +99,7 @@ export class RouterConnectionHandler {
     this.socket.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString());
+        this.logger.debug(`[Router ${this.routerId}] Received message type: ${message.type}`);
         
         switch (message.type) {
           case 'metrics':
@@ -112,11 +113,21 @@ export class RouterConnectionHandler {
             this.handleSshData(message);
             break;
 
+          case 'ssh-started':
+            // Router confirmed SSH session started
+            this.logger.info(`[Router ${this.routerId}] SSH session ${message.sessionId} confirmed started by router`);
+            break;
+
+          case 'ssh-error':
+            // Router reported SSH error
+            this.logger.error(`[Router ${this.routerId}] SSH error for session ${message.sessionId}: ${message.error}`);
+            break;
+
           default:
-            this.logger.warn(`Unknown message type: ${message.type}`);
+            this.logger.warn(`[Router ${this.routerId}] Unknown message type: ${message.type}`);
         }
       } catch (error) {
-        this.logger.error(`Message handling error: ${error}`);
+        this.logger.error(`[Router ${this.routerId}] Message handling error: ${error}`);
       }
     });
 
@@ -220,22 +231,25 @@ export class RouterConnectionHandler {
       const { sessionId, data } = message;
       
       if (!sessionId || !data) {
-        this.logger.warn(`Invalid SSH data message: missing sessionId or data`);
+        this.logger.warn(`[Router ${this.routerId}] Invalid SSH data message: missing sessionId or data`);
         return;
       }
+
+      this.logger.debug(`[Router ${this.routerId}] Received ssh-data from router for session ${sessionId} (data length: ${typeof data === 'string' ? data.length : 'unknown'})`);
 
       // Get SSH session
       const session = SshTunnelManager.getSession(sessionId);
       if (!session) {
-        this.logger.warn(`SSH session not found: ${sessionId}`);
+        this.logger.warn(`[Router ${this.routerId}] SSH session not found: ${sessionId}`);
         return;
       }
 
       // Decode base64 data and forward to frontend client
       const binaryData = Buffer.from(data, 'base64');
+      this.logger.debug(`[Router ${this.routerId}] Decoded ${binaryData.length} bytes from router, forwarding to client session ${sessionId}`);
       session.sendToClient(binaryData);
     } catch (error) {
-      this.logger.error(`Error handling SSH data: ${error}`);
+      this.logger.error(`[Router ${this.routerId}] Error handling SSH data: ${error}`);
     }
   }
 

@@ -111,15 +111,17 @@ export function setupWebSocket(fastify: FastifyInstance) {
         // Create SSH tunnel session (includes ping verification)
         let session;
         try {
+          fastify.log.debug(`[SSH] Creating SSH session for router ${routerId}, user ${user.userId}`);
           session = await SshTunnelManager.createSession(
             routerId,
             connection,
             user.userId,
             fastify.log
           );
+          fastify.log.info(`[SSH] SSH tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
         } catch (error: any) {
           const errorMessage = error.message || 'Failed to create SSH session';
-          fastify.log.error(`SSH session creation failed: ${errorMessage}`);
+          fastify.log.error(`[SSH] SSH session creation failed for router ${routerId}: ${errorMessage}`);
           
           // Use valid WebSocket close codes (1000-1015 are standard)
           // 1011 = Internal Error (for router not responding/offline)
@@ -127,19 +129,18 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        fastify.log.info(`SSH tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
-
         // Cleanup on disconnect
-        connection.on('close', () => {
+        connection.on('close', (code, reason) => {
+          fastify.log.info(`[SSH] Client disconnected: session ${session.sessionId}, code: ${code}, reason: ${reason?.toString() || 'none'}`);
           SshTunnelManager.closeSession(session.sessionId);
         });
 
         connection.on('error', (error) => {
-          fastify.log.error(`SSH tunnel error: ${error}`);
+          fastify.log.error(`[SSH] SSH tunnel error for session ${session.sessionId}: ${error}`);
           SshTunnelManager.closeSession(session.sessionId);
         });
       } catch (error) {
-        fastify.log.error(`SSH tunnel setup failed: ${error}`);
+        fastify.log.error(`[SSH] SSH tunnel setup failed: ${error}`);
         connection.close(1011, 'Setup failed');
       }
     });
