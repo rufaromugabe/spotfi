@@ -104,7 +104,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
         // Check if router is online
         const routerSocket = activeConnections.get(routerId);
         if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-          connection.close(503, 'Router is offline');
+          connection.close(1011, 'Router is offline');
           return;
         }
 
@@ -121,11 +121,9 @@ export function setupWebSocket(fastify: FastifyInstance) {
           const errorMessage = error.message || 'Failed to create SSH session';
           fastify.log.error(`SSH session creation failed: ${errorMessage}`);
           
-          if (errorMessage.includes('not responding') || errorMessage.includes('offline')) {
-            connection.close(503, errorMessage);
-          } else {
-            connection.close(1011, errorMessage);
-          }
+          // Use valid WebSocket close codes (1000-1015 are standard)
+          // 1011 = Internal Error (for router not responding/offline)
+          connection.close(1011, errorMessage);
           return;
         }
 
