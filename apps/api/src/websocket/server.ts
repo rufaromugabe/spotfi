@@ -45,6 +45,15 @@ export function setupWebSocket(fastify: FastifyInstance) {
         handler.setupMessageHandlers();
         handler.sendWelcome();
         activeConnections.set(routerId, connection);
+
+        // Clean up on disconnect
+        connection.on('close', () => {
+          activeConnections.delete(routerId);
+        });
+
+        connection.on('error', () => {
+          activeConnections.delete(routerId);
+        });
       } catch (error) {
         fastify.log.error(`Connection setup failed: ${error}`);
         connection.close(1011, 'Setup failed');
