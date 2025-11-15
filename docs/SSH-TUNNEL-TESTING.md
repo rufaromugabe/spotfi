@@ -431,13 +431,50 @@ opkg install python3-full
 ```
 
 **4. Test Data Flow:**
+
+**On Server (Backend Logs):**
 ```bash
-# When you send a command, check router logs for:
-# - "Received: ssh-data"
-# - "Received {N} bytes for session {sessionId}"
-# - "Wrote {N} bytes to PTY"
-# - "Sent {N} bytes from PTY"
+# Watch server logs in real-time
+# You should see when data flows:
+
+# When you send a command from Postman:
+[SSH {sessionId}] Received X bytes from client, forwarding to router
+[SSH {sessionId}] Sending X bytes to router (encoded: Y chars)
+
+# When router responds:
+[Router {id}] Received message type: ssh-data
+[Router {id}] Received ssh-data from router for session {sessionId} (data length: Z)
+[Router {id}] Decoded X bytes from router, forwarding to client session {sessionId}
+[SSH {sessionId}] Sending X bytes to client
 ```
+
+**On Router:**
+```bash
+# SSH into router
+ssh root@router-ip
+
+# Check logs in real-time
+logread -f | grep -i ssh
+
+# Or check bridge process output directly
+tail -f /var/log/spotfi-bridge.log  # if logging to file
+# Or check system logs
+logread | grep -i "ssh\|bridge"
+
+# When you send a command, you should see:
+Received: ssh-data
+Received {N} bytes for session {sessionId}
+Wrote {N} bytes to PTY
+
+# When router responds:
+Sent {N} bytes from PTY for session {sessionId}
+```
+
+**Quick Test - Send a command and watch logs:**
+1. Open server logs in one terminal
+2. Open router logs in another terminal (or SSH session)
+3. Send command from Postman
+4. Watch both logs simultaneously to see data flow
 
 **5. Postman Data Format:**
 - **Important:** In Postman, when sending commands:
@@ -602,6 +639,13 @@ If you encounter issues:
 3. Verify prerequisites are met
 4. Test with Postman first (simplest method)
 5. Check network connectivity
+
+---
+
+## 📚 Additional Resources
+
+- **🔍 [SSH Debugging Guide](SSH-DEBUGGING.md)** - Detailed data flow debugging and troubleshooting
+- **📖 [OpenWRT Setup Guide](OPENWRT-SETUP.md)** - Router setup instructions
 
 ---
 

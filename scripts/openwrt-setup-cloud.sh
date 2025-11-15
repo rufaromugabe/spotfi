@@ -327,8 +327,13 @@ class SpotFiBridge:
             return
         
         if session_id in self.ssh_sessions:
-            print(f"Warning: SSH session {session_id} already exists", file=sys.stderr)
-            self.handle_ssh_stop(data)
+            print(f"Warning: SSH session {session_id} already exists, cleaning up first", file=sys.stderr)
+            self._cleanup_ssh_session(session_id)
+        
+        master_fd = None
+        slave_fd = None
+        process = None
+        read_thread = None
         
         try:
             # Check if PTY is available
@@ -350,14 +355,27 @@ class SpotFiBridge:
             # Spawn shell process attached to slave PTY
             # Use /bin/sh as it's available on all OpenWrt systems
             shell = os.environ.get('SHELL', '/bin/sh')
-            process = subprocess.Popen(
-                [shell],
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True,
-                preexec_fn=os.setsid
-            )
+            
+            # Try to use setsid, but fallback if not available (some OpenWrt systems)
+            try:
+                process = subprocess.Popen(
+                    [shell],
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    start_new_session=True,
+                    preexec_fn=os.setsid
+                )
+            except (AttributeError, OSError):
+                # Fallback if setsid not available
+                print(f"Warning: os.setsid not available, using fallback", file=sys.stderr)
+                process = subprocess.Popen(
+                    [shell],
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    start_new_session=True
+                )
             
             # Close slave_fd in parent (we use master_fd)
             os.close(slave_fd)
@@ -380,7 +398,7 @@ class SpotFiBridge:
             )
             read_thread.start()
             
-            # Store session
+            # Store session BEFORE sending confirmation (important!)
             self.ssh_sessions[session_id] = {
                 'master_fd': master_fd,
                 'process': process,
@@ -388,6 +406,7 @@ class SpotFiBridge:
             }
             
             print(f"SSH session started: {session_id}, PID: {process.pid}, Shell: {shell}")
+            print(f"SSH session stored. Total active sessions: {len(self.ssh_sessions)}")
             
             # Send confirmation to server
             self.send_message({
@@ -397,11 +416,32 @@ class SpotFiBridge:
             })
         except Exception as e:
             print(f"Error starting SSH session: {e}", file=sys.stderr)
-            if 'master_fd' in locals():
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
+            
+            # Cleanup on error
+            if master_fd is not None:
                 try:
                     os.close(master_fd)
                 except:
                     pass
+            if slave_fd is not None:
+                try:
+                    os.close(slave_fd)
+                except:
+                    pass
+            if process is not None:
+                try:
+                    process.terminate()
+                except:
+                    pass
+            
+            # Send error to server
+            self.send_message({
+                'type': 'ssh-error',
+                'sessionId': session_id,
+                'error': str(e)
+            })
     
     def _ssh_read_pty(self, session_id, master_fd):
         """Read from PTY and send to WebSocket"""
@@ -453,7 +493,10 @@ class SpotFiBridge:
             return
         
         if session_id not in self.ssh_sessions:
-            print(f"Warning: SSH session {session_id} not found", file=sys.stderr)
+            print(f"Warning: SSH session {session_id} not found. Active sessions: {list(self.ssh_sessions.keys())}", file=sys.stderr)
+            # Try to list what sessions exist for debugging
+            if len(self.ssh_sessions) > 0:
+                print(f"Available sessions: {', '.join(self.ssh_sessions.keys())}", file=sys.stderr)
             return
         
         try:
