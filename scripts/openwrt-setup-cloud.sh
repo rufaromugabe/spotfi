@@ -108,7 +108,6 @@ import time
 import subprocess
 import os
 import sys
-import threading
 from dotenv import dotenv_values
 
 def load_config():
@@ -155,9 +154,8 @@ class SpotFiBridge:
     def __init__(self):
         self.ws = None
         self.running = True
-        self.connection_error = False
-        self.error_count = 0
-        self.last_error_time = 0
+        self.connected = False
+        self.connection_start_time = 0
         
     def get_router_metrics(self):
         """Get router metrics"""
@@ -205,31 +203,23 @@ class SpotFiBridge:
     
     def on_error(self, ws, error):
         print(f"WebSocket error: {error}", file=sys.stderr)
-        self.connection_error = True
-        self.error_count += 1
-        current_time = time.time()
-        
-        # If we get multiple errors quickly (connection failing repeatedly), force close
-        if self.error_count >= 3 and (current_time - self.last_error_time) < 10:
-            print("Multiple connection errors detected, forcing reconnection...", file=sys.stderr)
+        # If we've been trying to connect for more than 30 seconds without success, force reconnection
+        if not self.connected and time.time() - self.connection_start_time > 30:
+            print("Connection timeout, forcing reconnection...", file=sys.stderr)
             try:
                 if self.ws:
                     self.ws.close()
             except:
                 pass
-        
-        self.last_error_time = current_time
     
     def on_close(self, ws, close_status_code, close_msg):
+        self.connected = False
         if self.running:
             print(f"WebSocket closed (code: {close_status_code}). Will reconnect...")
-            self.connection_error = False
-            self.error_count = 0
     
     def on_open(self, ws):
         print("✓ WebSocket connected")
-        self.connection_error = False
-        self.error_count = 0
+        self.connected = True
         self.send_metrics()
     
     def send_message(self, data):
@@ -248,8 +238,8 @@ class SpotFiBridge:
         url = f"{WS_URL}?id={ROUTER_ID}&token={TOKEN}&mac={MAC}"
         print(f"Connecting to {WS_URL}...")
         
-        self.connection_error = False
-        self.error_count = 0
+        self.connected = False
+        self.connection_start_time = time.time()
         self.ws = websocket.WebSocketApp(
             url,
             on_message=self.on_message,
@@ -258,31 +248,14 @@ class SpotFiBridge:
             on_open=self.on_open
         )
         
-        # Run with timeout to allow reconnection on persistent errors
-        # Use a thread to monitor for persistent connection failures
-        def monitor_connection():
-            time.sleep(15)  # Wait 15 seconds
-            if self.error_count >= 3 and not (self.ws and self.ws.sock and self.ws.sock.connected):
-                print("Connection failed after multiple attempts, forcing reconnection...", file=sys.stderr)
-                self.connection_error = True
-                try:
-                    if self.ws:
-                        self.ws.close()
-                except:
-                    pass
-        
-        monitor_thread = threading.Thread(target=monitor_connection, daemon=True)
-        monitor_thread.start()
-        
         try:
             self.ws.run_forever(ping_interval=30, ping_timeout=10)
         except Exception as e:
             print(f"run_forever exception: {e}", file=sys.stderr)
-            self.connection_error = True
         
-        # If connection error occurred or too many errors, raise to trigger reconnection
-        if self.connection_error or self.error_count >= 3:
-            raise Exception("Connection error detected, reconnecting...")
+        # If we never connected, raise to trigger reconnection
+        if not self.connected:
+            raise Exception("Connection failed, reconnecting...")
     
     def start(self):
         print("SpotFi Bridge starting...")
