@@ -311,53 +311,71 @@ class SpotFiBridge:
         print(f"WebSocket error: {error}", file=sys.stderr)
     
     def on_close(self, ws, close_status_code, close_msg):
-        print("WebSocket closed. Reconnecting in 5s...")
-        time.sleep(5)
         if self.running:
-            self.connect()
+            print(f"WebSocket closed (code: {close_status_code}). Reconnecting in 5s...")
+            # Don't reconnect here - let the start() loop handle it
+            # This prevents nested reconnection attempts
     
     def on_open(self, ws):
         print("✓ WebSocket connected")
         self.send_metrics()
     
     def send_message(self, data):
-        if self.ws and self.ws.sock and self.ws.sock.connected:
-            self.ws.send(json.dumps(data))
+        try:
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                self.ws.send(json.dumps(data))
+        except Exception as e:
+            print(f"Error sending message: {e}", file=sys.stderr)
     
     def send_metrics(self):
-        metrics = self.get_router_metrics()
-        if metrics:
-            self.send_message({'type': 'metrics', 'metrics': metrics})
+        try:
+            metrics = self.get_router_metrics()
+            if metrics:
+                self.send_message({'type': 'metrics', 'metrics': metrics})
+        except Exception as e:
+            print(f"Error sending metrics: {e}", file=sys.stderr)
     
     def connect(self):
         # Double-check environment variables before connecting
         if not ROUTER_ID or not TOKEN or not MAC or not WS_URL:
             print("Error: Environment variables not set. Cannot connect.", file=sys.stderr)
-            sys.exit(1)
+            raise Exception("Environment variables not set")
         
         url = f"{WS_URL}?id={ROUTER_ID}&token={TOKEN}&mac={MAC}"
         print(f"Connecting to {WS_URL}...")
         
-        self.ws = websocket.WebSocketApp(
-            url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open
-        )
-        self.ws.run_forever(ping_interval=60, ping_timeout=10)
+        try:
+            self.ws = websocket.WebSocketApp(
+                url,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                on_open=self.on_open
+            )
+            # Use run_forever with better error handling
+            self.ws.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            print(f"Connection error: {e}", file=sys.stderr)
+            raise
     
     def start(self):
         print("SpotFi Bridge starting...")
         print(f"Router ID: {ROUTER_ID}")
+        reconnect_delay = 5
+        max_reconnect_delay = 60
+        
         while self.running:
             try:
                 self.connect()
             except KeyboardInterrupt:
                 self.running = False
+                break
             except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
-                time.sleep(10)
+                print(f"Connection failed: {e}", file=sys.stderr)
+                print(f"Reconnecting in {reconnect_delay}s...")
+                time.sleep(reconnect_delay)
+                # Exponential backoff, but cap at max_reconnect_delay
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
 if __name__ == '__main__':
     # Validate environment variables before starting
