@@ -407,8 +407,11 @@ start_service() {
         exit 1
     fi
     
-    # Source environment file
-    . /etc/spotfi.env
+    # Read environment variables directly from file (more reliable than sourcing)
+    SPOTFI_ROUTER_ID=$(grep "^export SPOTFI_ROUTER_ID=" /etc/spotfi.env | cut -d'"' -f2)
+    SPOTFI_TOKEN=$(grep "^export SPOTFI_TOKEN=" /etc/spotfi.env | cut -d'"' -f2)
+    SPOTFI_MAC=$(grep "^export SPOTFI_MAC=" /etc/spotfi.env | cut -d'"' -f2)
+    SPOTFI_WS_URL=$(grep "^export SPOTFI_WS_URL=" /etc/spotfi.env | cut -d'"' -f2)
     
     # Validate all required environment variables
     MISSING_VARS=""
