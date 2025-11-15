@@ -12,6 +12,59 @@ export class SshTunnelManager {
   private static readonly SESSION_TIMEOUT = 3600000; // 1 hour
 
   /**
+   * Ping router to verify it's responsive before creating SSH session
+   * Uses native WebSocket ping/pong for reliable connectivity check
+   */
+  private static async pingRouter(
+    routerSocket: WebSocket,
+    routerId: string,
+    timeout: number = 3000
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      // Check socket state first
+      if (routerSocket.readyState !== WebSocket.OPEN) {
+        resolve(false);
+        return;
+      }
+
+      let responded = false;
+      
+      // Set timeout
+      const timeoutId = setTimeout(() => {
+        if (!responded) {
+          responded = true;
+          routerSocket.removeListener('pong', pongHandler);
+          resolve(false);
+        }
+      }, timeout);
+
+      // Listen for native WebSocket pong response
+      const pongHandler = () => {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeoutId);
+          routerSocket.removeListener('pong', pongHandler);
+          resolve(true);
+        }
+      };
+
+      routerSocket.once('pong', pongHandler);
+
+      // Send native WebSocket ping
+      try {
+        routerSocket.ping();
+      } catch (error) {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeoutId);
+          routerSocket.removeListener('pong', pongHandler);
+          resolve(false);
+        }
+      }
+    });
+  }
+
+  /**
    * Create a new SSH tunnel session
    */
   static async createSession(
@@ -25,6 +78,17 @@ export class SshTunnelManager {
     if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
       throw new Error('Router is offline');
     }
+
+    // Ping router to verify it's responsive
+    logger.info(`Pinging router ${routerId} before SSH session creation...`);
+    const isResponsive = await this.pingRouter(routerSocket, routerId, 5000);
+    
+    if (!isResponsive) {
+      logger.warn(`Router ${routerId} did not respond to ping, rejecting SSH connection`);
+      throw new Error('Router is not responding');
+    }
+
+    logger.info(`Router ${routerId} is responsive, proceeding with SSH session creation`);
 
     // Verify user has access to router
     const router = await prisma.router.findFirst({

@@ -108,13 +108,26 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Create SSH tunnel session
-        const session = await SshTunnelManager.createSession(
-          routerId,
-          connection,
-          user.userId,
-          fastify.log
-        );
+        // Create SSH tunnel session (includes ping verification)
+        let session;
+        try {
+          session = await SshTunnelManager.createSession(
+            routerId,
+            connection,
+            user.userId,
+            fastify.log
+          );
+        } catch (error: any) {
+          const errorMessage = error.message || 'Failed to create SSH session';
+          fastify.log.error(`SSH session creation failed: ${errorMessage}`);
+          
+          if (errorMessage.includes('not responding') || errorMessage.includes('offline')) {
+            connection.close(503, errorMessage);
+          } else {
+            connection.close(1011, errorMessage);
+          }
+          return;
+        }
 
         fastify.log.info(`SSH tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
 
