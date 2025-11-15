@@ -356,6 +356,13 @@ class SpotFiBridge:
             # Use /bin/sh as it's available on all OpenWrt systems
             shell = os.environ.get('SHELL', '/bin/sh')
             
+            # Set environment variables to ensure shell outputs prompt
+            shell_env = os.environ.copy()
+            shell_env['TERM'] = 'xterm-256color'  # Standard terminal type
+            shell_env['HOME'] = '/root'  # Ensure HOME is set
+            shell_env['USER'] = 'root'  # Ensure USER is set
+            shell_env['SHELL'] = shell  # Ensure SHELL is set
+            
             # CRITICAL: Don't use preexec_fn on OpenWrt/BusyBox - it causes "Exception occurred in preexec_fn" error
             # This is because BusyBox's limited shell doesn't support all POSIX features
             # start_new_session=True is sufficient for creating a new process group on OpenWrt
@@ -366,7 +373,8 @@ class SpotFiBridge:
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
-                    start_new_session=True
+                    start_new_session=True,
+                    env=shell_env  # Pass environment variables
                     # NOTE: preexec_fn removed - causes "Exception occurred in preexec_fn" on OpenWrt/BusyBox
                     # If you see this error, it means you're running an old version of bridge.py
                     # Solution: Re-run the setup script to update bridge.py
@@ -394,8 +402,10 @@ class SpotFiBridge:
             try:
                 winsize = struct.pack('HHHH', 24, 80, 0, 0)
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-            except:
-                pass  # Ignore if termios not available
+                print(f"Terminal size set to 80x24 for session {session_id}")
+            except Exception as e:
+                print(f"Warning: Could not set terminal size: {e}", file=sys.stderr)
+                # Continue anyway - basic PTY should still work
             
             # Start thread to read from PTY and send to WebSocket
             read_thread = threading.Thread(
@@ -411,10 +421,12 @@ class SpotFiBridge:
                 raise Exception(f"Shell process died immediately with exit code {process.returncode}")
             
             # Store session BEFORE sending confirmation (important!)
+            import time
             self.ssh_sessions[session_id] = {
                 'master_fd': master_fd,
                 'process': process,
-                'thread': read_thread
+                'thread': read_thread,
+                'start_time': time.time()  # Track when session started for timeout detection
             }
             
             print(f"SSH session started: {session_id}, PID: {process.pid}, Shell: {shell}")
@@ -458,40 +470,81 @@ class SpotFiBridge:
     
     def _ssh_read_pty(self, session_id, master_fd):
         """Read from PTY and send to WebSocket"""
+        print(f"SSH read thread started for session {session_id}, master_fd={master_fd}")
         try:
+            # Force initial shell prompt by sending a command to trigger output
+            # This helps ensure the terminal is ready and outputs the prompt
+            import time
+            time.sleep(0.2)  # Give shell time to initialize
+            
+            # Read any initial output (shell prompt, welcome message, etc.)
+            read_count = 0
             while session_id in self.ssh_sessions:
                 # Check if process is still alive
                 if session_id not in self.ssh_sessions:
+                    print(f"Session {session_id} removed, exiting read thread")
                     break
                 
-                session = self.ssh_sessions[session_id]
+                session = self.ssh_sessions.get(session_id)
+                if not session:
+                    print(f"Session {session_id} not found in sessions dict")
+                    break
+                    
                 if session['process'].poll() is not None:
                     # Process ended
+                    print(f"Shell process for session {session_id} ended with code {session['process'].returncode}")
                     break
                 
                 # Use select to check if data is available (non-blocking)
                 try:
-                    if select.select([master_fd], [], [], 0.1)[0]:
+                    ready_fds, _, _ = select.select([master_fd], [], [], 0.1)
+                    if ready_fds:
                         data = os.read(master_fd, 1024)
                         if data:
+                            read_count += 1
                             # Send data to server (base64 encoded as backend expects)
                             import base64
                             encoded_data = base64.b64encode(data).decode('ascii')
+                            
+                            # Debug: log first few reads to help diagnose
+                            if read_count <= 3:
+                                print(f"[Session {session_id}] Read #{read_count}: {len(data)} bytes, first 50 chars: {repr(data[:50])}")
+                            
                             self.send_message({
                                 'type': 'ssh-data',
                                 'sessionId': session_id,
                                 'data': encoded_data
                             })
-                            print(f"Sent {len(data)} bytes from PTY for session {session_id}")
-                except OSError:
-                    # PTY closed
+                            print(f"[Session {session_id}] Sent {len(data)} bytes to server (total reads: {read_count})")
+                        else:
+                            # No data available
+                            if read_count == 0:
+                                # If we've been waiting and no data, shell might not have output prompt
+                                # This is normal - wait for user input or first command
+                                pass
+                    else:
+                        # No data ready, continue loop
+                        # Periodically check if we should exit
+                        if read_count == 0 and time.time() - session.get('start_time', time.time()) > 5:
+                            # After 5 seconds with no output, log it but continue
+                            print(f"[Session {session_id}] No initial output after 5s - shell may be waiting for input")
+                            session['start_time'] = time.time()  # Reset timer
+                        
+                except OSError as e:
+                    # PTY closed or error
+                    print(f"OSError reading from PTY for session {session_id}: {e}", file=sys.stderr)
                     break
                 except Exception as e:
-                    print(f"Error reading from PTY: {e}", file=sys.stderr)
+                    print(f"Error reading from PTY for session {session_id}: {e}", file=sys.stderr)
+                    import traceback
+                    print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
                     break
         except Exception as e:
-            print(f"Error in SSH read thread: {e}", file=sys.stderr)
+            print(f"Error in SSH read thread for session {session_id}: {e}", file=sys.stderr)
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
         finally:
+            print(f"SSH read thread exiting for session {session_id}")
             # Cleanup session
             if session_id in self.ssh_sessions:
                 self._cleanup_ssh_session(session_id)
