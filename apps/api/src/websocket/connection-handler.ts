@@ -3,6 +3,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { randomBytes } from 'crypto';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
+import { SshTunnelManager } from './ssh-tunnel.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -106,6 +107,11 @@ export class RouterConnectionHandler {
             await this.handleMetrics(message.metrics);
             break;
 
+          case 'ssh-data':
+            // Forward SSH data from router to frontend client
+            this.handleSshData(message);
+            break;
+
           default:
             this.logger.warn(`Unknown message type: ${message.type}`);
         }
@@ -117,6 +123,8 @@ export class RouterConnectionHandler {
     this.socket.on('close', async () => {
       this.cleanup();
       await this.markOffline();
+      // Close all SSH sessions for this router
+      SshTunnelManager.closeRouterSessions(this.routerId);
       this.logger.info(`Router ${this.routerId} disconnected`);
     });
 
@@ -204,6 +212,30 @@ export class RouterConnectionHandler {
         where: { id: this.routerId },
         data: { status: 'ONLINE' }
       }).catch(() => {});
+    }
+  }
+
+  private handleSshData(message: any): void {
+    try {
+      const { sessionId, data } = message;
+      
+      if (!sessionId || !data) {
+        this.logger.warn(`Invalid SSH data message: missing sessionId or data`);
+        return;
+      }
+
+      // Get SSH session
+      const session = SshTunnelManager.getSession(sessionId);
+      if (!session) {
+        this.logger.warn(`SSH session not found: ${sessionId}`);
+        return;
+      }
+
+      // Decode base64 data and forward to frontend client
+      const binaryData = Buffer.from(data, 'base64');
+      session.sendToClient(binaryData);
+    } catch (error) {
+      this.logger.error(`Error handling SSH data: ${error}`);
     }
   }
 

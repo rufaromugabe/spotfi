@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
 import { RouterConnectionHandler } from './connection-handler.js';
+import { SshTunnelManager } from './ssh-tunnel.js';
 import { prisma } from '../lib/prisma.js';
 export const activeConnections = new Map<string, WebSocket>();
 
@@ -56,6 +57,78 @@ export function setupWebSocket(fastify: FastifyInstance) {
         });
       } catch (error) {
         fastify.log.error(`Connection setup failed: ${error}`);
+        connection.close(1011, 'Setup failed');
+      }
+    });
+
+    // SSH Tunnel WebSocket endpoint (for frontend clients)
+    fastify.get('/ssh', { websocket: true }, async (connection, request: any) => {
+      try {
+        // Extract authentication from query params or Authorization header
+        const url = new URL(request.url!, `http://${request.headers.host}`);
+        const routerId = url.searchParams.get('routerId');
+        
+        // Get JWT token from query param or Authorization header
+        let token = url.searchParams.get('token');
+        if (!token) {
+          const authHeader = request.headers.authorization;
+          if (authHeader && authHeader.startsWith('Bearer ')) {
+            token = authHeader.substring(7);
+          }
+        }
+
+        if (!routerId || !token) {
+          connection.close(1008, 'Missing routerId or authentication token');
+          return;
+        }
+
+        // Verify JWT token (user authentication)
+        let user: any;
+        try {
+          const decoded = await fastify.jwt.verify(token);
+          user = decoded;
+        } catch (error) {
+          connection.close(1008, 'Invalid authentication token');
+          return;
+        }
+
+        // Verify router exists and user has access
+        const where = user.role === 'ADMIN' ? { id: routerId } : { id: routerId, hostId: user.userId };
+        const router = await prisma.router.findFirst({ where });
+
+        if (!router) {
+          connection.close(1008, 'Router not found or access denied');
+          return;
+        }
+
+        // Check if router is online
+        const routerSocket = activeConnections.get(routerId);
+        if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
+          connection.close(503, 'Router is offline');
+          return;
+        }
+
+        // Create SSH tunnel session
+        const session = await SshTunnelManager.createSession(
+          routerId,
+          connection,
+          user.userId,
+          fastify.log
+        );
+
+        fastify.log.info(`SSH tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
+
+        // Cleanup on disconnect
+        connection.on('close', () => {
+          SshTunnelManager.closeSession(session.sessionId);
+        });
+
+        connection.on('error', (error) => {
+          fastify.log.error(`SSH tunnel error: ${error}`);
+          SshTunnelManager.closeSession(session.sessionId);
+        });
+      } catch (error) {
+        fastify.log.error(`SSH tunnel setup failed: ${error}`);
         connection.close(1011, 'Setup failed');
       }
     });

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { RouterCreateSchema } from '@spotfi/shared';
 import { randomBytes } from 'crypto';
+import { WebSocket } from 'ws';
 import { activeConnections } from '../websocket/server.js';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
@@ -246,7 +247,15 @@ export async function routerRoutes(fastify: FastifyInstance) {
         properties: {
           command: {
             type: 'string',
-            enum: ['reboot', 'fetch-logs', 'get-status', 'update-config']
+            enum: ['reboot', 'fetch-logs', 'get-status', 'update-config', 'setup-chilli']
+          },
+          params: {
+            type: 'object',
+            description: 'Command parameters (required for setup-chilli)',
+            properties: {
+              radiusIp: { type: 'string', description: 'RADIUS server IP address' },
+              portalUrl: { type: 'string', description: 'Portal URL (optional, defaults to API URL)' }
+            }
           }
         }
       }
@@ -254,26 +263,63 @@ export async function routerRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user as any;
     const { id } = request.params as { id: string };
-    const { command } = request.body as { command: string };
+    const { command, params } = request.body as { command: string; params?: any };
     const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
 
-    const router = await prisma.router.findFirst({ where });
+    const router = await prisma.router.findFirst({ 
+      where,
+      select: {
+        id: true,
+        macAddress: true,
+        radiusSecret: true,
+        hostId: true
+      }
+    });
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
+    // For setup-chilli, require admin and validate params
+    if (command === 'setup-chilli') {
+      if (user.role !== 'ADMIN') {
+        return reply.code(403).send({ error: 'Admin access required for chilli setup' });
+      }
+      if (!params?.radiusIp) {
+        return reply.code(400).send({ error: 'radiusIp parameter is required for setup-chilli' });
+      }
+      if (!router.radiusSecret) {
+        return reply.code(400).send({ error: 'Router missing RADIUS secret' });
+      }
+      if (!router.macAddress) {
+        return reply.code(400).send({ error: 'Router missing MAC address' });
+      }
+    }
+
     const socket = activeConnections.get(id);
-    if (!socket || socket.readyState !== socket.OPEN) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       return reply.code(503).send({ error: 'Router offline' });
     }
 
-    socket.send(JSON.stringify({
+    const commandPayload: any = {
       type: 'command',
       command,
       timestamp: new Date().toISOString()
-    }));
+    };
 
-    return { message: 'Command sent', command };
+    // Add parameters for setup-chilli command
+    if (command === 'setup-chilli') {
+      commandPayload.params = {
+        routerId: router.id,
+        radiusSecret: router.radiusSecret,
+        macAddress: router.macAddress,
+        radiusIp: params.radiusIp,
+        portalUrl: params.portalUrl || process.env.API_URL || 'https://api.spotfi.com'
+      };
+    }
+
+    socket.send(JSON.stringify(commandPayload));
+
+    return { message: 'Command sent', command, ...(command === 'setup-chilli' && { params: { radiusIp: params.radiusIp } }) };
   });
 
   // Get router statistics

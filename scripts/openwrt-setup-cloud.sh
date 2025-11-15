@@ -108,6 +108,9 @@ import time
 import subprocess
 import os
 import sys
+import threading
+import pty
+import select
 from dotenv import dotenv_values
 
 def load_config():
@@ -156,6 +159,7 @@ class SpotFiBridge:
         self.running = True
         self.connected = False
         self.connection_start_time = 0
+        self.ssh_sessions = {}  # sessionId -> {'master_fd': int, 'process': subprocess.Popen, 'thread': threading.Thread}
         
     def get_router_metrics(self):
         """Get router metrics"""
@@ -187,11 +191,21 @@ class SpotFiBridge:
         print(f"Received: {msg_type}")
         
         if msg_type == 'command':
-            self.handle_command(data.get('command'))
+            command = data.get('command')
+            params = data.get('params', {})
+            self.handle_command(command, params)
         elif msg_type == 'connected':
             print(f"✓ Registered: {data.get('routerId')}")
+        elif msg_type == 'ssh-start':
+            self.handle_ssh_start(data)
+        elif msg_type == 'ssh-data':
+            self.handle_ssh_data(data)
+        elif msg_type == 'ssh-stop':
+            self.handle_ssh_stop(data)
     
-    def handle_command(self, command):
+    def handle_command(self, command, params=None):
+        if params is None:
+            params = {}
         print(f"Executing: {command}")
         if command == 'reboot':
             subprocess.run(['reboot'])
@@ -200,6 +214,283 @@ class SpotFiBridge:
         elif command == 'fetch-logs':
             logs = subprocess.check_output(['logread', '-l', '50']).decode()
             self.send_message({'type': 'logs', 'data': logs})
+        elif command == 'setup-chilli':
+            self.setup_chilli(params)
+    
+    def setup_chilli(self, params):
+        """Download and execute chilli setup script with provided parameters"""
+        try:
+            router_id = params.get('routerId')
+            radius_secret = params.get('radiusSecret')
+            mac_address = params.get('macAddress')
+            radius_ip = params.get('radiusIp')
+            portal_url = params.get('portalUrl', 'https://api.spotfi.com')
+            
+            if not all([router_id, radius_secret, mac_address, radius_ip]):
+                error_msg = "Missing required parameters for chilli setup"
+                print(f"Error: {error_msg}", file=sys.stderr)
+                self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+                return
+            
+            print(f"Setting up CoovaChilli...")
+            print(f"  Router ID: {router_id}")
+            print(f"  RADIUS IP: {radius_ip}")
+            print(f"  Portal URL: {portal_url}")
+            
+            # Download chilli setup script
+            script_url = "https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh"
+            script_path = "/tmp/openwrt-setup-chilli.sh"
+            
+            print(f"Downloading chilli setup script...")
+            result = subprocess.run(
+                ['wget', '-O', script_path, script_url],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"Failed to download script: {result.stderr}"
+                print(f"Error: {error_msg}", file=sys.stderr)
+                self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+                return
+            
+            # Fix line endings and make executable
+            with open(script_path, 'rb') as f:
+                content = f.read().replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            with open(script_path, 'wb') as f:
+                f.write(content)
+            subprocess.run(['chmod', '+x', script_path], check=True)
+            
+            # Execute chilli setup script
+            print(f"Executing chilli setup script...")
+            process = subprocess.Popen(
+                ['sh', script_path, router_id, radius_secret, mac_address, radius_ip, portal_url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Stream output
+            output_lines = []
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    print(line)
+                    output_lines.append(line)
+                    # Send progress updates
+                    if any(keyword in line.lower() for keyword in ['installing', 'configuring', 'complete', 'error']):
+                        self.send_message({
+                            'type': 'command-progress',
+                            'command': 'setup-chilli',
+                            'message': line
+                        })
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                success_msg = "CoovaChilli setup completed successfully"
+                print(f"✓ {success_msg}")
+                self.send_message({
+                    'type': 'command-result',
+                    'command': 'setup-chilli',
+                    'status': 'success',
+                    'message': success_msg,
+                    'output': '\n'.join(output_lines[-20:])  # Last 20 lines
+                })
+            else:
+                error_msg = f"Chilli setup failed with exit code {process.returncode}"
+                print(f"Error: {error_msg}", file=sys.stderr)
+                self.send_message({
+                    'type': 'command-result',
+                    'command': 'setup-chilli',
+                    'status': 'error',
+                    'message': error_msg,
+                    'output': '\n'.join(output_lines[-20:])
+                })
+        except subprocess.TimeoutExpired:
+            error_msg = "Chilli setup timed out"
+            print(f"Error: {error_msg}", file=sys.stderr)
+            self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+        except Exception as e:
+            error_msg = f"Chilli setup error: {str(e)}"
+            print(f"Error: {error_msg}", file=sys.stderr)
+            self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+    
+    def handle_ssh_start(self, data):
+        """Start a new SSH session with PTY"""
+        session_id = data.get('sessionId')
+        if not session_id:
+            print("Error: Missing sessionId in ssh-start", file=sys.stderr)
+            return
+        
+        if session_id in self.ssh_sessions:
+            print(f"Warning: SSH session {session_id} already exists", file=sys.stderr)
+            self.handle_ssh_stop(data)
+        
+        try:
+            # Create PTY (pseudo-terminal)
+            master_fd, slave_fd = pty.openpty()
+            
+            # Spawn shell process attached to slave PTY
+            # Use /bin/sh as it's available on all OpenWrt systems
+            shell = os.environ.get('SHELL', '/bin/sh')
+            process = subprocess.Popen(
+                [shell],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+                preexec_fn=os.setsid
+            )
+            
+            # Close slave_fd in parent (we use master_fd)
+            os.close(slave_fd)
+            
+            # Set terminal size (80x24 default)
+            import struct
+            import fcntl
+            import termios
+            try:
+                winsize = struct.pack('HHHH', 24, 80, 0, 0)
+                fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+            except:
+                pass  # Ignore if termios not available
+            
+            # Start thread to read from PTY and send to WebSocket
+            read_thread = threading.Thread(
+                target=self._ssh_read_pty,
+                args=(session_id, master_fd),
+                daemon=True
+            )
+            read_thread.start()
+            
+            # Store session
+            self.ssh_sessions[session_id] = {
+                'master_fd': master_fd,
+                'process': process,
+                'thread': read_thread
+            }
+            
+            print(f"SSH session started: {session_id}")
+        except Exception as e:
+            print(f"Error starting SSH session: {e}", file=sys.stderr)
+            if 'master_fd' in locals():
+                try:
+                    os.close(master_fd)
+                except:
+                    pass
+    
+    def _ssh_read_pty(self, session_id, master_fd):
+        """Read from PTY and send to WebSocket"""
+        try:
+            while session_id in self.ssh_sessions:
+                # Check if process is still alive
+                if session_id not in self.ssh_sessions:
+                    break
+                
+                session = self.ssh_sessions[session_id]
+                if session['process'].poll() is not None:
+                    # Process ended
+                    break
+                
+                # Use select to check if data is available (non-blocking)
+                try:
+                    if select.select([master_fd], [], [], 0.1)[0]:
+                        data = os.read(master_fd, 1024)
+                        if data:
+                            # Send data to server (base64 encoded as backend expects)
+                            import base64
+                            self.send_message({
+                                'type': 'ssh-data',
+                                'sessionId': session_id,
+                                'data': base64.b64encode(data).decode('ascii')
+                            })
+                except OSError:
+                    # PTY closed
+                    break
+                except Exception as e:
+                    print(f"Error reading from PTY: {e}", file=sys.stderr)
+                    break
+        except Exception as e:
+            print(f"Error in SSH read thread: {e}", file=sys.stderr)
+        finally:
+            # Cleanup session
+            if session_id in self.ssh_sessions:
+                self._cleanup_ssh_session(session_id)
+    
+    def handle_ssh_data(self, data):
+        """Handle incoming SSH data from client"""
+        session_id = data.get('sessionId')
+        ssh_data = data.get('data')
+        
+        if not session_id or ssh_data is None:
+            print("Error: Missing sessionId or data in ssh-data", file=sys.stderr)
+            return
+        
+        if session_id not in self.ssh_sessions:
+            print(f"Warning: SSH session {session_id} not found", file=sys.stderr)
+            return
+        
+        try:
+            session = self.ssh_sessions[session_id]
+            master_fd = session['master_fd']
+            
+            # Decode base64 data (backend always sends base64)
+            import base64
+            try:
+                binary_data = base64.b64decode(ssh_data)
+            except Exception as e:
+                print(f"Error decoding base64 SSH data: {e}", file=sys.stderr)
+                return
+            
+            # Write to PTY
+            os.write(master_fd, binary_data)
+        except Exception as e:
+            print(f"Error writing to SSH session: {e}", file=sys.stderr)
+            self._cleanup_ssh_session(session_id)
+    
+    def handle_ssh_stop(self, data):
+        """Stop SSH session"""
+        session_id = data.get('sessionId')
+        if not session_id:
+            return
+        
+        if session_id in self.ssh_sessions:
+            self._cleanup_ssh_session(session_id)
+            print(f"SSH session stopped: {session_id}")
+    
+    def _cleanup_ssh_session(self, session_id):
+        """Clean up SSH session resources"""
+        if session_id not in self.ssh_sessions:
+            return
+        
+        session = self.ssh_sessions[session_id]
+        
+        try:
+            # Close master FD
+            if 'master_fd' in session:
+                os.close(session['master_fd'])
+        except:
+            pass
+        
+        try:
+            # Terminate process
+            if 'process' in session:
+                process = session['process']
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except:
+                        process.kill()
+        except:
+            pass
+        
+        # Remove from sessions
+        del self.ssh_sessions[session_id]
     
     def on_error(self, ws, error):
         print(f"WebSocket error: {error}", file=sys.stderr)
@@ -214,6 +505,9 @@ class SpotFiBridge:
     
     def on_close(self, ws, close_status_code, close_msg):
         self.connected = False
+        # Cleanup all SSH sessions on disconnect
+        for session_id in list(self.ssh_sessions.keys()):
+            self._cleanup_ssh_session(session_id)
         if self.running:
             print(f"WebSocket closed (code: {close_status_code}). Will reconnect...")
     
