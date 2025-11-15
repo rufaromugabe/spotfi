@@ -362,6 +362,19 @@ class SpotFiBridge:
             shell_env['HOME'] = '/root'  # Ensure HOME is set
             shell_env['USER'] = 'root'  # Ensure USER is set
             shell_env['SHELL'] = shell  # Ensure SHELL is set
+            # Disable job control to suppress "can't access tty; job control turned off" warning
+            # This is normal for PTY-based shells on OpenWrt/BusyBox
+            shell_env['set'] = '+m'  # Disable job control via environment (if shell respects it)
+            
+            # Start shell with job control disabled (+m flag for BusyBox ash)
+            # This suppresses the "can't access tty; job control turned off" warning
+            # BusyBox ash supports the +m flag to disable job control at startup
+            shell_cmd = [shell]
+            # Try to use +m flag if shell is ash/sh (BusyBox ash supports this)
+            if 'ash' in shell or 'sh' in shell:
+                # Start shell with job control disabled
+                # +m disables job control (monitor mode off)
+                shell_cmd = [shell, '+m']
             
             # CRITICAL: Don't use preexec_fn on OpenWrt/BusyBox - it causes "Exception occurred in preexec_fn" error
             # This is because BusyBox's limited shell doesn't support all POSIX features
@@ -369,7 +382,7 @@ class SpotFiBridge:
             # DO NOT ADD preexec_fn=os.setsid or any other preexec_fn - it will fail!
             try:
                 process = subprocess.Popen(
-                    [shell],
+                    shell_cmd,
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
