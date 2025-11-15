@@ -312,10 +312,11 @@ class SpotFiBridge:
         print(f"WebSocket error: {error}", file=sys.stderr)
         # Mark connection as having an error to trigger reconnection
         self.connection_error = True
-        # Close the connection to trigger on_close and reconnection
+        # Close the WebSocketApp to exit run_forever and trigger reconnection
         try:
-            if self.ws and self.ws.sock:
-                self.ws.sock.close()
+            if self.ws:
+                # Close the WebSocketApp which will exit run_forever
+                self.ws.close()
         except:
             pass
     
@@ -366,7 +367,11 @@ class SpotFiBridge:
             )
             # Use run_forever with better error handling
             # If connection_error is set, run_forever will exit and trigger reconnection
-            self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            try:
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                print(f"run_forever exception: {e}", file=sys.stderr)
+                self.connection_error = True
             
             # If we exit run_forever due to an error, raise exception to trigger reconnection
             if self.connection_error:
@@ -507,48 +512,20 @@ start_service() {
         exit 1
     fi
     
-    # Read environment variables directly from file (more reliable than sourcing)
-    # Handle both export VAR="value" and VAR="value" formats
-    SPOTFI_ROUTER_ID=$(grep -E "^export SPOTFI_ROUTER_ID=|^SPOTFI_ROUTER_ID=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_ROUTER_ID="?([^"]+)"?/\2/' | head -1)
-    SPOTFI_TOKEN=$(grep -E "^export SPOTFI_TOKEN=|^SPOTFI_TOKEN=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_TOKEN="?([^"]+)"?/\2/' | head -1)
-    SPOTFI_MAC=$(grep -E "^export SPOTFI_MAC=|^SPOTFI_MAC=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_MAC="?([^"]+)"?/\2/' | head -1)
-    SPOTFI_WS_URL=$(grep -E "^export SPOTFI_WS_URL=|^SPOTFI_WS_URL=" /etc/spotfi.env | sed -E 's/^(export )?SPOTFI_WS_URL="?([^"]+)"?/\2/' | head -1)
-    
-    # Validate all required environment variables
-    MISSING_VARS=""
-    [ -z "$SPOTFI_ROUTER_ID" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_ROUTER_ID"
-    [ -z "$SPOTFI_TOKEN" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_TOKEN"
-    [ -z "$SPOTFI_MAC" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_MAC"
-    [ -z "$SPOTFI_WS_URL" ] && MISSING_VARS="${MISSING_VARS} SPOTFI_WS_URL"
-    
-    if [ -n "$MISSING_VARS" ]; then
-        echo "Error: Missing required environment variables:$MISSING_VARS"
-        echo "Please check /etc/spotfi.env and ensure all variables are set."
-        echo "Run the setup script again to regenerate the configuration."
-        exit 1
-    fi
-    
-    # Validate WebSocket URL format
-    if ! echo "$SPOTFI_WS_URL" | grep -qE '^(ws|wss)://'; then
-        echo "Error: Invalid WebSocket URL format: $SPOTFI_WS_URL"
-        echo "WebSocket URL must start with ws:// or wss://"
-        exit 1
-    fi
-    
     if [ ! -x "$PROG" ]; then
         echo "Error: $PROG not found or not executable"
         exit 1
     fi
     
+    # Bridge reads config from /etc/spotfi.env automatically, no need to pass env vars
+    
     procd_open_instance
+    # Run the bridge directly - it reads from /etc/spotfi.env automatically
+    # No need to pass environment variables since bridge.py loads them from the file
     procd_set_param command /usr/bin/python3 $PROG
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1
-    procd_set_param env SPOTFI_ROUTER_ID="$SPOTFI_ROUTER_ID"
-    procd_set_param env SPOTFI_TOKEN="$SPOTFI_TOKEN"
-    procd_set_param env SPOTFI_MAC="$SPOTFI_MAC"
-    procd_set_param env SPOTFI_WS_URL="$SPOTFI_WS_URL"
     procd_close_instance
 }
 INITEOF
