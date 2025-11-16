@@ -82,7 +82,7 @@ echo ""
 echo "Router ID: $ROUTER_ID"
 echo "RADIUS Server: $RADIUS_IP"
 echo "MAC Address: $MAC_ADDRESS"
-echo "RADIUS Secret: $RADIUS_SECRET"
+echo "RADIUS Secret: (hidden)"
 echo "Portal: https://$PORTAL_DOMAIN/portal"
 echo ""
 
@@ -202,6 +202,11 @@ uci -q set uspot.main.setname='spotfi'
 # Uspot expects the OpenWrt network interface section name here (not raw device)
 uci -q set uspot.main.interface="$HOTSPOT_NET_IF"
 uci -q set uspot.main.auth_mode='radius'
+# Short RADIUS keys that some uspot builds require
+uci -q set uspot.main.auth_server="$RADIUS_IP"
+uci -q set uspot.main.auth_secret="$RADIUS_SECRET"
+uci -q set uspot.main.nasid="$ROUTER_ID"
+uci -q set uspot.main.nasmac="$MAC_ADDRESS"
 
 # Instance configuration – required keys: setname, interface, auth_mode/auth
 # Create/update a single instance named 'spotfi'
@@ -223,6 +228,11 @@ uci -q set uspot.@instance[0].radius_acct_server="$RADIUS_IP"
 uci -q set uspot.@instance[0].radius_secret="$RADIUS_SECRET"
 uci -q set uspot.@instance[0].nas_id="$ROUTER_ID"
 uci -q set uspot.@instance[0].mac_address="$MAC_ADDRESS"
+# Short RADIUS keys required by some builds
+uci -q set uspot.@instance[0].auth_server="$RADIUS_IP"
+uci -q set uspot.@instance[0].auth_secret="$RADIUS_SECRET"
+uci -q set uspot.@instance[0].nasid="$ROUTER_ID"
+uci -q set uspot.@instance[0].nasmac="$MAC_ADDRESS"
 # Portal
 uci -q set uspot.@instance[0].portal_url="https://$PORTAL_DOMAIN/portal"
 # Network hints (if supported)
