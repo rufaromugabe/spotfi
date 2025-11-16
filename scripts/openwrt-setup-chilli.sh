@@ -12,12 +12,29 @@
 #
 
 set -e
+set -o pipefail 2>/dev/null || true
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+# Safe timeout wrapper (supports BusyBox or GNU timeout; no-op if unavailable)
+with_timeout() {
+  local seconds="${1:-3}"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    # Detect BusyBox vs GNU timeout syntax
+    if timeout --help 2>&1 | grep -qi busybox; then
+      timeout -t "$seconds" "$@"
+    else
+      timeout "$seconds" "$@"
+    fi
+  else
+    "$@"
+  fi
+}
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then 
@@ -211,58 +228,40 @@ echo -e "${YELLOW}Detecting network interfaces...${NC}"
 
 # WAN interface detection with validation
 WAN_IF=""
-# Method 1: UCI network configuration
-if [ -z "$WAN_IF" ]; then
-    WAN_IF=$(uci get network.wan.ifname 2>/dev/null)
+# Method 1: DSA-aware via ubus/ifstatus + jsonfilter
+if [ -z "$WAN_IF" ] && command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+    WAN_IF=$(with_timeout 3 ubus call network.interface.wan status 2>/dev/null \
+        | with_timeout 2 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
     if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
         WAN_IF=""
     fi
 fi
 
-# Method 2: UCI network device
-if [ -z "$WAN_IF" ]; then
-    WAN_IF=$(uci get network.wan.device 2>/dev/null)
+# Method 2: ifstatus + jsonfilter
+if [ -z "$WAN_IF" ] && command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+    WAN_IF=$(with_timeout 3 ifstatus wan 2>/dev/null \
+        | with_timeout 2 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
     if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
         WAN_IF=""
     fi
 fi
 
-# Method 3: Default route interface (most reliable)
+# Method 3: Default route interface (reliable)
 if [ -z "$WAN_IF" ]; then
-    WAN_IF=$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+    WAN_IF=$(with_timeout 2 ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')
     if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
         WAN_IF=""
     fi
 fi
 
-# Method 4: IPv4 default route
+# Final check
 if [ -z "$WAN_IF" ]; then
-    WAN_IF=$(ip -4 route show default 2>/dev/null | head -n1 | awk '{print $5}')
-    if [ -n "$WAN_IF" ] && ! interface_exists "$WAN_IF"; then
-        WAN_IF=""
-    fi
-fi
-
-# Method 5: Get first available physical interface that's not LAN
-if [ -z "$WAN_IF" ]; then
-    WAN_IF=$(get_first_available_interface)
-    if [ -n "$WAN_IF" ]; then
-        echo -e "${YELLOW}  Warning: Using first available interface as WAN: $WAN_IF${NC}"
-    fi
-fi
-
-# Final fallback: validate and use eth0 if it exists
-if [ -z "$WAN_IF" ]; then
-    if interface_exists "eth0"; then
-        WAN_IF="eth0"
-        echo -e "${YELLOW}  Warning: Using eth0 as WAN (fallback)${NC}"
-    else
-        echo -e "${RED}Error: Could not detect WAN interface. Available interfaces:${NC}"
-        list_available_interfaces | while read -r iface; do
-            echo "    - $iface"
-        done
-        exit 1
-    fi
+    echo -e "${RED}Error: Could not detect WAN interface via ubus/ifstatus/ip${NC}"
+    echo -e "${YELLOW}Available interfaces:${NC}"
+    list_available_interfaces | while read -r iface; do
+        echo "    - $iface"
+    done
+    exit 1
 fi
 
 # Validate WAN interface exists
@@ -281,7 +280,8 @@ HAS_WIRELESS=false
 
 # Method 1: Try iw first (for wireless interfaces)
 if command -v iw >/dev/null 2>&1; then
-    WIFI_IF=$(iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
+    # Guard against buggy/slow drivers by timing out quickly
+    WIFI_IF=$(with_timeout 2 iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
     if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
         HAS_WIRELESS=true
     else
@@ -289,9 +289,20 @@ if command -v iw >/dev/null 2>&1; then
     fi
 fi
 
-# Method 2: Try UCI wireless config
+# Method 2: DSA-aware LAN device then bridges
+LAN_DEV=""
 if [ -z "$WIFI_IF" ]; then
-    WIFI_IF=$(uci show wireless 2>/dev/null | grep -m1 "\.ifname=" | cut -d= -f2 | tr -d "'\"")
+    # Prefer DSA device
+    LAN_DEV=$(with_timeout 2 uci get network.lan.device 2>/dev/null || echo "")
+    if [ -z "$LAN_DEV" ]; then
+        # Any bridge device available
+        LAN_DEV=$(with_timeout 2 ip -br link show type bridge 2>/dev/null | awk '{print $1; exit}')
+    fi
+fi
+
+# Method 3: Try UCI wireless config for explicit ifname (legacy)
+if [ -z "$WIFI_IF" ]; then
+    WIFI_IF=$(with_timeout 2 uci show wireless 2>/dev/null | grep -m1 "\.ifname=" | cut -d= -f2 | tr -d "'\"" || echo "")
     if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
         HAS_WIRELESS=true
     else
@@ -299,7 +310,7 @@ if [ -z "$WIFI_IF" ]; then
     fi
 fi
 
-# Method 3: Look for wlan* interfaces
+# Method 4: Look for wlan* interfaces
 if [ -z "$WIFI_IF" ]; then
     for iface in $(list_available_interfaces); do
         if echo "$iface" | grep -qE '^wlan[0-9]'; then
@@ -312,37 +323,12 @@ if [ -z "$WIFI_IF" ]; then
     done
 fi
 
-# Method 4: Use LAN bridge (VM scenario)
+# Method 5: Use LAN bridge/device if no WiFi (VM scenario)
 if [ -z "$WIFI_IF" ]; then
-    # Try UCI LAN ifname
-    WIFI_IF=$(uci get network.lan.ifname 2>/dev/null)
-    if [ -n "$WIFI_IF" ] && ! interface_exists "$WIFI_IF"; then
-        WIFI_IF=""
-    fi
-    
-    # Try common bridge names
-    if [ -z "$WIFI_IF" ]; then
-        for bridge in br-lan br0; do
-            if interface_exists "$bridge"; then
-                WIFI_IF="$bridge"
-                break
-            fi
-        done
-    fi
-    
-    # Find any bridge interface
-    if [ -z "$WIFI_IF" ]; then
-        for iface in $(list_available_interfaces); do
-            if echo "$iface" | grep -qE '^br'; then
-                if interface_exists "$iface"; then
-                    WIFI_IF="$iface"
-                    break
-                fi
-            fi
-        done
-    fi
-    
-    if [ -z "$WIFI_IF" ]; then
+    # If DSA LAN device/bridge was found and exists, use that
+    if [ -n "$LAN_DEV" ] && interface_exists "$LAN_DEV"; then
+        WIFI_IF="$LAN_DEV"
+    else
         echo -e "${RED}Error: Could not detect LAN/WiFi interface for CoovaChilli${NC}"
         echo -e "${YELLOW}Available interfaces:${NC}"
         list_available_interfaces | while read -r iface; do
@@ -350,7 +336,7 @@ if [ -z "$WIFI_IF" ]; then
         done
         exit 1
     fi
-    
+
     if [ "$HAS_WIRELESS" != "true" ]; then
         echo -e "${YELLOW}  Note: No WiFi detected (VM detected), using LAN bridge: $WIFI_IF${NC}"
     fi

@@ -89,7 +89,17 @@ sh /tmp/openwrt-setup-cloud.sh \
   08:00:27:BA:FE:8D \
   wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 ```
+```bash
+wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
+chmod +x /tmp/openwrt-setup-chilli.sh
+sh /tmp/openwrt-setup-chilli.sh \
+  cmhujj1f6000112soujpo0noz \
+  5d62856936faa4919a8ab07671b04103 \
+  08:00:27:BA:FE:8D \
+  62.72.19.27 \
+  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 
+```
 **Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.
 
 **Parameters:**
@@ -143,6 +153,8 @@ sh /tmp/openwrt-setup-chilli.sh \
   08:00:27:BA:FE:8D
 ```
 
+
+
 **Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems.
 
 **Parameters:**
@@ -172,6 +184,14 @@ chmod +x /tmp/openwrt-setup-chilli.sh
 /tmp/openwrt-setup-chilli.sh cmhujj1f6000112soujpo0noz 5d62856936faa... 08:00:27:BA:FE:8D
 ```
 
+wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
+chmod +x /tmp/openwrt-setup-chilli.sh
+sh /tmp/openwrt-setup-chilli.sh \
+  cmhujj1f6000112soujpo0noz \
+  5d62856936faa4919a8ab07671b04103 \
+  08:00:27:BA:FE:8D \
+  62.72.19.27 \
+  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 **Note:** If you need to specify a custom server WebSocket URL, add it as the 4th parameter:
 ```bash
 /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS wss://your-server.com/ws
@@ -342,6 +362,13 @@ sh /tmp/openwrt-setup-chilli.sh \
   YOUR_RADIUS_IP \
   https://your-portal-url.com
 ```
+
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh \
+  cmhujj1f6000112soujpo0noz \
+  5d62856936faa4919a8ab07671b04103 \
+  08:00:27:BA:FE:8D \
+  62.72.19.27
 
 **Alternative: Quick Update (Bridge Only)**
 If you only need to update the bridge.py file:
