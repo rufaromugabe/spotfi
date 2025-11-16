@@ -201,9 +201,12 @@ if ! uci show uspot 2>/dev/null | grep -q "=instance"; then
   uci -q add uspot instance >/dev/null
 fi
 uci -q set uspot.@instance[0].setname='spotfi'
+uci -q set uspot.@instance[0].name='spotfi'
 uci -q set uspot.@instance[0].enabled='1'
 uci -q set uspot.@instance[0].interface="$WIFI_IF"
+uci -q set uspot.@instance[0].ifname="$WIFI_IF"
 uci -q set uspot.@instance[0].auth_mode='radius'
+uci -q set uspot.@instance[0].auth='radius'
 # Radius settings
 uci -q set uspot.@instance[0].radius_auth_server="$RADIUS_IP"
 uci -q set uspot.@instance[0].radius_acct_server="$RADIUS_IP"
