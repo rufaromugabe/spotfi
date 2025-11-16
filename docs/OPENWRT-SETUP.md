@@ -139,18 +139,20 @@ wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromuga
 sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
 ```
 
-#### Option B: CoovaChilli/RADIUS Only (Captive Portal)
+#### Option B: Uspot/RADIUS Only (Captive Portal)
 
 For routers that only need captive portal with RADIUS authentication (no WebSocket bridge):
 
 ```bash
-# Download and run the chilli setup script (replace with your actual values)
-# Server domain is optional - defaults to https://api.spotfi.com
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh && \
-sh /tmp/openwrt-setup-chilli.sh \
+# Download and run the Uspot setup script (replace with your actual values)
+# Portal URL is optional - defaults to https://api.spotfi.com
+wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && \
+sh /tmp/openwrt-setup-uspot.sh \
   cmhujj1f6000112soujpo0noz \
   5d62856936faa4919a8ab07671b04103 \
-  08:00:27:BA:FE:8D
+  08:00:27:BA:FE:8D \
+  62.72.19.27 \
+  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 ```
 
 
@@ -161,16 +163,17 @@ sh /tmp/openwrt-setup-chilli.sh \
 - `ROUTER_ID` - Router ID from Step 1
 - `RADIUS_SECRET` - RADIUS secret from Step 1
 - `MAC_ADDRESS` - Router MAC address
-- `SERVER_DOMAIN` - (Optional) SpotFi server domain/URL (defaults to `https://api.spotfi.com`)
+- `RADIUS_IP` - RADIUS server IP
+- `PORTAL_URL` - (Optional) Captive portal URL (defaults to `https://api.spotfi.com`)
 
-**Note:** The server domain is optional and will default to `https://api.spotfi.com`. Port is auto-detected (443 for https, 80 for http). If you're self-hosting SpotFi, specify your server URL:
+**Note:** The portal URL is optional and will default to `https://api.spotfi.com`. If you're self-hosting SpotFi, specify your portal URL:
 ```bash
-/tmp/openwrt-setup-chilli.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS https://your-server.com
+/tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP https://your-portal.com
 ```
 
 #### Option C: Both (Run Both Scripts)
 
-If you need both WebSocket bridge AND CoovaChilli, run both scripts in order:
+If you need both WebSocket bridge AND Uspot, run both scripts in order:
 
 ```bash
 # First, install WebSocket bridge
@@ -178,24 +181,16 @@ wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromuga
 chmod +x /tmp/openwrt-setup-cloud.sh
 /tmp/openwrt-setup-cloud.sh cmhujj1f6000112soujpo0noz e26b8c19afa977... 08:00:27:BA:FE:8D
 
-# Then, install CoovaChilli
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
-chmod +x /tmp/openwrt-setup-chilli.sh
-/tmp/openwrt-setup-chilli.sh cmhujj1f6000112soujpo0noz 5d62856936faa... 08:00:27:BA:FE:8D
+# Then, install Uspot
+wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh
+chmod +x /tmp/openwrt-setup-uspot.sh
+/tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa... 08:00:27:BA:FE:8D 62.72.19.27 https://your-portal.com
 ```
 
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
-chmod +x /tmp/openwrt-setup-chilli.sh
-sh /tmp/openwrt-setup-chilli.sh \
-  cmhujj1f6000112soujpo0noz \
-  5d62856936faa4919a8ab07671b04103 \
-  08:00:27:BA:FE:8D \
-  62.72.19.27 \
-  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 **Note:** If you need to specify a custom server WebSocket URL, add it as the 4th parameter:
 ```bash
 /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS wss://your-server.com/ws
-/tmp/openwrt-setup-chilli.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS https://your-server.com
+/tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP https://your-portal.com
 ```
 
 
@@ -230,9 +225,9 @@ If you prefer to configure everything manually instead of using the automated sc
 
 ### Manual Configuration Steps
 
-The automated scripts (`openwrt-setup-cloud.sh` and `openwrt-setup-chilli.sh`) handle:
+The automated scripts (`openwrt-setup-cloud.sh` and `openwrt-setup-uspot.sh`) handle:
 - ✅ Package installation
-- ✅ CoovaChilli configuration (if using chilli script)
+- ✅ Uspot configuration (if using Uspot script)
 - ✅ Network interface setup
 - ✅ WiFi configuration
 - ✅ Firewall rules
@@ -353,9 +348,9 @@ sh /tmp/openwrt-setup-cloud.sh \
   YOUR_MAC_ADDRESS \
   wss://your-server.com/ws
 
-# Or for chilli setup (captive portal)
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh && \
-sh /tmp/openwrt-setup-chilli.sh \
+# Or for Uspot setup (captive portal)
+wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && \
+sh /tmp/openwrt-setup-uspot.sh \
   YOUR_ROUTER_ID \
   YOUR_RADIUS_SECRET \
   YOUR_MAC_ADDRESS \
