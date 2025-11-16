@@ -114,11 +114,20 @@ interface_exists() {
 }
 
 echo -e "${YELLOW}Detecting network interfaces...${NC}"
-WAN_IF=""
-if [ -z "$WAN_IF" ] && command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+# Allow override via environment variables: WAN_IF and WIFI_IF (validated below)
+# If not provided, they will be detected.
+WAN_IF="${WAN_IF:-}"
+if [ -n "$WAN_IF" ]; then
+  if ! interface_exists "$WAN_IF"; then
+    echo -e "${RED}Error: Provided WAN_IF '$WAN_IF' does not exist${NC}"
+    exit 1
+  fi
+else
+  if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
   WAN_IF=$(with_timeout 2 ubus call network.interface.wan status 2>/dev/null \
     | with_timeout 1 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
   [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
+fi
 fi
 if [ -z "$WAN_IF" ] && command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
   WAN_IF=$(with_timeout 2 ifstatus wan 2>/dev/null \
@@ -135,9 +144,9 @@ if [ -z "$WAN_IF" ]; then
   exit 1
 fi
 
-WIFI_IF=""
+WIFI_IF="${WIFI_IF:-}"
 HAS_WIRELESS=false
-if command -v iw >/dev/null 2>&1; then
+if [ -z "$WIFI_IF" ] && command -v iw >/dev/null 2>&1; then
   WIFI_IF=$(with_timeout 1 iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
   if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
     HAS_WIRELESS=true
@@ -158,6 +167,10 @@ if [ -z "$WIFI_IF" ]; then
     list_available_interfaces | sed 's/^/  - /'
     exit 1
   fi
+fi
+if [ -n "$WIFI_IF" ] && ! interface_exists "$WIFI_IF"; then
+  echo -e "${RED}Error: Provided WIFI_IF '$WIFI_IF' does not exist${NC}"
+  exit 1
 fi
 echo "  - Detected WAN interface: $WAN_IF"
 echo "  - Detected LAN/WiFi interface: $WIFI_IF"
