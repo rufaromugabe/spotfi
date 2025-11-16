@@ -95,12 +95,16 @@ if [ -f /etc/config/uspot ]; then
   cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Global settings
+# Global settings (uspot requires these short keys in main section)
 uci -q set uspot.main=uspot
 uci -q set uspot.main.enabled='1'
 uci -q set uspot.main.setname='spotfi'
 uci -q set uspot.main.interface="$HOTSPOT_NET_IF"
 uci -q set uspot.main.auth_mode='radius'
+uci -q set uspot.main.auth_server="$RADIUS_IP"
+uci -q set uspot.main.auth_secret="$RADIUS_SECRET"
+uci -q set uspot.main.nasid="$ROUTER_ID"
+uci -q set uspot.main.nasmac="$MAC_ADDRESS"
 
 # Instance configuration
 if ! uci show uspot 2>/dev/null | grep -q "=instance"; then

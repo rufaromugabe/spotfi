@@ -155,7 +155,7 @@ sh /tmp/openwrt-setup-uspot.sh \
   https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 ```
 
-wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && chmod +x /tmp/openwrt-setup-uspot.sh && WAN_IF=eth2 WIFI_IF=br-lan sh /tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa4919a8ab07671b04103 08:00:27:BA:FE:8D 62.72.19.27 https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
+wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && chmod +x /tmp/openwrt-setup-uspot.sh &&  sh /tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa4919a8ab07671b04103 08:00:27:BA:FE:8D 62.72.19.27 https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 
 
 
