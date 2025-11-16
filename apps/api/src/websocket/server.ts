@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
 import { RouterConnectionHandler } from './connection-handler.js';
-import { SshTunnelManager } from './ssh-tunnel.js';
+import { xTunnelManager } from './x-tunnel.js';
 import { prisma } from '../lib/prisma.js';
 export const activeConnections = new Map<string, WebSocket>();
 
@@ -61,8 +61,8 @@ export function setupWebSocket(fastify: FastifyInstance) {
       }
     });
 
-    // SSH Tunnel WebSocket endpoint (for frontend clients)
-    fastify.get('/ssh', { websocket: true }, async (connection, request: any) => {
+    // x Tunnel WebSocket endpoint (for frontend clients)
+    fastify.get('/x', { websocket: true }, async (connection, request: any) => {
       try {
         // Extract authentication from query params or Authorization header
         const url = new URL(request.url!, `http://${request.headers.host}`);
@@ -108,20 +108,20 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Create SSH tunnel session (includes ping verification)
+        // Create x tunnel session (includes ping verification)
         let session;
         try {
-          fastify.log.debug(`[SSH] Creating SSH session for router ${routerId}, user ${user.userId}`);
-          session = await SshTunnelManager.createSession(
+          fastify.log.debug(`[x] Creating x session for router ${routerId}, user ${user.userId}`);
+          session = await xTunnelManager.createSession(
             routerId,
             connection,
             user.userId,
             fastify.log
           );
-          fastify.log.info(`[SSH] SSH tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
+          fastify.log.info(`[x] x tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
         } catch (error: any) {
-          const errorMessage = error.message || 'Failed to create SSH session';
-          fastify.log.error(`[SSH] SSH session creation failed for router ${routerId}: ${errorMessage}`);
+          const errorMessage = error.message || 'Failed to create x session';
+          fastify.log.error(`[x] x session creation failed for router ${routerId}: ${errorMessage}`);
           
           // Use valid WebSocket close codes (1000-1015 are standard)
           // 1011 = Internal Error (for router not responding/offline)
@@ -131,16 +131,16 @@ export function setupWebSocket(fastify: FastifyInstance) {
 
         // Cleanup on disconnect
         connection.on('close', (code, reason) => {
-          fastify.log.info(`[SSH] Client disconnected: session ${session.sessionId}, code: ${code}, reason: ${reason?.toString() || 'none'}`);
-          SshTunnelManager.closeSession(session.sessionId);
+          fastify.log.info(`[x] Client disconnected: session ${session.sessionId}, code: ${code}, reason: ${reason?.toString() || 'none'}`);
+          xTunnelManager.closeSession(session.sessionId);
         });
 
         connection.on('error', (error) => {
-          fastify.log.error(`[SSH] SSH tunnel error for session ${session.sessionId}: ${error}`);
-          SshTunnelManager.closeSession(session.sessionId);
+          fastify.log.error(`[x] x tunnel error for session ${session.sessionId}: ${error}`);
+          xTunnelManager.closeSession(session.sessionId);
         });
       } catch (error) {
-        fastify.log.error(`[SSH] SSH tunnel setup failed: ${error}`);
+        fastify.log.error(`[x] x tunnel setup failed: ${error}`);
         connection.close(1011, 'Setup failed');
       }
     });

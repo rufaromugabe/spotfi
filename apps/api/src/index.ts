@@ -12,6 +12,7 @@ import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
+import { terminalRoutes } from './routes/terminal.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -100,6 +101,7 @@ await fastify.register(authRoutes);
 await fastify.register(routerRoutes, { prefix: '/api/routers' });
 await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
+await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
 setupWebSocket(fastify);

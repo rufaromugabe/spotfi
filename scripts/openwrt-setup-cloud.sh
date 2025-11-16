@@ -159,7 +159,7 @@ class SpotFiBridge:
         self.running = True
         self.connected = False
         self.connection_start_time = 0
-        self.ssh_sessions = {}  # sessionId -> {'master_fd': int, 'process': subprocess.Popen, 'thread': threading.Thread}
+        self.x_sessions = {}  # sessionId -> {'master_fd': int, 'process': subprocess.Popen, 'thread': threading.Thread}
         
     def get_router_metrics(self):
         """Get router metrics"""
@@ -196,12 +196,12 @@ class SpotFiBridge:
             self.handle_command(command, params)
         elif msg_type == 'connected':
             print(f"✓ Registered: {data.get('routerId')}")
-        elif msg_type == 'ssh-start':
-            self.handle_ssh_start(data)
-        elif msg_type == 'ssh-data':
-            self.handle_ssh_data(data)
-        elif msg_type == 'ssh-stop':
-            self.handle_ssh_stop(data)
+        elif msg_type == 'x-start':
+            self.handle_x_start(data)
+        elif msg_type == 'x-data':
+            self.handle_x_data(data)
+        elif msg_type == 'x-stop':
+            self.handle_x_stop(data)
     
     def handle_command(self, command, params=None):
         if params is None:
@@ -319,16 +319,16 @@ class SpotFiBridge:
             print(f"Error: {error_msg}", file=sys.stderr)
             self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
     
-    def handle_ssh_start(self, data):
-        """Start a new SSH session with PTY"""
+    def handle_x_start(self, data):
+        """Start a new x session with PTY"""
         session_id = data.get('sessionId')
         if not session_id:
-            print("Error: Missing sessionId in ssh-start", file=sys.stderr)
+            print("Error: Missing sessionId in x-start", file=sys.stderr)
             return
         
-        if session_id in self.ssh_sessions:
-            print(f"Warning: SSH session {session_id} already exists, cleaning up first", file=sys.stderr)
-            self._cleanup_ssh_session(session_id)
+        if session_id in self.x_sessions:
+            print(f"Warning: x session {session_id} already exists, cleaning up first", file=sys.stderr)
+            self._cleanup_x_session(session_id)
         
         master_fd = None
         slave_fd = None
@@ -342,7 +342,7 @@ class SpotFiBridge:
             except ImportError:
                 print(f"Error: PTY module not available. Install python3-full: opkg install python3-full", file=sys.stderr)
                 self.send_message({
-                    'type': 'ssh-error',
+                    'type': 'x-error',
                     'sessionId': session_id,
                     'error': 'PTY module not available. Install python3-full package.'
                 })
@@ -422,7 +422,7 @@ class SpotFiBridge:
             
             # Start thread to read from PTY and send to WebSocket
             read_thread = threading.Thread(
-                target=self._ssh_read_pty,
+                target=self._x_read_pty,
                 args=(session_id, master_fd),
                 daemon=True
             )
@@ -435,25 +435,25 @@ class SpotFiBridge:
             
             # Store session BEFORE sending confirmation (important!)
             import time
-            self.ssh_sessions[session_id] = {
+            self.x_sessions[session_id] = {
                 'master_fd': master_fd,
                 'process': process,
                 'thread': read_thread,
                 'start_time': time.time()  # Track when session started for timeout detection
             }
             
-            print(f"SSH session started: {session_id}, PID: {process.pid}, Shell: {shell}")
-            print(f"SSH session stored successfully. Total active sessions: {len(self.ssh_sessions)}")
+            print(f"x session started: {session_id}, PID: {process.pid}, Shell: {shell}")
+            print(f"x session stored successfully. Total active sessions: {len(self.x_sessions)}")
             print(f"Session details: master_fd={master_fd}, process_alive={process.poll() is None}")
             
             # Send confirmation to server
             self.send_message({
-                'type': 'ssh-started',
+                'type': 'x-started',
                 'sessionId': session_id,
                 'status': 'ready'
             })
         except Exception as e:
-            print(f"Error starting SSH session: {e}", file=sys.stderr)
+            print(f"Error starting x session: {e}", file=sys.stderr)
             import traceback
             print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
             
@@ -476,14 +476,14 @@ class SpotFiBridge:
             
             # Send error to server
             self.send_message({
-                'type': 'ssh-error',
+                'type': 'x-error',
                 'sessionId': session_id,
                 'error': str(e)
             })
     
-    def _ssh_read_pty(self, session_id, master_fd):
+    def _x_read_pty(self, session_id, master_fd):
         """Read from PTY and send to WebSocket"""
-        print(f"SSH read thread started for session {session_id}, master_fd={master_fd}")
+        print(f"x read thread started for session {session_id}, master_fd={master_fd}")
         try:
             # Force initial shell prompt by sending a command to trigger output
             # This helps ensure the terminal is ready and outputs the prompt
@@ -492,13 +492,13 @@ class SpotFiBridge:
             
             # Read any initial output (shell prompt, welcome message, etc.)
             read_count = 0
-            while session_id in self.ssh_sessions:
+            while session_id in self.x_sessions:
                 # Check if process is still alive
-                if session_id not in self.ssh_sessions:
+                if session_id not in self.x_sessions:
                     print(f"Session {session_id} removed, exiting read thread")
                     break
                 
-                session = self.ssh_sessions.get(session_id)
+                session = self.x_sessions.get(session_id)
                 if not session:
                     print(f"Session {session_id} not found in sessions dict")
                     break
@@ -524,7 +524,7 @@ class SpotFiBridge:
                                 print(f"[Session {session_id}] Read #{read_count}: {len(data)} bytes, first 50 chars: {repr(data[:50])}")
                             
                             self.send_message({
-                                'type': 'ssh-data',
+                                'type': 'x-data',
                                 'sessionId': session_id,
                                 'data': encoded_data
                             })
@@ -553,67 +553,67 @@ class SpotFiBridge:
                     print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
                     break
         except Exception as e:
-            print(f"Error in SSH read thread for session {session_id}: {e}", file=sys.stderr)
+            print(f"Error in x read thread for session {session_id}: {e}", file=sys.stderr)
             import traceback
             print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
         finally:
-            print(f"SSH read thread exiting for session {session_id}")
+            print(f"x read thread exiting for session {session_id}")
             # Cleanup session
-            if session_id in self.ssh_sessions:
-                self._cleanup_ssh_session(session_id)
+            if session_id in self.x_sessions:
+                self._cleanup_x_session(session_id)
     
-    def handle_ssh_data(self, data):
-        """Handle incoming SSH data from client"""
+    def handle_x_data(self, data):
+        """Handle incoming x data from client"""
         session_id = data.get('sessionId')
-        ssh_data = data.get('data')
+        x_data = data.get('data')
         
-        if not session_id or ssh_data is None:
-            print("Error: Missing sessionId or data in ssh-data", file=sys.stderr)
+        if not session_id or x_data is None:
+            print("Error: Missing sessionId or data in x-data", file=sys.stderr)
             return
         
-        if session_id not in self.ssh_sessions:
-            print(f"Warning: SSH session {session_id} not found. Active sessions: {list(self.ssh_sessions.keys())}", file=sys.stderr)
+        if session_id not in self.x_sessions:
+            print(f"Warning: x session {session_id} not found. Active sessions: {list(self.x_sessions.keys())}", file=sys.stderr)
             # Try to list what sessions exist for debugging
-            if len(self.ssh_sessions) > 0:
-                print(f"Available sessions: {', '.join(self.ssh_sessions.keys())}", file=sys.stderr)
+            if len(self.x_sessions) > 0:
+                print(f"Available sessions: {', '.join(self.x_sessions.keys())}", file=sys.stderr)
             return
         
         try:
-            session = self.ssh_sessions[session_id]
+            session = self.x_sessions[session_id]
             master_fd = session['master_fd']
             
             # Decode base64 data (backend always sends base64)
             import base64
             try:
-                binary_data = base64.b64decode(ssh_data)
+                binary_data = base64.b64decode(x_data)
                 print(f"Received {len(binary_data)} bytes for session {session_id}")
             except Exception as e:
-                print(f"Error decoding base64 SSH data: {e}", file=sys.stderr)
+                print(f"Error decoding base64 x data: {e}", file=sys.stderr)
                 return
             
             # Write to PTY
             written = os.write(master_fd, binary_data)
             print(f"Wrote {written} bytes to PTY for session {session_id}")
         except Exception as e:
-            print(f"Error writing to SSH session: {e}", file=sys.stderr)
-            self._cleanup_ssh_session(session_id)
+            print(f"Error writing to x session: {e}", file=sys.stderr)
+            self._cleanup_x_session(session_id)
     
-    def handle_ssh_stop(self, data):
-        """Stop SSH session"""
+    def handle_x_stop(self, data):
+        """Stop x session"""
         session_id = data.get('sessionId')
         if not session_id:
             return
         
-        if session_id in self.ssh_sessions:
-            self._cleanup_ssh_session(session_id)
-            print(f"SSH session stopped: {session_id}")
+        if session_id in self.x_sessions:
+            self._cleanup_x_session(session_id)
+            print(f"x session stopped: {session_id}")
     
-    def _cleanup_ssh_session(self, session_id):
-        """Clean up SSH session resources"""
-        if session_id not in self.ssh_sessions:
+    def _cleanup_x_session(self, session_id):
+        """Clean up x session resources"""
+        if session_id not in self.x_sessions:
             return
         
-        session = self.ssh_sessions[session_id]
+        session = self.x_sessions[session_id]
         
         try:
             # Close master FD
@@ -636,7 +636,7 @@ class SpotFiBridge:
             pass
         
         # Remove from sessions
-        del self.ssh_sessions[session_id]
+        del self.x_sessions[session_id]
     
     def on_error(self, ws, error):
         print(f"WebSocket error: {error}", file=sys.stderr)
@@ -651,9 +651,9 @@ class SpotFiBridge:
     
     def on_close(self, ws, close_status_code, close_msg):
         self.connected = False
-        # Cleanup all SSH sessions on disconnect
-        for session_id in list(self.ssh_sessions.keys()):
-            self._cleanup_ssh_session(session_id)
+        # Cleanup all x sessions on disconnect
+        for session_id in list(self.x_sessions.keys()):
+            self._cleanup_x_session(session_id)
         if self.running:
             print(f"WebSocket closed (code: {close_status_code}). Will reconnect...")
     

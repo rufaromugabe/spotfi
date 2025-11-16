@@ -1,6 +1,6 @@
-# SSH Tunnel Testing Guide
+# x Tunnel Testing Guide
 
-Complete guide to test the SSH tunnel functionality in SpotFi.
+Complete guide to test the x tunnel functionality in SpotFi.
 
 ---
 
@@ -80,7 +80,7 @@ Authorization: Bearer {your_token}
 
 **Save the router `id` and verify `status` is `"ONLINE"`.**
 
-#### Step 3: Connect to SSH WebSocket
+#### Step 3: Connect to x WebSocket
 
 **In Postman:**
 
@@ -88,12 +88,12 @@ Authorization: Bearer {your_token}
 2. Change method to **WS** (WebSocket)
 3. Enter URL:
    ```
-   ws://localhost:8080/ws/ssh?routerId={routerId}&token={jwt_token}
+   ws://localhost:8080/ws/x?routerId={routerId}&token={jwt_token}
    ```
-   wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io/ws/ssh?routerId=cmhujj1f6000112soujpo0noz&token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjbWh0dmN2MmIwMDAwMjJ4NDZyOGU3amx1IiwiZW1haWwiOiJhZG1pbkBzcG90ZmkuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzYzMDY2Mzc3fQ.Y5JTXW4gFvcpyI0dlDTGQc2zJoRgOjwDEdUao6nKw8c
+   wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io/ws/x?routerId=cmhujj1f6000112soujpo0noz&token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjbWh0dmN2MmIwMDAwMjJ4NDZyOGU3amx1IiwiZW1haWwiOiJhZG1pbkBzcG90ZmkuY29tIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzYzMDY2Mzc3fQ.Y5JTXW4gFvcpyI0dlDTGQc2zJoRgOjwDEdUao6nKw8c
    **Example:**
    ```
-   ws://localhost:8080/ws/ssh?routerId=cmhujj1f6000112soujpo0noz&token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+   ws://localhost:8080/ws/x?routerId=cmhujj1f6000112soujpo0noz&token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
    ```
 
 4. Click **Connect**
@@ -101,8 +101,8 @@ Authorization: Bearer {your_token}
 **Expected Result:**
 - ✅ Connection opens successfully
 - ✅ No error messages
-- ✅ Backend logs show: `SSH tunnel established: {sessionId}...`
-- ✅ Router logs show: `SSH session started: {sessionId}`
+- ✅ Backend logs show: `x tunnel established: {sessionId}...`
+- ✅ Router logs show: `x session started: {sessionId}`
 
 **If router is offline:**
 - ❌ Connection closes with code `503`
@@ -140,18 +140,18 @@ echo "test"\n     # Echo test
 **Check Backend Logs:**
 ```bash
 # Should see:
-SSH tunnel established: {sessionId} for router {routerId} by user {userId}
+x tunnel established: {sessionId} for router {routerId} by user {userId}
 ```
 
-**Check Router Logs (via SSH or logread):**
+**Check Router Logs (via x or logread):**
 ```bash
 # On router, check logs:
-logread | grep -i ssh
+logread | grep -i x
 
 # Should see:
-SSH session started: {sessionId}
-Received: ssh-start
-Received: ssh-data
+x session started: {sessionId}
+Received: x-start
+Received: x-data
 ```
 
 ---
@@ -185,7 +185,7 @@ npm install -g wscat
 
 **Connect:**
 ```bash
-wscat -c "ws://localhost:8080/ws/ssh?routerId=$ROUTER_ID&token=$TOKEN"
+wscat -c "ws://localhost:8080/ws/x?routerId=$ROUTER_ID&token=$TOKEN"
 ```
 
 **Send commands:**
@@ -245,12 +245,12 @@ export function RouterTerminal({ routerId, token }: RouterTerminalProps) {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    // Connect to SSH WebSocket
-    const wsUrl = `ws://localhost:8080/ws/ssh?routerId=${routerId}&token=${token}`;
+    // Connect to x WebSocket
+    const wsUrl = `ws://localhost:8080/ws/x?routerId=${routerId}&token=${token}`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-      console.log('SSH tunnel connected');
+      console.log('x tunnel connected');
       const attachAddon = new AttachAddon(ws);
       term.loadAddon(attachAddon);
       term.open(terminalRef.current!);
@@ -258,12 +258,12 @@ export function RouterTerminal({ routerId, token }: RouterTerminalProps) {
     };
 
     ws.onerror = (error) => {
-      console.error('SSH tunnel error:', error);
+      console.error('x tunnel error:', error);
       term.writeln('\r\n\x1b[31mConnection error. Router may be offline.\x1b[0m');
     };
 
     ws.onclose = (event) => {
-      console.log('SSH tunnel closed:', event.code, event.reason);
+      console.log('x tunnel closed:', event.code, event.reason);
       if (event.code !== 1000) {
         term.writeln(`\r\n\x1b[31mConnection closed: ${event.reason || 'Unknown error'}\x1b[0m`);
       }
@@ -323,7 +323,7 @@ function App() {
 ### Backend Verification
 
 - [ ] Backend API is running
-- [ ] WebSocket endpoint `/ws/ssh` is accessible
+- [ ] WebSocket endpoint `/ws/x` is accessible
 - [ ] JWT authentication works
 - [ ] Router access control works (admin/host permissions)
 - [ ] Session management works (sessions created/cleaned up)
@@ -340,7 +340,7 @@ function App() {
 
 - [ ] WebSocket connection opens successfully
 - [ ] No authentication errors
-- [ ] Router receives `ssh-start` message
+- [ ] Router receives `x-start` message
 - [ ] PTY session created on router
 - [ ] Data flows bidirectionally
 
@@ -387,7 +387,7 @@ curl http://localhost:8080/api/auth/me \
 - Terminal appears "dead"
 
 **Possible Causes:**
-1. Router bridge not receiving `ssh-start` message
+1. Router bridge not receiving `x-start` message
 2. PTY module not available on router
 3. Shell process not starting
 4. Data not being sent correctly (text vs binary)
@@ -396,12 +396,12 @@ curl http://localhost:8080/api/auth/me \
 
 **1. Check Router Logs:**
 ```bash
-# SSH into router
-ssh root@router-ip
+# x into router
+x root@router-ip
 
-# Check if bridge received ssh-start
-logread | grep -i ssh
-# Should see: "Received: ssh-start" and "SSH session started: {sessionId}"
+# Check if bridge received x-start
+logread | grep -i x
+# Should see: "Received: x-start" and "x session started: {sessionId}"
 
 # Check bridge process output directly
 ps aux | grep bridge.py
@@ -421,13 +421,13 @@ opkg install python3-full
 /etc/init.d/spotfi-bridge restart
 ```
 
-**3. Verify SSH Session Creation:**
+**3. Verify x Session Creation:**
 ```bash
 # On router, check if session was created
 # Look for these log messages:
-# - "Received: ssh-start"
+# - "Received: x-start"
 # - "PTY created for session {sessionId}"
-# - "SSH session started: {sessionId}, PID: {pid}"
+# - "x session started: {sessionId}, PID: {pid}"
 ```
 
 **4. Test Data Flow:**
@@ -438,31 +438,31 @@ opkg install python3-full
 # You should see when data flows:
 
 # When you send a command from Postman:
-[SSH {sessionId}] Received X bytes from client, forwarding to router
-[SSH {sessionId}] Sending X bytes to router (encoded: Y chars)
+[x {sessionId}] Received X bytes from client, forwarding to router
+[x {sessionId}] Sending X bytes to router (encoded: Y chars)
 
 # When router responds:
-[Router {id}] Received message type: ssh-data
-[Router {id}] Received ssh-data from router for session {sessionId} (data length: Z)
+[Router {id}] Received message type: x-data
+[Router {id}] Received x-data from router for session {sessionId} (data length: Z)
 [Router {id}] Decoded X bytes from router, forwarding to client session {sessionId}
-[SSH {sessionId}] Sending X bytes to client
+[x {sessionId}] Sending X bytes to client
 ```
 
 **On Router:**
 ```bash
-# SSH into router
-ssh root@router-ip
+# x into router
+x root@router-ip
 
 # Check logs in real-time
-logread -f | grep -i ssh
+logread -f | grep -i x
 
 # Or check bridge process output directly
 tail -f /var/log/spotfi-bridge.log  # if logging to file
 # Or check system logs
-logread | grep -i "ssh\|bridge"
+logread | grep -i "x\|bridge"
 
 # When you send a command, you should see:
-Received: ssh-data
+Received: x-data
 Received {N} bytes for session {sessionId}
 Wrote {N} bytes to PTY
 
@@ -472,7 +472,7 @@ Sent {N} bytes from PTY for session {sessionId}
 
 **Quick Test - Send a command and watch logs:**
 1. Open server logs in one terminal
-2. Open router logs in another terminal (or SSH session)
+2. Open router logs in another terminal (or x session)
 3. Send command from Postman
 4. Watch both logs simultaneously to see data flow
 
@@ -485,10 +485,10 @@ Sent {N} bytes from PTY for session {sessionId}
 **6. Check Backend Logs:**
 ```bash
 # Should see:
-# - "Pinging router {id} before SSH session creation..."
+# - "Pinging router {id} before x session creation..."
 # - "Router {id} is responsive"
-# - "SSH session start sent to router: {sessionId}"
-# - "SSH tunnel established: {sessionId}"
+# - "x session start sent to router: {sessionId}"
+# - "x tunnel established: {sessionId}"
 ```
 
 **Quick Fix:**
@@ -559,7 +559,7 @@ opkg install python3-full
 
 ## ✅ Success Criteria
 
-The SSH tunnel is working correctly if:
+The x tunnel is working correctly if:
 
 1. ✅ Connection opens without errors
 2. ✅ Commands execute on router
@@ -586,7 +586,7 @@ The SSH tunnel is working correctly if:
 
 ### Basic Functionality
 
-- [ ] Connect to SSH tunnel
+- [ ] Connect to x tunnel
 - [ ] Execute `ls` command
 - [ ] Execute `pwd` command
 - [ ] Execute `whoami` command
@@ -635,7 +635,7 @@ After successful testing:
 If you encounter issues:
 
 1. Check backend logs: `npm run dev` output
-2. Check router logs: `logread | grep -i ssh`
+2. Check router logs: `logread | grep -i x`
 3. Verify prerequisites are met
 4. Test with Postman first (simplest method)
 5. Check network connectivity
@@ -644,7 +644,7 @@ If you encounter issues:
 
 ## 📚 Additional Resources
 
-- **🔍 [SSH Debugging Guide](SSH-DEBUGGING.md)** - Detailed data flow debugging and troubleshooting
+- **🔍 [x Debugging Guide](x-DEBUGGING.md)** - Detailed data flow debugging and troubleshooting
 - **📖 [OpenWRT Setup Guide](OPENWRT-SETUP.md)** - Router setup instructions
 
 ---

@@ -67,10 +67,10 @@ curl -X POST http://192.168.42.181:8080/api/routers \
 
 ### Step 2: Download and Run Setup Scripts
 
-SSH into your OpenWRT router:
+x into your OpenWRT router:
 
 ```bash
-ssh root@192.168.56.10
+x root@192.168.56.10
 ```
 
 **Choose your setup option:**
@@ -310,12 +310,12 @@ cat /etc/spotfi.env
 
 ---
 
-### Problem: "Error starting SSH session: Exception occurred in preexec_fn"
+### Problem: "Error starting x session: Exception occurred in preexec_fn"
 
 **Error Message:**
 ```
-Error starting SSH session: Exception occurred in preexec_fn.
-File "/root/spotfi-bridge/bridge.py", line 260, in handle_ssh_start
+Error starting x session: Exception occurred in preexec_fn.
+File "/root/spotfi-bridge/bridge.py", line 260, in handle_x_start
 ```
 
 **Cause:**
@@ -360,15 +360,15 @@ wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromuga
 /etc/init.d/spotfi-bridge start
 
 # Verify
-logread -f | grep -i ssh
+logread -f | grep -i x
 ```
 
 **Verification:**
-After updating, SSH sessions should work without errors. You can verify by checking logs:
+After updating, x sessions should work without errors. You can verify by checking logs:
 
 ```bash
 # Should NOT show preexec_fn errors anymore
-logread | grep -i ssh
+logread | grep -i x
 ```
 
 ---
@@ -489,14 +489,14 @@ iptables -L -n -v
 passwd root
 ```
 
-### 2. Use SSH Keys
+### 2. Use x Keys
 
 ```bash
 # On your computer, generate key
-ssh-keygen -t ed25519
+x-keygen -t ed25519
 
 # Copy to router
-ssh-copy-id root@192.168.1.1
+x-copy-id root@192.168.1.1
 
 # Disable password login
 vi /etc/config/dropbear
@@ -511,7 +511,7 @@ vi /etc/config/dropbear
 # But verify:
 /etc/init.d/firewall status
 
-# Block SSH from WAN
+# Block x from WAN
 uci set firewall.@rule[-1].enabled='0'
 uci commit firewall
 /etc/init.d/firewall restart
@@ -624,7 +624,7 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
    - Enable Network Adapter
    - Attached to: Host-only Adapter
    - Name: `VirtualBox Host-Only Ethernet Adapter`
-   - This allows direct SSH access from host
+   - This allows direct x access from host
 
 ### Step 3: Start VM and Get IP Address
 
@@ -647,16 +647,16 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
    - WAN IP: Usually `192.168.x.x` (from your router's DHCP)
    - Host-only IP: Usually `192.168.56.10` (default)
 
-### Step 4: SSH into OpenWRT VM
+### Step 4: x into OpenWRT VM
 
 From your host machine:
 
 ```bash
 # Via host-only adapter (recommended for testing)
-ssh root@192.168.56.10
+x root@192.168.56.10
 
 # Or via WAN IP (if accessible)
-ssh root@<WAN_IP>
+x root@<WAN_IP>
 ```
 
 **Default password:** None (OpenWRT has no password by default - set one!)
@@ -670,8 +670,8 @@ passwd
 
 1. **Download and run cloud script:**
    ```bash
-   # SSH into VM
-   ssh root@192.168.56.10
+   # x into VM
+   x root@192.168.56.10
    
    # Download script
    wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
@@ -750,7 +750,7 @@ ip addr show
 
 ### Common Issues and Solutions
 
-**Issue: Can't SSH into VM**
+**Issue: Can't x into VM**
 - **Solution:** Use host-only adapter, not bridged
 - Check VM network adapter is enabled
 - Verify IP: `ip addr show` in VM
@@ -773,7 +773,7 @@ ip addr show
 ### Testing Tips
 
 1. **Use host-only network for management:**
-   - Easier SSH access from host
+   - Easier x access from host
    - Stable IP address
 
 2. **Use bridged adapter for WAN:**

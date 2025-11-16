@@ -3,7 +3,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { randomBytes } from 'crypto';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
-import { SshTunnelManager } from './ssh-tunnel.js';
+import { xTunnelManager } from './x-tunnel.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -108,19 +108,19 @@ export class RouterConnectionHandler {
             await this.handleMetrics(message.metrics);
             break;
 
-          case 'ssh-data':
-            // Forward SSH data from router to frontend client
-            this.handleSshData(message);
+          case 'x-data':
+            // Forward x data from router to frontend client
+            this.handlexData(message);
             break;
 
-          case 'ssh-started':
-            // Router confirmed SSH session started
-            this.logger.info(`[Router ${this.routerId}] SSH session ${message.sessionId} confirmed started by router`);
+          case 'x-started':
+            // Router confirmed x session started
+            this.logger.info(`[Router ${this.routerId}] x session ${message.sessionId} confirmed started by router`);
             break;
 
-          case 'ssh-error':
-            // Router reported SSH error
-            this.logger.error(`[Router ${this.routerId}] SSH error for session ${message.sessionId}: ${message.error}`);
+          case 'x-error':
+            // Router reported x error
+            this.logger.error(`[Router ${this.routerId}] x error for session ${message.sessionId}: ${message.error}`);
             break;
 
           default:
@@ -134,8 +134,8 @@ export class RouterConnectionHandler {
     this.socket.on('close', async () => {
       this.cleanup();
       await this.markOffline();
-      // Close all SSH sessions for this router
-      SshTunnelManager.closeRouterSessions(this.routerId);
+      // Close all x sessions for this router
+      xTunnelManager.closeRouterSessions(this.routerId);
       this.logger.info(`Router ${this.routerId} disconnected`);
     });
 
@@ -226,21 +226,21 @@ export class RouterConnectionHandler {
     }
   }
 
-  private handleSshData(message: any): void {
+  private handlexData(message: any): void {
     try {
       const { sessionId, data } = message;
       
       if (!sessionId || !data) {
-        this.logger.warn(`[Router ${this.routerId}] Invalid SSH data message: missing sessionId or data`);
+        this.logger.warn(`[Router ${this.routerId}] Invalid x data message: missing sessionId or data`);
         return;
       }
 
-      this.logger.debug(`[Router ${this.routerId}] Received ssh-data from router for session ${sessionId} (data length: ${typeof data === 'string' ? data.length : 'unknown'})`);
+      this.logger.debug(`[Router ${this.routerId}] Received x-data from router for session ${sessionId} (data length: ${typeof data === 'string' ? data.length : 'unknown'})`);
 
-      // Get SSH session
-      const session = SshTunnelManager.getSession(sessionId);
+      // Get x session
+      const session = xTunnelManager.getSession(sessionId);
       if (!session) {
-        this.logger.warn(`[Router ${this.routerId}] SSH session not found: ${sessionId}`);
+        this.logger.warn(`[Router ${this.routerId}] x session not found: ${sessionId}`);
         return;
       }
 
@@ -249,7 +249,7 @@ export class RouterConnectionHandler {
       this.logger.debug(`[Router ${this.routerId}] Decoded ${binaryData.length} bytes from router, forwarding to client session ${sessionId}`);
       session.sendToClient(binaryData);
     } catch (error) {
-      this.logger.error(`[Router ${this.routerId}] Error handling SSH data: ${error}`);
+      this.logger.error(`[Router ${this.routerId}] Error handling x data: ${error}`);
     }
   }
 
