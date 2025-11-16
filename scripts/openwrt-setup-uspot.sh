@@ -11,40 +11,11 @@
 #
 
 set -e
-set -o pipefail 2>/dev/null || true
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-
-with_timeout() {
-  local seconds="${1:-3}"
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    if timeout --help 2>&1 | grep -qi busybox; then
-      timeout -t "$seconds" "$@"
-      return $?
-    else
-      timeout "$seconds" "$@"
-      return $?
-    fi
-  fi
-  # Fallback: manual timeout using subshell and kill
-  (
-    "$@" &
-    cmd_pid=$!
-    (
-      sleep "$seconds"
-      kill -0 "$cmd_pid" 2>/dev/null && kill -TERM "$cmd_pid" 2>/dev/null
-    ) &
-    timer_pid=$!
-    wait "$cmd_pid"
-    status=$?
-    kill "$timer_pid" 2>/dev/null || true
-    exit $status
-  )
-}
 
 if [ "$EUID" -ne 0 ]; then 
   echo -e "${RED}Error: This script must be run as root${NC}"
@@ -98,82 +69,11 @@ opkg install uspot uhttpd jsonfilter ca-bundle ca-certificates || {
   echo -e "${RED}Error: Failed to install uspot or deps${NC}"
   exit 1
 }
-command -v openssl >/dev/null 2>&1 || opkg install openssl-util >/dev/null 2>&1 || true
+command -v openssl >/dev/null 2>&1 || opkg install openssl-util >/dev/null 2>&1
 
-list_available_interfaces() {
-  if [ -d /sys/class/net ]; then
-    ls /sys/class/net 2>/dev/null | grep -v "^lo$" | grep -v "^lo:"
-  elif command -v ip >/dev/null 2>&1; then
-    ip link show 2>/dev/null | awk -F': ' '/^[0-9]+:/ && $2 != "lo" {print $2}'
-  fi
-}
-interface_exists() {
-  local iface="$1"
-  [ -n "$iface" ] || return 1
-  [ -d "/sys/class/net/$iface" ] || ip link show "$iface" >/dev/null 2>&1
-}
-
-echo -e "${YELLOW}Detecting network interfaces...${NC}"
-# Allow override via environment variables: WAN_IF and WIFI_IF (validated below)
-# If not provided, they will be detected.
-WAN_IF="${WAN_IF:-}"
-if [ -n "$WAN_IF" ]; then
-  if ! interface_exists "$WAN_IF"; then
-    echo -e "${RED}Error: Provided WAN_IF '$WAN_IF' does not exist${NC}"
-    exit 1
-  fi
-else
-  if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
-  WAN_IF=$(with_timeout 2 ubus call network.interface.wan status 2>/dev/null \
-    | with_timeout 1 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
-  [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
-fi
-fi
-if [ -z "$WAN_IF" ] && command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
-  WAN_IF=$(with_timeout 2 ifstatus wan 2>/dev/null \
-    | with_timeout 1 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
-  [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
-fi
-if [ -z "$WAN_IF" ]; then
-  WAN_IF=$(with_timeout 1 ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')
-  [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
-fi
-if [ -z "$WAN_IF" ]; then
-  echo -e "${RED}Error: Could not detect WAN interface${NC}"
-  list_available_interfaces | sed 's/^/  - /'
-  exit 1
-fi
-
-WIFI_IF="${WIFI_IF:-}"
-HAS_WIRELESS=false
-if [ -z "$WIFI_IF" ] && command -v iw >/dev/null 2>&1; then
-  WIFI_IF=$(with_timeout 1 iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
-  if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
-    HAS_WIRELESS=true
-  else
-    WIFI_IF=""
-  fi
-fi
-LAN_DEV=""
-if [ -z "$WIFI_IF" ]; then
-  LAN_DEV=$(with_timeout 1 uci get network.lan.device 2>/dev/null || echo "")
-  [ -z "$LAN_DEV" ] && LAN_DEV=$(with_timeout 1 ip -br link show type bridge 2>/dev/null | awk '{print $1; exit}')
-fi
-if [ -z "$WIFI_IF" ]; then
-  if [ -n "$LAN_DEV" ] && interface_exists "$LAN_DEV"; then
-    WIFI_IF="$LAN_DEV"
-  else
-    echo -e "${RED}Error: Could not detect LAN/WiFi interface for Uspot${NC}"
-    list_available_interfaces | sed 's/^/  - /'
-    exit 1
-  fi
-fi
-if [ -n "$WIFI_IF" ] && ! interface_exists "$WIFI_IF"; then
-  echo -e "${RED}Error: Provided WIFI_IF '$WIFI_IF' does not exist${NC}"
-  exit 1
-fi
-echo "  - Detected WAN interface: $WAN_IF"
-echo "  - Detected LAN/WiFi interface: $WIFI_IF"
+# Use br-lan bridge which includes all LAN interfaces (WiFi + Ethernet)
+# This is the standard OpenWrt LAN bridge that rules them all
+LAN_BRIDGE="br-lan"
 
 STEP_NUM=$((STEP_NUM + 1)); echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network interfaces...${NC}"
 # Logical hotspot interface name used by Uspot/OpenWrt
@@ -183,8 +83,8 @@ if ! uci show network.hotspot >/dev/null 2>&1; then
   uci set network.hotspot.proto='static'
   uci set network.hotspot.ipaddr='10.1.0.1'
   uci set network.hotspot.netmask='255.255.255.0'
-  # Attach hotspot logical interface to underlying LAN/WiFi device
-  uci set network.hotspot.device="$WIFI_IF"
+  # Attach hotspot to br-lan bridge (includes all LAN interfaces)
+  uci set network.hotspot.device="$LAN_BRIDGE"
   uci commit network
 fi
 echo -e "${GREEN}✓ Network configured${NC}"
@@ -195,57 +95,38 @@ if [ -f /etc/config/uspot ]; then
   cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Global toggles and basic settings (also set required keys here for older uspot versions)
+# Global settings
 uci -q set uspot.main=uspot
 uci -q set uspot.main.enabled='1'
 uci -q set uspot.main.setname='spotfi'
-# Uspot expects the OpenWrt network interface section name here (not raw device)
 uci -q set uspot.main.interface="$HOTSPOT_NET_IF"
 uci -q set uspot.main.auth_mode='radius'
-# Short RADIUS keys that some uspot builds require
-uci -q set uspot.main.auth_server="$RADIUS_IP"
-uci -q set uspot.main.auth_secret="$RADIUS_SECRET"
-uci -q set uspot.main.nasid="$ROUTER_ID"
-uci -q set uspot.main.nasmac="$MAC_ADDRESS"
 
-# Instance configuration – required keys: setname, interface, auth_mode/auth
-# Create/update a single instance named 'spotfi'
+# Instance configuration
 if ! uci show uspot 2>/dev/null | grep -q "=instance"; then
   uci -q add uspot instance >/dev/null
 fi
 uci -q set uspot.@instance[0].setname='spotfi'
 uci -q set uspot.@instance[0].name='spotfi'
 uci -q set uspot.@instance[0].enabled='1'
-# OpenWrt network interface section name (logical interface)
 uci -q set uspot.@instance[0].interface="$HOTSPOT_NET_IF"
-# Underlying Linux device/bridge
-uci -q set uspot.@instance[0].ifname="$WIFI_IF"
+uci -q set uspot.@instance[0].ifname="$LAN_BRIDGE"
 uci -q set uspot.@instance[0].auth_mode='radius'
 uci -q set uspot.@instance[0].auth='radius'
-# Radius settings
 uci -q set uspot.@instance[0].radius_auth_server="$RADIUS_IP"
 uci -q set uspot.@instance[0].radius_acct_server="$RADIUS_IP"
 uci -q set uspot.@instance[0].radius_secret="$RADIUS_SECRET"
 uci -q set uspot.@instance[0].nas_id="$ROUTER_ID"
 uci -q set uspot.@instance[0].mac_address="$MAC_ADDRESS"
-# Short RADIUS keys required by some builds
-uci -q set uspot.@instance[0].auth_server="$RADIUS_IP"
-uci -q set uspot.@instance[0].auth_secret="$RADIUS_SECRET"
-uci -q set uspot.@instance[0].nasid="$ROUTER_ID"
-uci -q set uspot.@instance[0].nasmac="$MAC_ADDRESS"
-# Portal
 uci -q set uspot.@instance[0].portal_url="https://$PORTAL_DOMAIN/portal"
-# Network hints (if supported)
-uci -q set uspot.@instance[0].wan_if="$WAN_IF"
-uci -q set uspot.@instance[0].lan_if="$WIFI_IF"
-# Accounting interval (if supported)
+uci -q set uspot.@instance[0].lan_if="$LAN_BRIDGE"
 uci -q set uspot.@instance[0].interim_update='300'
-uci commit uspot || true
+uci commit uspot
 echo -e "${GREEN}✓ Uspot configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring firewall...${NC}"
-# hotspot zone and forwarding
+# Hotspot zone
 if ! uci show firewall 2>/dev/null | grep -q "name='hotspot'"; then
   uci add firewall zone
   uci set firewall.@zone[-1].name='hotspot'
@@ -254,12 +135,15 @@ if ! uci show firewall 2>/dev/null | grep -q "name='hotspot'"; then
   uci set firewall.@zone[-1].forward='REJECT'
   uci set firewall.@zone[-1].network='hotspot'
 fi
-if ! uci show firewall 2>/dev/null | grep -q "@forwarding\\[.*\\].*src='hotspot'.*dest='wan'"; then
+
+# Forwarding from hotspot to WAN
+if ! uci show firewall 2>/dev/null | grep -q "src='hotspot'.*dest='wan'"; then
   uci add firewall forwarding
   uci set firewall.@forwarding[-1].src='hotspot'
   uci set firewall.@forwarding[-1].dest='wan'
 fi
-# Allow RADIUS auth/accounting outbound (explicit accept)
+
+# RADIUS firewall rules
 if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-Auth'"; then
   uci add firewall rule
   uci set firewall.@rule[-1].name='Allow-RADIUS-Auth'
@@ -299,16 +183,13 @@ echo "Uspot Status:"
 echo "  - Router ID: $ROUTER_ID"
 echo "  - RADIUS Server: $RADIUS_IP"
 echo "  - Portal: https://$PORTAL_DOMAIN/portal"
-if [ "$HAS_WIRELESS" = "true" ]; then
-  echo "  - WiFi SSID: SpotFi-Guest (if created elsewhere)"
-else
-  echo "  - WiFi: Not available (using LAN bridge)"
-fi
+echo "  - LAN Bridge: $LAN_BRIDGE (includes all LAN interfaces)"
 echo "  - Gateway: 10.1.0.1"
 echo ""
 echo "Verification:"
 echo "  1. Check Uspot: /etc/init.d/uspot status"
 echo "  2. View logs: logread -f | grep -E 'uspot|radius'"
 echo ""
+
 
 

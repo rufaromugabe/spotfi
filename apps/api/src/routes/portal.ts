@@ -3,29 +3,17 @@ import { RadClient } from '../lib/radclient.js';
 import { prisma } from '../lib/prisma.js';
 
 interface PortalQuery {
-  uamip?: string;
-  uamport?: string;
-  challenge?: string;
-  called?: string;
-  mac?: string;
-  ip?: string;
   nasid?: string;
+  ip?: string;
   userurl?: string;
-  res?: string;
 }
 
 interface PortalBody {
   username?: string;
   password?: string;
-  challenge?: string;
-  uamip?: string;
-  uamport?: string;
   userurl?: string;
-  res?: string;
-  called?: string;
-  mac?: string;
-  ip?: string;
   nasid?: string;
+  ip?: string;
 }
 
 export async function portalRoutes(fastify: FastifyInstance) {
@@ -33,14 +21,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
   fastify.get('/portal', async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
     const query = request.query;
     
-    // Extract CoovaChilli parameters
-    const uamip = query.uamip || '10.1.0.1';
-    const uamport = query.uamport || '3990';
-    const challenge = query.challenge || '';
-    const called = query.called || '';
-    const mac = query.mac || '';
-    const ip = query.ip || '';
+    // Extract uspot parameters
     const nasid = query.nasid || '';
+    const ip = query.ip || '';
     const userurl = query.userurl || 'http://www.google.com';
 
     const html = `
@@ -226,13 +209,8 @@ export async function portalRoutes(fastify: FastifyInstance) {
         <div class="error-message" id="errorMessage"></div>
         
         <form id="loginForm" method="POST" action="/portal/login">
-            <input type="hidden" name="uamip" value="${uamip}">
-            <input type="hidden" name="uamport" value="${uamport}">
-            <input type="hidden" name="challenge" value="${challenge}">
-            <input type="hidden" name="called" value="${called}">
-            <input type="hidden" name="mac" value="${mac}">
-            <input type="hidden" name="ip" value="${ip}">
             <input type="hidden" name="nasid" value="${nasid}">
+            <input type="hidden" name="ip" value="${ip}">
             <input type="hidden" name="userurl" value="${userurl}">
             
             <div class="form-group">
@@ -371,80 +349,50 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
   // Handle login POST request
   fastify.post('/portal/login', async (request: FastifyRequest<{ Body: PortalBody }>, reply: FastifyReply) => {
-    const { username, password, uamip, uamport, challenge, called, mac, ip, nasid, userurl, res } = request.body;
+    const { username, password, nasid, ip, userurl } = request.body;
 
     if (!username || !password) {
       return reply.code(400).send({ error: 'Username and password are required' });
     }
 
     try {
-      // Find router by NAS ID (router ID) or IP
+      // Find router by NAS ID (router ID) only
       // The flow:
       // 1. When a router is created via POST /api/routers, it generates:
       //    - router.id (unique ID)
       //    - router.radiusSecret (random 32-char hex string)
-      //    - router.nasipaddress (router's public IP - set later when router connects)
       //
-      // 2. CoovaChilli config has HS_NASID=$ROUTER_ID, which sends router.id as NAS-Identifier
+      // 2. Uspot config has nas_id=$ROUTER_ID, which sends router.id as NAS-Identifier
       //
-      // 3. Portal receives request and looks up router by:
-      //    a. NAS ID (from query param 'nasid') - matches router.id
-      //    b. Router IP (from query param 'ip' or request IP) - matches router.nasipaddress
-      //    c. Request IP (fallback) - matches router.nasipaddress
+      // 3. Portal receives request and looks up router by NAS ID (from query param 'nasid')
       //
       // 4. Once router is found, portal uses router.radiusSecret for RADIUS authentication
       
-      let router = null;
-      
-      // Method 1: Find by NAS ID (most reliable - matches router.id)
-      if (nasid) {
-        router = await prisma.router.findUnique({
-          where: { id: nasid },
+      if (!nasid) {
+        fastify.log.warn('Portal login request missing nasid parameter');
+        return reply.code(400).send({ 
+          error: 'Missing router identifier',
+          message: 'The nasid parameter is required. Please ensure uspot is properly configured with nas_id.'
         });
-        fastify.log.debug(`Router lookup by NAS ID: ${nasid} -> ${router ? 'found' : 'not found'}`);
       }
 
-      // Method 2: Find by IP from query parameter
-      if (!router && ip) {
-        router = await prisma.router.findFirst({
-          where: { nasipaddress: ip },
-        });
-        fastify.log.debug(`Router lookup by IP query param: ${ip} -> ${router ? 'found' : 'not found'}`);
-      }
+      const router = await prisma.router.findUnique({
+        where: { id: nasid },
+      });
 
-      // Method 3: Find by request IP (router's public IP)
       if (!router) {
-        const requestIp = request.ip || request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || request.socket?.remoteAddress;
-        if (requestIp && requestIp !== '127.0.0.1' && requestIp !== '::1') {
-          router = await prisma.router.findFirst({
-            where: { nasipaddress: requestIp },
-          });
-          fastify.log.debug(`Router lookup by request IP: ${requestIp} -> ${router ? 'found' : 'not found'}`);
-        }
+        fastify.log.warn(`Router not found - NAS ID: ${nasid}`);
+        return reply.code(401).send({ 
+          error: 'Router not found',
+          message: `Router with ID '${nasid}' not found. Please ensure the router is properly registered.`
+        });
       }
 
-      // Method 4: If UAM IP is provided and it's the hotspot gateway, we can't use it to identify router
-      // But we could potentially match by MAC address if provided
-      if (!router && mac) {
-        // Format MAC address for lookup
-        const normalizedMac = mac.replace(/[:-]/g, '').toUpperCase();
-        const formattedMac = normalizedMac.match(/.{2}/g)?.join(':');
-        if (formattedMac) {
-          router = await prisma.router.findFirst({
-            where: { macAddress: formattedMac },
-          });
-          fastify.log.debug(`Router lookup by MAC: ${formattedMac} -> ${router ? 'found' : 'not found'}`);
-        }
-      }
-
-      if (!router || !router.radiusSecret) {
-        const routerCount = await prisma.router.count();
-        fastify.log.warn(
-          `Router not found or missing RADIUS secret - NAS ID: ${nasid}, IP: ${ip}, Request IP: ${request.ip}, MAC: ${mac}, Available routers: ${routerCount}`
-        );
+      if (!router.radiusSecret) {
+        fastify.log.warn(`Router missing RADIUS secret - NAS ID: ${nasid}`);
         return reply.code(401).send({ 
           error: 'Invalid router configuration',
-          message: 'Unable to identify router. Please ensure the router is properly registered and configured.'
+          message: 'Router is missing RADIUS secret. Please ensure the router is properly configured.'
         });
       }
 
@@ -454,7 +402,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       // Note: The router's nasipaddress is the router's IP, not the RADIUS server IP
       // For RADIUS server IP, we should use environment variable or router-specific config
       // For now, use environment variable RADIUS_HOST or default to router's IP
-      const radiusHost = process.env.RADIUS_HOST || router.nasipaddress || ip || '127.0.0.1';
+      const radiusHost = process.env.RADIUS_HOST || router.nasipaddress || '127.0.0.1';
       const radiusPort = parseInt(process.env.RADIUS_PORT || '1812', 10);
 
       // Authenticate user via RADIUS
@@ -464,11 +412,16 @@ export async function portalRoutes(fastify: FastifyInstance) {
         port: radiusPort,
       });
 
+      // Get client IP from router (uspot) - more accurate than request IP
+      // Router provides the client's hotspot IP (e.g., 10.1.0.50)
+      // Request IP would be router's public IP or proxy IP, not the client's IP
+      const clientIp = ip || request.ip || request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || '0.0.0.0';
+      
       const authResult = await radClient.authenticate(username, password, {
-        'NAS-IP-Address': ip || request.ip,
-        'NAS-Identifier': nasid || router.id,
-        'Called-Station-Id': called || mac || '',
-        'Calling-Station-Id': mac || '',
+        'NAS-IP-Address': clientIp,
+        'NAS-Identifier': router.id,
+        'Called-Station-Id': '',
+        'Calling-Station-Id': '',
         'User-Name': username,
       }).catch((error) => {
         fastify.log.error(`RADIUS authentication error: ${error.message}`);
@@ -476,11 +429,11 @@ export async function portalRoutes(fastify: FastifyInstance) {
       });
 
       if (authResult.accept) {
-        // Authentication successful - redirect to CoovaChilli success page
-        const uamServer = `${uamip || '10.1.0.1'}:${uamport || '3990'}`;
-        const redirectUrl = `http://${uamServer}/logon?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&challenge=${challenge || ''}&uamip=${uamip || ''}&uamport=${uamport || ''}&userurl=${encodeURIComponent(userurl || 'http://www.google.com')}`;
+        // Authentication successful - redirect to user's destination
+        // Uspot handles the authentication internally via RADIUS, so we just redirect to the destination
+        const redirectUrl = userurl || 'http://www.google.com';
         
-        // For CoovaChilli UAM, we need to return HTML that redirects
+        // Return HTML that redirects
         const successHtml = `
 <!DOCTYPE html>
 <html>
@@ -495,6 +448,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
 </html>
         `;
 
+        fastify.log.info(`Portal authentication successful for router ${router.id}, redirecting to: ${redirectUrl}`);
         return reply.type('text/html').send(successHtml);
       } else {
         // Authentication failed
@@ -513,25 +467,22 @@ export async function portalRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // Logout endpoint (for CoovaChilli)
+  // Logout endpoint (for uspot)
   fastify.get('/portal/logout', async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
     const query = request.query;
-    const uamip = query.uamip || '10.1.0.1';
-    const uamport = query.uamport || '3990';
     const userurl = query.userurl || 'http://www.google.com';
 
-    const logoutUrl = `http://${uamip}:${uamport}/logout?userurl=${encodeURIComponent(userurl)}`;
-    
+    // Uspot handles logout internally, just redirect to destination
     const html = `
 <!DOCTYPE html>
 <html>
 <head>
-    <meta http-equiv="refresh" content="0;url=${logoutUrl}">
-    <script>window.location.href = "${logoutUrl}";</script>
+    <meta http-equiv="refresh" content="0;url=${userurl}">
+    <script>window.location.href = "${userurl}";</script>
 </head>
 <body>
     <p>Logging out...</p>
-    <p>If you are not redirected, <a href="${logoutUrl}">click here</a>.</p>
+    <p>If you are not redirected, <a href="${userurl}">click here</a>.</p>
 </body>
 </html>
     `;

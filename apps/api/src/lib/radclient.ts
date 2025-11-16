@@ -1,6 +1,6 @@
 /**
  * Simple RADIUS client for authentication
- * This is a basic implementation for CoovaChilli portal authentication
+ * This is a basic implementation for uspot portal authentication
  */
 
 import dgram from 'dgram';
