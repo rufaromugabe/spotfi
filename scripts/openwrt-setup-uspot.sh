@@ -191,11 +191,14 @@ if [ -f /etc/config/uspot ]; then
   cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Global toggles (if supported)
+# Global toggles and basic settings (also set required keys here for older uspot versions)
 uci -q set uspot.main=uspot
 uci -q set uspot.main.enabled='1'
+uci -q set uspot.main.setname='spotfi'
+uci -q set uspot.main.interface="$WIFI_IF"
+uci -q set uspot.main.auth_mode='radius'
 
-# Instance configuration – required keys: setname, interface, auth_mode
+# Instance configuration – required keys: setname, interface, auth_mode/auth
 # Create/update a single instance named 'spotfi'
 if ! uci show uspot 2>/dev/null | grep -q "=instance"; then
   uci -q add uspot instance >/dev/null
