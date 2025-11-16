@@ -175,8 +175,7 @@ fi
 echo "  - Detected WAN interface: $WAN_IF"
 echo "  - Detected LAN/WiFi interface: $WIFI_IF"
 
-STEP_NUM=$((STEP_NUM + 1)
-) && echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network interfaces...${NC}"
+STEP_NUM=$((STEP_NUM + 1)); echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network interfaces...${NC}"
 if ! uci show network.hotspot >/dev/null 2>&1; then
   uci set network.hotspot=interface
   uci set network.hotspot.proto='static'
