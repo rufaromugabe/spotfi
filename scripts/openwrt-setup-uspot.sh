@@ -24,12 +24,26 @@ with_timeout() {
   if command -v timeout >/dev/null 2>&1; then
     if timeout --help 2>&1 | grep -qi busybox; then
       timeout -t "$seconds" "$@"
+      return $?
     else
       timeout "$seconds" "$@"
+      return $?
     fi
-  else
-    "$@"
   fi
+  # Fallback: manual timeout using subshell and kill
+  (
+    "$@" &
+    cmd_pid=$!
+    (
+      sleep "$seconds"
+      kill -0 "$cmd_pid" 2>/dev/null && kill -TERM "$cmd_pid" 2>/dev/null
+    ) &
+    timer_pid=$!
+    wait "$cmd_pid"
+    status=$?
+    kill "$timer_pid" 2>/dev/null || true
+    exit $status
+  )
 }
 
 if [ "$EUID" -ne 0 ]; then 
@@ -102,17 +116,17 @@ interface_exists() {
 echo -e "${YELLOW}Detecting network interfaces...${NC}"
 WAN_IF=""
 if [ -z "$WAN_IF" ] && command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
-  WAN_IF=$(with_timeout 3 ubus call network.interface.wan status 2>/dev/null \
-    | with_timeout 2 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
+  WAN_IF=$(with_timeout 2 ubus call network.interface.wan status 2>/dev/null \
+    | with_timeout 1 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
   [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
 fi
 if [ -z "$WAN_IF" ] && command -v ifstatus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
-  WAN_IF=$(with_timeout 3 ifstatus wan 2>/dev/null \
-    | with_timeout 2 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
+  WAN_IF=$(with_timeout 2 ifstatus wan 2>/dev/null \
+    | with_timeout 1 jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1 || echo "")
   [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
 fi
 if [ -z "$WAN_IF" ]; then
-  WAN_IF=$(with_timeout 2 ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+  WAN_IF=$(with_timeout 1 ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')
   [ -n "$WAN_IF" ] && interface_exists "$WAN_IF" || WAN_IF=""
 fi
 if [ -z "$WAN_IF" ]; then
@@ -124,7 +138,7 @@ fi
 WIFI_IF=""
 HAS_WIRELESS=false
 if command -v iw >/dev/null 2>&1; then
-  WIFI_IF=$(with_timeout 2 iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
+  WIFI_IF=$(with_timeout 1 iw dev 2>/dev/null | awk '/Interface/ {print $2; exit}')
   if [ -n "$WIFI_IF" ] && interface_exists "$WIFI_IF"; then
     HAS_WIRELESS=true
   else
@@ -133,8 +147,8 @@ if command -v iw >/dev/null 2>&1; then
 fi
 LAN_DEV=""
 if [ -z "$WIFI_IF" ]; then
-  LAN_DEV=$(with_timeout 2 uci get network.lan.device 2>/dev/null || echo "")
-  [ -z "$LAN_DEV" ] && LAN_DEV=$(with_timeout 2 ip -br link show type bridge 2>/dev/null | awk '{print $1; exit}')
+  LAN_DEV=$(with_timeout 1 uci get network.lan.device 2>/dev/null || echo "")
+  [ -z "$LAN_DEV" ] && LAN_DEV=$(with_timeout 1 ip -br link show type bridge 2>/dev/null | awk '{print $1; exit}')
 fi
 if [ -z "$WIFI_IF" ]; then
   if [ -n "$LAN_DEV" ] && interface_exists "$LAN_DEV"; then
