@@ -176,11 +176,15 @@ echo "  - Detected WAN interface: $WAN_IF"
 echo "  - Detected LAN/WiFi interface: $WIFI_IF"
 
 STEP_NUM=$((STEP_NUM + 1)); echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network interfaces...${NC}"
+# Logical hotspot interface name used by Uspot/OpenWrt
+HOTSPOT_NET_IF="hotspot"
 if ! uci show network.hotspot >/dev/null 2>&1; then
   uci set network.hotspot=interface
   uci set network.hotspot.proto='static'
   uci set network.hotspot.ipaddr='10.1.0.1'
   uci set network.hotspot.netmask='255.255.255.0'
+  # Attach hotspot logical interface to underlying LAN/WiFi device
+  uci set network.hotspot.device="$WIFI_IF"
   uci commit network
 fi
 echo -e "${GREEN}✓ Network configured${NC}"
@@ -195,7 +199,8 @@ fi
 uci -q set uspot.main=uspot
 uci -q set uspot.main.enabled='1'
 uci -q set uspot.main.setname='spotfi'
-uci -q set uspot.main.interface="$WIFI_IF"
+# Uspot expects the OpenWrt network interface section name here (not raw device)
+uci -q set uspot.main.interface="$HOTSPOT_NET_IF"
 uci -q set uspot.main.auth_mode='radius'
 
 # Instance configuration – required keys: setname, interface, auth_mode/auth
@@ -206,7 +211,9 @@ fi
 uci -q set uspot.@instance[0].setname='spotfi'
 uci -q set uspot.@instance[0].name='spotfi'
 uci -q set uspot.@instance[0].enabled='1'
-uci -q set uspot.@instance[0].interface="$WIFI_IF"
+# OpenWrt network interface section name (logical interface)
+uci -q set uspot.@instance[0].interface="$HOTSPOT_NET_IF"
+# Underlying Linux device/bridge
 uci -q set uspot.@instance[0].ifname="$WIFI_IF"
 uci -q set uspot.@instance[0].auth_mode='radius'
 uci -q set uspot.@instance[0].auth='radius'
