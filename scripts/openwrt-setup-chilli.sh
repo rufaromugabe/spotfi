@@ -119,16 +119,70 @@ check_package() {
     fi
 }
 
+# Try to download and install package directly from a feed index (release/snapshot)
+download_install_from_feed() {
+  local pkg="$1"
+  # Detect arch and release
+  local arch board release
+  arch="$(opkg print-architecture 2>/dev/null | awk '/^arch/ {print $2}' | tail -n1)"
+  # Defaults if detection fails
+  [ -z "$arch" ] && arch="x86_64"
+  release="$(sed -n "s/.*DISTRIB_RELEASE='\\([^']*\\)'.*/\\1/p" /etc/openwrt_release 2>/dev/null)"
+  [ -z "$release" ] && release="23.05.5"
+  # Candidate feeds to try in order
+  # 1) Current release packages (arch feed)
+  # 2) Snapshots packages (arch feed)
+  local bases="
+https://downloads.openwrt.org/releases/$release/packages/$arch/packages
+https://downloads.openwrt.org/snapshots/packages/$arch/packages
+"
+  for base in $bases; do
+    # Fetch Packages.gz and find filename for pkg
+    if with_timeout 5 wget -qO- "$base/Packages.gz" >/tmp/Packages.gz.$$ 2>/dev/null; then
+      if gzip -t /tmp/Packages.gz.$$ 2>/dev/null; then
+        gzip -dc /tmp/Packages.gz.$$ > /tmp/Packages.$$ 2>/dev/null || true
+      else
+        # Some mirrors may serve uncompressed
+        cp /tmp/Packages.gz.$$ /tmp/Packages.$$ 2>/dev/null || true
+      fi
+      if [ -s /tmp/Packages.$$ ]; then
+        local filename
+        filename="$(awk -v PKG="$pkg" '
+          $1=="Package:" && $2==PKG {found=1}
+          found && $1=="Filename:" {print $2; exit}
+        ' /tmp/Packages.$$)"
+        if [ -n "$filename" ]; then
+          echo "  - Found $pkg in feed: $base/$filename"
+          if with_timeout 10 wget -q "$base/$filename" -O "/tmp/$pkg.ipk"; then
+            if opkg install "/tmp/$pkg.ipk"; then
+              rm -f "/tmp/$pkg.ipk" /tmp/Packages.$$ /tmp/Packages.gz.$$ 2>/dev/null || true
+              return 0
+            fi
+          fi
+        fi
+      fi
+    fi
+    rm -f /tmp/Packages.$$ /tmp/Packages.gz.$$ 2>/dev/null || true
+  done
+  return 1
+}
+
 # Install CoovaChilli
 if check_package coova-chilli; then
     opkg install coova-chilli || {
-        echo -e "${RED}Error: Failed to install coova-chilli${NC}"
-        exit 1
+        echo -e "${YELLOW}Warning: opkg install coova-chilli failed, attempting direct fetch from feeds...${NC}"
+        if ! download_install_from_feed "coova-chilli"; then
+          echo -e "${RED}Error: Failed to install coova-chilli${NC}"
+          exit 1
+        fi
     }
 else
-    echo -e "${RED}Error: coova-chilli not available in package repository${NC}"
-    echo -e "${YELLOW}Please check your package repositories or install manually${NC}"
-    exit 1
+    echo -e "${YELLOW}coova-chilli not listed by opkg, attempting direct fetch from feeds...${NC}"
+    if ! download_install_from_feed "coova-chilli"; then
+      echo -e "${RED}Error: coova-chilli not available in package repository${NC}"
+      echo -e "${YELLOW}Please check your package repositories or install manually${NC}"
+      exit 1
+    fi
 fi
 
 # Verify installation
