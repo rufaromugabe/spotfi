@@ -191,21 +191,32 @@ if [ -f /etc/config/uspot ]; then
   cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Best-effort UCI configuration (keys may vary by version)
+# Global toggles (if supported)
 uci -q set uspot.main=uspot
 uci -q set uspot.main.enabled='1'
-uci -q set uspot.main.wan_if="$WAN_IF"
-uci -q set uspot.main.lan_if="$WIFI_IF"
-uci -q set uspot.main.portal_url="https://$PORTAL_DOMAIN/portal"
-uci -q set uspot.main.radius_auth_server="$RADIUS_IP"
-uci -q set uspot.main.radius_acct_server="$RADIUS_IP"
-uci -q set uspot.main.radius_secret="$RADIUS_SECRET"
-uci -q set uspot.main.nas_id="$ROUTER_ID"
-uci -q set uspot.main.mac_address="$MAC_ADDRESS"
-uci -q set uspot.main.interim_update='300'
-uci -q set uspot.main.radsec='0'
-uci -q set uspot.main.bandwidth_max_down='0'
-uci -q set uspot.main.bandwidth_max_up='0'
+
+# Instance configuration – required keys: setname, interface, auth_mode
+# Create/update a single instance named 'spotfi'
+if ! uci show uspot 2>/dev/null | grep -q "=instance"; then
+  uci -q add uspot instance >/dev/null
+fi
+uci -q set uspot.@instance[0].setname='spotfi'
+uci -q set uspot.@instance[0].enabled='1'
+uci -q set uspot.@instance[0].interface="$WIFI_IF"
+uci -q set uspot.@instance[0].auth_mode='radius'
+# Radius settings
+uci -q set uspot.@instance[0].radius_auth_server="$RADIUS_IP"
+uci -q set uspot.@instance[0].radius_acct_server="$RADIUS_IP"
+uci -q set uspot.@instance[0].radius_secret="$RADIUS_SECRET"
+uci -q set uspot.@instance[0].nas_id="$ROUTER_ID"
+uci -q set uspot.@instance[0].mac_address="$MAC_ADDRESS"
+# Portal
+uci -q set uspot.@instance[0].portal_url="https://$PORTAL_DOMAIN/portal"
+# Network hints (if supported)
+uci -q set uspot.@instance[0].wan_if="$WAN_IF"
+uci -q set uspot.@instance[0].lan_if="$WIFI_IF"
+# Accounting interval (if supported)
+uci -q set uspot.@instance[0].interim_update='300'
 uci commit uspot || true
 echo -e "${GREEN}✓ Uspot configured${NC}"
 

@@ -70,7 +70,7 @@ curl -X POST http://192.168.42.181:8080/api/routers \
 x into your OpenWRT router:
 
 ```bash
-x root@192.168.56.10
+ssh root@192.168.56.10
 ```
 
 **Choose your setup option:**
