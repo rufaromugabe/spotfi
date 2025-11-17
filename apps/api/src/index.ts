@@ -7,6 +7,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { prisma } from './lib/prisma.js';
 import { routerRoutes } from './routes/routers.js';
+import { routerManagementRoutes } from './routes/router-management.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
@@ -55,6 +56,7 @@ await fastify.register(swagger, {
     tags: [
       { name: 'auth', description: 'Authentication endpoints' },
       { name: 'routers', description: 'Router management endpoints' },
+      { name: 'router-management', description: 'Router remote management via WebSocket bridge' },
       { name: 'invoices', description: 'Billing and invoice endpoints' },
     ],
     components: {
@@ -99,6 +101,7 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
 // Register routes
 await fastify.register(authRoutes);
 await fastify.register(routerRoutes, { prefix: '/api/routers' });
+await fastify.register(routerManagementRoutes);
 await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
 await fastify.register(terminalRoutes);

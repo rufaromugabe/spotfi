@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
+import { commandManager } from './command-manager.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -123,6 +124,34 @@ export class RouterConnectionHandler {
             this.logger.error(`[Router ${this.routerId}] x error for session ${message.sessionId}: ${message.error}`);
             break;
 
+          case 'command-result':
+            // Handle command response
+            if (message.commandId) {
+              commandManager.handleResponse(message.commandId, message);
+            }
+            break;
+
+          case 'command-progress':
+            // Handle command progress
+            if (message.commandId) {
+              commandManager.handleCommandProgress(message.commandId, message);
+            }
+            break;
+
+          case 'ubus-result':
+            // Handle ubus call result (alias for command-result)
+            if (message.commandId || message.id) {
+              commandManager.handleResponse(message.commandId || message.id, message);
+            }
+            break;
+
+          case 'logs':
+            // Handle logs response
+            if (message.commandId) {
+              commandManager.handleResponse(message.commandId, message);
+            }
+            break;
+
           default:
             this.logger.warn(`[Router ${this.routerId}] Unknown message type: ${message.type}`);
         }
@@ -198,6 +227,8 @@ export class RouterConnectionHandler {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
+    // Clear pending commands for this router
+    commandManager.clearAll(this.routerId);
   }
 
   private async markOffline(): Promise<void> {

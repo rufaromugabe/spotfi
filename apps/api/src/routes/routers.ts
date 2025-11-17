@@ -6,6 +6,36 @@ import { activeConnections } from '../websocket/server.js';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
 
+// Helper function to check actual router connection status
+function checkRouterConnectionStatus(routerId: string): 'ONLINE' | 'OFFLINE' {
+  const socket = activeConnections.get(routerId);
+  const isActuallyOnline = socket && socket.readyState === WebSocket.OPEN;
+  return isActuallyOnline ? 'ONLINE' : 'OFFLINE';
+}
+
+// Helper function to update router status in DB asynchronously (fire-and-forget)
+async function updateRouterStatusIfNeeded(
+  routerId: string,
+  dbStatus: string,
+  actualStatus: 'ONLINE' | 'OFFLINE',
+  logger: any
+): Promise<void> {
+  if (dbStatus !== actualStatus) {
+    // Update DB asynchronously - don't block response
+    prisma.router
+      .update({
+        where: { id: routerId },
+        data: {
+          status: actualStatus,
+          ...(actualStatus === 'ONLINE' && { lastSeen: new Date() })
+        }
+      })
+      .catch((err) => {
+        logger.error(`Failed to update router status for ${routerId}: ${err}`);
+      });
+  }
+}
+
 function requireAdmin(request: FastifyRequest, reply: FastifyReply, done: Function) {
   const user = request.user as any;
   if (user.role !== 'ADMIN') {
@@ -58,8 +88,23 @@ export async function routerRoutes(fastify: FastifyInstance) {
       prisma.router.count({ where })
     ]);
 
+    // Check actual WebSocket connection status and update DB if needed
+    const routersWithRealStatus = routers.map((router) => {
+      const actualStatus = checkRouterConnectionStatus(router.id);
+      
+      // Update DB asynchronously if status differs (don't block response)
+      if (router.status !== actualStatus) {
+        updateRouterStatusIfNeeded(router.id, router.status, actualStatus, fastify.log);
+      }
+
+      return {
+        ...router,
+        status: actualStatus
+      };
+    });
+
     return {
-      routers,
+      routers: routersWithRealStatus,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -96,7 +141,21 @@ export async function routerRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
-    return { router };
+    // Check actual WebSocket connection status (real-time)
+    const actualStatus = checkRouterConnectionStatus(id);
+
+    // Update DB asynchronously if status differs (don't block response)
+    if (router.status !== actualStatus) {
+      updateRouterStatusIfNeeded(id, router.status, actualStatus, fastify.log);
+    }
+
+    // Return router with corrected status
+    return {
+      router: {
+        ...router,
+        status: actualStatus
+      }
+    };
   });
 
   // Create router (Admin only)

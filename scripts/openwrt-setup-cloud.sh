@@ -193,6 +193,9 @@ class SpotFiBridge:
         if msg_type == 'command':
             command = data.get('command')
             params = data.get('params', {})
+            # Extract commandId from message if present
+            if 'commandId' in data:
+                params['commandId'] = data['commandId']
             self.handle_command(command, params)
         elif msg_type == 'connected':
             print(f"✓ Registered: {data.get('routerId')}")
@@ -206,19 +209,431 @@ class SpotFiBridge:
     def handle_command(self, command, params=None):
         if params is None:
             params = {}
-        print(f"Executing: {command}")
-        if command == 'reboot':
-            subprocess.run(['reboot'])
-        elif command == 'get-status':
-            self.send_metrics()
-        elif command == 'fetch-logs':
-            logs = subprocess.check_output(['logread', '-l', '50']).decode()
-            self.send_message({'type': 'logs', 'data': logs})
-        elif command == 'setup-chilli':
-            self.setup_chilli(params)
+        
+        command_id = params.get('commandId') or params.get('command_id')
+        print(f"Executing: {command} (id: {command_id})")
+        
+        try:
+            if command == 'reboot':
+                subprocess.run(['reboot'])
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'message': 'Reboot command sent'})
+            elif command == 'get-status':
+                self.send_metrics()
+                if command_id:
+                    metrics = self.get_router_metrics()
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': metrics})
+            elif command == 'fetch-logs':
+                lines = params.get('lines', 50)
+                logs = subprocess.check_output(['logread', '-l', str(lines)]).decode()
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': logs})
+                else:
+                    self.send_message({'type': 'logs', 'data': logs})
+            elif command == 'setup-chilli':
+                self.setup_chilli(params)
+            elif command == 'ubus-call':
+                self.handle_ubus_call(params)
+            elif command == 'uci-command':
+                self.handle_uci_command(params)
+            elif command == 'shell-command':
+                self.handle_shell_command(params)
+            elif command == 'read-file':
+                self.handle_read_file(params)
+            elif command == 'service-command':
+                self.handle_service_command(params)
+            elif command == 'network-statistics':
+                self.handle_network_statistics(params)
+            elif command == 'network-speed':
+                self.handle_network_speed(params)
+            else:
+                error_msg = f"Unknown command: {command}"
+                print(f"Error: {error_msg}", file=sys.stderr)
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Command error: {str(e)}"
+            print(f"Error executing {command}: {error_msg}", file=sys.stderr)
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_ubus_call(self, params):
+        """Handle ubus call command"""
+        command_id = params.get('commandId') or params.get('command_id')
+        namespace = params.get('namespace')
+        method = params.get('method')
+        args = params.get('args', {})
+        
+        if not namespace or not method:
+            error_msg = "Missing namespace or method for ubus call"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            # Convert args dict to JSON string for ubus
+            args_json = json.dumps(args) if args else '{}'
+            
+            result = subprocess.run(
+                ['ubus', 'call', namespace, method, args_json],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                data = json.loads(result.stdout) if result.stdout else {}
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': data})
+                else:
+                    self.send_message({'type': 'ubus-result', 'id': command_id, 'data': data})
+            else:
+                error_msg = f"ubus call failed: {result.stderr}"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except subprocess.TimeoutExpired:
+            error_msg = "ubus call timed out"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"ubus call error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_uci_command(self, params):
+        """Handle UCI configuration commands"""
+        command_id = params.get('commandId') or params.get('command_id')
+        cmd = params.get('command')
+        config = params.get('config')
+        section = params.get('section')
+        option = params.get('option')
+        value = params.get('value')
+        
+        if not cmd:
+            error_msg = "Missing command for uci-command"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            uci_cmd = ['uci']
+            
+            if cmd == 'show':
+                if config:
+                    uci_cmd.extend(['show', config])
+                    if section:
+                        uci_cmd.append(section)
+                else:
+                    uci_cmd.append('show')
+            elif cmd == 'set':
+                if not all([config, section, option, value]):
+                    error_msg = "Missing required parameters for uci set"
+                    if command_id:
+                        self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+                    return
+                uci_cmd.extend(['set', f"{config}.{section}.{option}={value}"])
+            elif cmd == 'commit':
+                uci_cmd.append('commit')
+                if config:
+                    uci_cmd.append(config)
+            else:
+                error_msg = f"Unknown uci command: {cmd}"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+                return
+            
+            result = subprocess.run(
+                uci_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                # For uci show, parse output into dict
+                if cmd == 'show':
+                    data = {}
+                    for line in result.stdout.strip().split('\n'):
+                        if '=' in line:
+                            key, val = line.split('=', 1)
+                            data[key.strip()] = val.strip()
+                    if command_id:
+                        self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': data})
+                else:
+                    if command_id:
+                        self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': result.stdout.strip()})
+            else:
+                error_msg = f"uci command failed: {result.stderr}"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except subprocess.TimeoutExpired:
+            error_msg = "uci command timed out"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"uci command error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_shell_command(self, params):
+        """Handle shell command execution"""
+        command_id = params.get('commandId') or params.get('command_id')
+        cmd = params.get('command')
+        timeout_sec = params.get('timeout', 10)
+        
+        if not cmd:
+            error_msg = "Missing command for shell-command"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec
+            )
+            
+            output = {
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+                'returncode': result.returncode
+            }
+            
+            if command_id:
+                if result.returncode == 0:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': output})
+                else:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': result.stderr or 'Command failed', 'data': output})
+        except subprocess.TimeoutExpired:
+            error_msg = f"Command timed out after {timeout_sec}s"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Command error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_read_file(self, params):
+        """Handle file read operation"""
+        command_id = params.get('commandId') or params.get('command_id')
+        file_path = params.get('path')
+        
+        if not file_path:
+            error_msg = "Missing path for read-file"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': content})
+        except FileNotFoundError:
+            error_msg = f"File not found: {file_path}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except PermissionError:
+            error_msg = f"Permission denied: {file_path}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Read file error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_service_command(self, params):
+        """Handle service management commands"""
+        command_id = params.get('commandId') or params.get('command_id')
+        service = params.get('service')
+        action = params.get('action')
+        
+        if not service or not action:
+            error_msg = "Missing service or action for service-command"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        if action not in ['start', 'stop', 'restart', 'status', 'enable', 'disable']:
+            error_msg = f"Invalid action: {action}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            if action == 'status':
+                result = subprocess.run(
+                    ['/etc/init.d/', service, 'status'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+            else:
+                result = subprocess.run(
+                    ['/etc/init.d/', service, action],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+            
+            output = {
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+                'returncode': result.returncode
+            }
+            
+            if command_id:
+                if result.returncode == 0:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': output})
+                else:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': result.stderr or 'Service command failed', 'data': output})
+        except subprocess.TimeoutExpired:
+            error_msg = f"Service command timed out"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Service command error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_network_statistics(self, params):
+        """Handle network interface statistics"""
+        command_id = params.get('commandId') or params.get('command_id')
+        interface = params.get('interface')
+        
+        try:
+            # Read /proc/net/dev for interface statistics
+            stats = {}
+            with open('/proc/net/dev', 'r') as f:
+                lines = f.readlines()
+                # Skip header lines
+                for line in lines[2:]:
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        iface = parts[0].strip()
+                        data = parts[1].split()
+                        
+                        if interface and iface != interface:
+                            continue
+                        
+                        if len(data) >= 16:
+                            stats[iface] = {
+                                'rx_bytes': int(data[0]),
+                                'rx_packets': int(data[1]),
+                                'rx_errors': int(data[2]),
+                                'rx_dropped': int(data[3]),
+                                'rx_fifo': int(data[4]),
+                                'rx_frame': int(data[5]),
+                                'rx_compressed': int(data[6]),
+                                'rx_multicast': int(data[7]),
+                                'tx_bytes': int(data[8]),
+                                'tx_packets': int(data[9]),
+                                'tx_errors': int(data[10]),
+                                'tx_dropped': int(data[11]),
+                                'tx_fifo': int(data[12]),
+                                'tx_collisions': int(data[13]),
+                                'tx_carrier': int(data[14]),
+                                'tx_compressed': int(data[15])
+                            }
+            
+            if command_id:
+                if interface and interface not in stats:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': f'Interface {interface} not found'})
+                else:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': stats})
+        except FileNotFoundError:
+            error_msg = "/proc/net/dev not found"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Network statistics error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_network_speed(self, params):
+        """Handle network speed measurement (real-time throughput)"""
+        command_id = params.get('commandId') or params.get('command_id')
+        interface = params.get('interface')
+        interval = params.get('interval', 2)
+        
+        if not interface:
+            error_msg = "Missing interface for network-speed"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            # Get initial statistics
+            def get_iface_stats(iface):
+                with open('/proc/net/dev', 'r') as f:
+                    for line in f:
+                        if iface + ':' in line:
+                            parts = line.split(':')
+                            if len(parts) == 2:
+                                data = parts[1].split()
+                                if len(data) >= 16:
+                                    return {
+                                        'rx_bytes': int(data[0]),
+                                        'tx_bytes': int(data[8])
+                                    }
+                return None
+            
+            initial = get_iface_stats(interface)
+            if not initial:
+                error_msg = f"Interface {interface} not found"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+                return
+            
+            # Wait for interval
+            time.sleep(interval)
+            
+            # Get final statistics
+            final = get_iface_stats(interface)
+            if not final:
+                error_msg = f"Interface {interface} disappeared during measurement"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+                return
+            
+            # Calculate speed
+            rx_delta = final['rx_bytes'] - initial['rx_bytes']
+            tx_delta = final['tx_bytes'] - initial['tx_bytes']
+            
+            rx_speed = rx_delta / interval  # bytes per second
+            tx_speed = tx_delta / interval  # bytes per second
+            
+            result = {
+                'interface': interface,
+                'interval': interval,
+                'rx_bytes': final['rx_bytes'],
+                'tx_bytes': final['tx_bytes'],
+                'rx_speed_bytes_per_sec': rx_speed,
+                'tx_speed_bytes_per_sec': tx_speed,
+                'rx_speed_mbps': (rx_speed * 8) / (1024 * 1024),  # Convert to Mbps
+                'tx_speed_mbps': (tx_speed * 8) / (1024 * 1024),  # Convert to Mbps
+                'rx_speed_kbps': (rx_speed * 8) / 1024,  # Convert to Kbps
+                'tx_speed_kbps': (tx_speed * 8) / 1024   # Convert to Kbps
+            }
+            
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': result})
+        except FileNotFoundError:
+            error_msg = "/proc/net/dev not found"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"Network speed error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
     
     def setup_chilli(self, params):
         """Download and execute chilli setup script with provided parameters"""
+        command_id = params.get('commandId') or params.get('command_id')
         try:
             router_id = params.get('routerId')
             radius_secret = params.get('radiusSecret')
@@ -229,7 +644,8 @@ class SpotFiBridge:
             if not all([router_id, radius_secret, mac_address, radius_ip]):
                 error_msg = "Missing required parameters for chilli setup"
                 print(f"Error: {error_msg}", file=sys.stderr)
-                self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
                 return
             
             print(f"Setting up CoovaChilli...")
@@ -252,7 +668,8 @@ class SpotFiBridge:
             if result.returncode != 0:
                 error_msg = f"Failed to download script: {result.stderr}"
                 print(f"Error: {error_msg}", file=sys.stderr)
-                self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
                 return
             
             # Fix line endings and make executable
@@ -282,42 +699,53 @@ class SpotFiBridge:
                     output_lines.append(line)
                     # Send progress updates
                     if any(keyword in line.lower() for keyword in ['installing', 'configuring', 'complete', 'error']):
-                        self.send_message({
+                        progress_msg = {
                             'type': 'command-progress',
                             'command': 'setup-chilli',
                             'message': line
-                        })
+                        }
+                        if command_id:
+                            progress_msg['commandId'] = command_id
+                        self.send_message(progress_msg)
             
             process.wait()
             
             if process.returncode == 0:
                 success_msg = "CoovaChilli setup completed successfully"
                 print(f"✓ {success_msg}")
-                self.send_message({
+                result_msg = {
                     'type': 'command-result',
                     'command': 'setup-chilli',
                     'status': 'success',
                     'message': success_msg,
                     'output': '\n'.join(output_lines[-20:])  # Last 20 lines
-                })
+                }
+                if command_id:
+                    result_msg['commandId'] = command_id
+                self.send_message(result_msg)
             else:
                 error_msg = f"Chilli setup failed with exit code {process.returncode}"
                 print(f"Error: {error_msg}", file=sys.stderr)
-                self.send_message({
+                result_msg = {
                     'type': 'command-result',
                     'command': 'setup-chilli',
                     'status': 'error',
                     'message': error_msg,
                     'output': '\n'.join(output_lines[-20:])
-                })
+                }
+                if command_id:
+                    result_msg['commandId'] = command_id
+                self.send_message(result_msg)
         except subprocess.TimeoutExpired:
             error_msg = "Chilli setup timed out"
             print(f"Error: {error_msg}", file=sys.stderr)
-            self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
         except Exception as e:
             error_msg = f"Chilli setup error: {str(e)}"
             print(f"Error: {error_msg}", file=sys.stderr)
-            self.send_message({'type': 'command-result', 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'command': 'setup-chilli', 'status': 'error', 'message': error_msg})
     
     def handle_x_start(self, data):
         """Start a new x session with PTY"""

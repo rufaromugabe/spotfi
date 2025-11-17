@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { WebSocket } from 'ws';
 import { RouterConnectionHandler } from './connection-handler.js';
 import { xTunnelManager } from './x-tunnel.js';
+import { commandManager } from './command-manager.js';
 import { prisma } from '../lib/prisma.js';
 export const activeConnections = new Map<string, WebSocket>();
 
@@ -41,6 +42,11 @@ export function setupWebSocket(fastify: FastifyInstance) {
 
       // Handle connection
       try {
+        // Initialize command manager logger on first connection
+        if (commandManager.getPendingCount() === 0) {
+          commandManager.setLogger(fastify.log);
+        }
+        
         const handler = new RouterConnectionHandler(routerId, connection, fastify.log);
         await handler.initialize(clientIp);
         handler.setupMessageHandlers();

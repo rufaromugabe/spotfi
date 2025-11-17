@@ -173,6 +173,47 @@ You can also access the OpenAPI JSON spec at:
 - `GET /api/routers/:id/stats` - Get router statistics (auth required)
   - Admins can view stats for any router, hosts only their own
 
+### Router Management (Remote Control via WebSocket)
+
+These endpoints require the router to be online and connected via WebSocket:
+
+**System Information:**
+- `POST /api/routers/:id/system/info` - Get router system information (CPU, memory, uptime)
+- `POST /api/routers/:id/system/board` - Get router board information
+- `POST /api/routers/:id/system/uptime` - Get router uptime (seconds + human-readable format)
+- `POST /api/routers/:id/system/reboot` - Reboot router (Admin only)
+
+**Network Management:**
+- `POST /api/routers/:id/network/interfaces` - Get network interface status
+- `POST /api/routers/:id/network/statistics` - Get detailed network statistics (bytes, packets, errors)
+- `POST /api/routers/:id/network/speed` - Get real-time network speed/throughput (Mbps, Kbps)
+- `POST /api/routers/:id/network/comprehensive` - Get comprehensive network info (all-in-one)
+
+**Wireless:**
+- `POST /api/routers/:id/wireless/status` - Get wireless interface status
+
+**Configuration (UCI):**
+- `POST /api/routers/:id/uci/read` - Read UCI configuration
+- `POST /api/routers/:id/uci/set` - Update UCI configuration (Admin only)
+- `POST /api/routers/:id/uci/commit` - Commit UCI configuration changes (Admin only)
+
+**File Operations:**
+- `POST /api/routers/:id/files/read` - Read files from router
+
+**Services:**
+- `POST /api/routers/:id/services/:action` - Control services (start/stop/restart/status) (Admin only)
+
+**Advanced:**
+- `POST /api/routers/:id/ubus` - Execute ubus RPC calls (Admin only)
+- `POST /api/routers/:id/command/execute` - Execute shell commands (Admin only)
+- `POST /api/routers/:id/logs` - Get router logs
+- `POST /api/routers/:id/dhcp/leases` - Get DHCP leases (connected devices)
+
+**Permissions:**
+- Read-only endpoints (system info, network statistics, logs, etc.) are accessible to both HOST and ADMIN users
+- Modification endpoints (reboot, UCI config changes, service control, ubus calls, shell commands) are **Admin only** for security
+- HOST users can only access their own routers, ADMIN users can access all routers
+
 ### Invoices (Earnings/Payments)
 
 - `GET /api/invoices` - List all invoices (auth required)
@@ -245,8 +286,9 @@ See the [complete OpenWRT setup guide](docs/OPENWRT-SETUP.md) for step-by-step m
 - ✅ **Real-time WebSocket** connection for monitoring and control
 - ✅ **Captive Portal** with customizable login page
 - ✅ **Session Management** (bandwidth limits, timeouts from RADIUS)
-- ✅ **Live Metrics** (CPU, memory, active users)
+- ✅ **Live Metrics** (CPU, memory, active users, network speed, uptime)
 - ✅ **Remote Commands** (reboot, status, logs)
+- ✅ **Remote Router Management** (ubus calls, UCI config, network statistics, file operations, service control)
 
 ## FreeRADIUS Integration
 
