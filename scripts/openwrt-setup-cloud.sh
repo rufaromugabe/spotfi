@@ -1091,8 +1091,13 @@ class SpotFiBridge:
         self.send_metrics()
     
     def send_message(self, data):
-        if self.ws and self.ws.sock and self.ws.sock.connected:
-            self.ws.send(json.dumps(data))
+        if self.ws and self.connected:
+            try:
+                self.ws.send(json.dumps(data))
+            except Exception as e:
+                # Connection lost, will be handled by on_close
+                print(f"Failed to send message: {e}", file=sys.stderr)
+                pass
     
     def send_metrics(self):
         metrics = self.get_router_metrics()
