@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { RadClient } from '../lib/radclient.js';
 import { prisma } from '../lib/prisma.js';
+import { updateRadiusQuotaLimit } from '../services/quota.js';
 
 interface PortalQuery {
   nasid?: string;
@@ -397,6 +398,41 @@ export async function portalRoutes(fastify: FastifyInstance) {
       }
 
       fastify.log.info(`Router identified: ${router.id} (${router.name})`);
+
+      // Check for active sessions to prevent simultaneous logins
+      const activeSession = await prisma.radAcct.findFirst({
+        where: {
+          userName: username,
+          acctStopTime: null  // Active session (not stopped)
+        }
+      });
+
+      if (activeSession) {
+        fastify.log.warn(`User ${username} already has an active session on router ${activeSession.nasIpAddress}`);
+        return reply.code(403).send({
+          error: 'Already logged in',
+          message: 'You are already logged in to another router. Please disconnect from your current session first.'
+        });
+      }
+
+      // Update quota limit in RADIUS before authentication
+      // This ensures the session limit is set to remaining quota and session timeout
+      // Optimized: updateRadiusQuotaLimit now returns quota info, eliminating duplicate queries
+      try {
+        const quotaInfo = await updateRadiusQuotaLimit(username);
+        
+        if (!quotaInfo || quotaInfo.remaining <= 0n) {
+          fastify.log.warn(`User ${username} quota exhausted or not found`);
+          return reply.code(403).send({
+            error: 'Quota exhausted',
+            message: 'Your data quota has been used up. Please upgrade your plan or wait for the next billing period.'
+          });
+        }
+      } catch (error) {
+        fastify.log.warn(`Quota check failed for ${username}: ${error}`);
+        // Continue with authentication even if quota check fails
+        // FreeRADIUS will handle quota enforcement via radreply
+      }
 
       // Get RADIUS server IP from environment or router's nasipaddress
       // Note: The router's nasipaddress is the router's IP, not the RADIUS server IP

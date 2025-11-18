@@ -32,6 +32,7 @@ SpotFi is a cloud-based ISP management system for controlling OpenWRT routers re
 - ✅ Multi-tenant authentication (ADMIN & HOST roles)
 - ✅ WebSocket-based remote router control
 - ✅ FreeRADIUS AAA integration
+- ✅ **Cross-router quota management** - Users can use quota across multiple routers
 - ✅ Automated billing and invoicing
 - ✅ Real-time router monitoring
 - ✅ Usage tracking and analytics
@@ -222,6 +223,24 @@ These endpoints require the router to be online and connected via WebSocket:
   - Admins can view any invoice, hosts only their own
 - `POST /api/invoices/:id/pay` - Mark invoice as paid (Admin only)
   - Used when platform processes payment to host
+
+### Quota Management (Cross-Router Data Limits)
+
+- `GET /api/quota/:username` - Get user quota information (Admin only)
+- `POST /api/quota` - Create or update user quota (Admin only)
+  - Set data limits (e.g., 10 GB) that apply across all routers
+- `GET /api/quota/:username/check` - Check if user has remaining quota (Public)
+- `POST /api/quota/:username/reset` - Reset user quota for new period (Admin only)
+- `GET /api/quota` - Get quota statistics (Admin only)
+
+**Quota Features:**
+- ✅ Cross-router quota tracking - Users can use quota on any router
+- ✅ Single login enforcement - Users can only be logged in to one router at a time
+- ✅ Dual limit enforcement - Both data quota and period expiry enforced by NAS
+- ✅ Automatic quota updates via database triggers
+- ✅ Real-time quota enforcement via FreeRADIUS
+- ✅ Quota exhausted detection before login
+- ✅ Period expiry handled via Session-Timeout attribute
 
 ### WebSocket
 

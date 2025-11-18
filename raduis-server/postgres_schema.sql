@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS radacct (
 -- For use by update-, stop- and simul_* queries
 CREATE INDEX radacct_active_session_idx ON radacct (AcctUniqueId) WHERE AcctStopTime IS NULL;
 
+-- For active session checks by username (optimizes portal login queries)
+CREATE INDEX radacct_active_session_username_idx ON radacct (UserName, AcctStopTime) WHERE AcctStopTime IS NULL;
+
 -- Add if you you regularly have to replay packets
 -- CREATE INDEX radacct_session_idx ON radacct (AcctUniqueId);
 
@@ -176,3 +179,60 @@ CREATE TABLE IF NOT EXISTS nasreload (
 	NASIPAddress		inet PRIMARY KEY,
 	ReloadTime		timestamp with time zone NOT NULL
 );
+
+/*
+ * Table structure for table 'radquota'
+ * Used for tracking user data quotas across all routers
+ */
+CREATE TABLE IF NOT EXISTS radquota (
+	id			serial PRIMARY KEY,
+	username		text NOT NULL,
+	quota_type		text NOT NULL DEFAULT 'monthly',
+	max_octets		bigint NOT NULL,
+	used_octets		bigint DEFAULT 0,
+	period_start		timestamp with time zone NOT NULL,
+	period_end		timestamp with time zone NOT NULL,
+	created_at		timestamp with time zone DEFAULT now(),
+	updated_at		timestamp with time zone DEFAULT now(),
+	UNIQUE(username, quota_type, period_start)
+);
+
+CREATE INDEX radquota_username_idx ON radquota(username);
+CREATE INDEX radquota_period_idx ON radquota(period_end);
+CREATE INDEX radquota_active_idx ON radquota(username, period_end) WHERE period_end > now();
+
+/*
+ * Function to update quota when accounting records are created/updated
+ */
+CREATE OR REPLACE FUNCTION update_user_quota()
+RETURNS TRIGGER AS $$
+DECLARE
+    session_bytes bigint;
+BEGIN
+    -- Only update quota when session stops (acctstoptime is set)
+    IF NEW.acctstoptime IS NOT NULL AND OLD.acctstoptime IS NULL THEN
+        -- Calculate session bytes
+        session_bytes := COALESCE(NEW.acctinputoctets, 0) + COALESCE(NEW.acctoutputoctets, 0);
+        
+        -- Update quota for active period
+        UPDATE radquota
+        SET used_octets = used_octets + session_bytes,
+            updated_at = now()
+        WHERE username = NEW.username
+          AND period_end > now()
+          AND period_start <= now();
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+/*
+ * Trigger to automatically update quota on session end
+ */
+DROP TRIGGER IF EXISTS update_quota_on_accounting ON radacct;
+CREATE TRIGGER update_quota_on_accounting
+AFTER UPDATE ON radacct
+FOR EACH ROW
+WHEN (NEW.acctstoptime IS NOT NULL AND OLD.acctstoptime IS NULL)
+EXECUTE FUNCTION update_user_quota();

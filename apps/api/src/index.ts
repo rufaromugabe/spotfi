@@ -11,6 +11,7 @@ import { routerManagementRoutes } from './routes/router-management.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
+import { quotaRoutes } from './routes/quota.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
@@ -58,6 +59,7 @@ await fastify.register(swagger, {
       { name: 'routers', description: 'Router management endpoints' },
       { name: 'router-management', description: 'Router remote management via WebSocket bridge' },
       { name: 'invoices', description: 'Billing and invoice endpoints' },
+      { name: 'quota', description: 'User quota management endpoints' },
     ],
     components: {
       securitySchemes: {
@@ -104,6 +106,7 @@ await fastify.register(routerRoutes, { prefix: '/api/routers' });
 await fastify.register(routerManagementRoutes);
 await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
+await fastify.register(quotaRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server

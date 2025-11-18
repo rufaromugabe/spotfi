@@ -215,6 +215,24 @@ model NasReload {
   @@map("nasreload")
 }
 
+// FreeRADIUS user quota tracking - for cross-router quota management
+model RadQuota {
+  id          Int      @id @default(autoincrement())
+  username    String   @map("username")
+  quotaType   String   @default("monthly") @map("quota_type")
+  maxOctets   BigInt   @map("max_octets")
+  usedOctets  BigInt   @default(0) @map("used_octets")
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([username, quotaType, periodStart])
+  @@index([username], map: "radquota_username_idx")
+  @@index([periodEnd], map: "radquota_period_idx")
+  @@map("radquota")
+}
+
 enum Role {
   ADMIN
   HOST
