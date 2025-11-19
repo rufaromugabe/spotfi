@@ -40,7 +40,7 @@ export async function generateInvoices(billingPeriod?: Date) {
     for (let i = 0; i < routers.length; i += BATCH_SIZE) {
       const batch = routers.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
-        batch.map(router => processRouterInvoice(router, period, startOfPeriod, endOfPeriod))
+        batch.map((router: typeof routers[0]) => processRouterInvoice(router, period, startOfPeriod, endOfPeriod))
       );
       invoicesCreated += results.filter(r => r).length;
     }

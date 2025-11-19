@@ -246,6 +246,8 @@ class SpotFiBridge:
                 self.handle_network_statistics(params)
             elif command == 'network-speed':
                 self.handle_network_speed(params)
+            elif command == 'get-session-stats':
+                self.handle_get_session_stats(params)
             else:
                 error_msg = f"Unknown command: {command}"
                 print(f"Error: {error_msg}", file=sys.stderr)
@@ -628,6 +630,57 @@ class SpotFiBridge:
                 self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
         except Exception as e:
             error_msg = f"Network speed error: {str(e)}"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+    
+    def handle_get_session_stats(self, params):
+        """Handle getting live session stats for a client from Uspot."""
+        command_id = params.get('commandId') or params.get('command_id')
+        mac_address = params.get('macAddress')
+        
+        if not mac_address:
+            error_msg = "Missing macAddress for get-session-stats"
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            # The -j flag in uspot provides JSON output
+            cmd = ['uspot', '-j', 'status', mac_address.lower()]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0 and result.stdout:
+                # Uspot returns an array of sessions, find the correct one
+                sessions = json.loads(result.stdout)
+                session_data = next((s for s in sessions if s.get("mac", "").lower() == mac_address.lower()), None)
+                
+                if session_data:
+                    if command_id:
+                        self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': session_data})
+                else:
+                    error_msg = f"Active session for MAC {mac_address} not found by Uspot."
+                    if command_id:
+                        self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+            else:
+                error_msg = f"Uspot command failed or returned empty output. stderr: {result.stderr}"
+                if command_id:
+                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except FileNotFoundError:
+            error_msg = "The 'uspot' command was not found on the router."
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except json.JSONDecodeError:
+            error_msg = "Failed to parse JSON output from Uspot."
+            if command_id:
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+        except Exception as e:
+            error_msg = f"An unexpected error occurred: {str(e)}"
             if command_id:
                 self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
     

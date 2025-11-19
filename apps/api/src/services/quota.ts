@@ -34,7 +34,7 @@ export async function getUserQuota(userName: string): Promise<QuotaInfo | null> 
   const percentage = Number(quota.usedOctets) / Number(quota.maxOctets) * 100;
 
   return {
-    remaining: remaining > 0n ? remaining : 0n,
+    remaining: remaining > 0n ? BigInt(remaining) : 0n,
     total: quota.maxOctets,
     used: quota.usedOctets,
     percentage: Math.min(100, Math.max(0, percentage))
@@ -118,7 +118,7 @@ export async function updateRadiusQuotaLimit(userName: string): Promise<QuotaInf
   // Calculate quota info from the quota record
   const remaining = quota.maxOctets - quota.usedOctets;
   const quotaInfo: QuotaInfo = {
-    remaining: remaining > 0n ? remaining : 0n,
+    remaining: remaining > 0n ? BigInt(remaining) : 0n,
     total: quota.maxOctets,
     used: quota.usedOctets,
     percentage: Number(quota.usedOctets) / Number(quota.maxOctets) * 100
@@ -231,7 +231,7 @@ export async function getQuotaStats(userName?: string) {
     }
   });
 
-  return quotas.map(q => ({
+  return quotas.map((q: typeof quotas[0]) => ({
     username: q.username,
     quotaType: q.quotaType,
     maxGB: Number(q.maxOctets) / (1024 * 1024 * 1024),

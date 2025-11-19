@@ -239,6 +239,67 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // Get live session statistics for a specific client
+  fastify.post('/api/routers/:id/sessions/status', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Get live client session statistics',
+      description: 'Get real-time data usage (bytes-remaining, etc.) for a specific client connected to the router. Requires an updated Uspot version on the router.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The ID of the router' }
+        },
+        required: ['id']
+      },
+      body: {
+        type: 'object',
+        required: ['macAddress'],
+        properties: {
+          macAddress: { type: 'string', description: 'The MAC address of the connected client device' }
+        }
+      },
+      response: {
+        200: {
+          description: 'Successful response with live session data',
+          type: 'object',
+          properties: {
+            routerId: { type: 'string' },
+            session: { type: 'object' } // The JSON object from Uspot
+          }
+        },
+        503: {
+          description: 'Service unavailable (router offline or command failed)',
+          type: 'object',
+          properties: {
+            error: { type: 'string' }
+          }
+        }
+      }
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user as any;
+    const { id } = request.params as { id: string };
+    const { macAddress } = request.body as { macAddress: string };
+
+    const router = await verifyRouterAccess(id, user.userId, user.role);
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    try {
+      const result = await executeCommand(id, 'get-session-stats', {
+        macAddress: macAddress
+      }, 10000); // 10-second timeout
+
+      return { routerId: id, session: result.data || result };
+    } catch (error: any) {
+      return reply.code(503).send({ error: error.message });
+    }
+  });
+
   // Read UCI configuration
   fastify.post('/api/routers/:id/uci/read', {
     preHandler: [fastify.authenticate],

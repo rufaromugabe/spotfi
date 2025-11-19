@@ -1,12 +1,14 @@
 import cron from 'node-cron';
 import { generateInvoices } from '../services/billing.js';
 import { prisma } from '../lib/prisma.js';
+import { syncActiveSessionsQuota } from '../services/quota-sync.js';
 
 /**
  * Production-grade cron scheduler
  * With trigger-based accounting, we only need:
  * 1. Monthly invoice generation
  * 2. Router status monitoring
+ * 3. Real-time quota synchronization
  */
 export function startScheduler() {
   console.log('⏰ Starting production scheduler');
@@ -43,6 +45,19 @@ export function startScheduler() {
     }
   });
 
+  // Real-time quota synchronization - every 2 minutes
+  // Updates radreply with accurate remaining quota based on active session usage
+  cron.schedule('*/2 * * * *', async () => {
+    try {
+      const stats = await syncActiveSessionsQuota();
+      if (stats.synced > 0 || stats.failed > 0) {
+        console.log(`🔄 Quota sync: ${stats.synced} synced, ${stats.failed} failed, ${stats.skipped} skipped`);
+      }
+    } catch (error) {
+      console.error('❌ Quota sync failed:', error);
+    }
+  });
+
   // Daily stats refresh - 1 AM daily
   cron.schedule('0 1 * * *', async () => {
     console.log('📊 Refreshing materialized view (daily stats)');
@@ -57,6 +72,7 @@ export function startScheduler() {
   console.log('✅ Scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
   console.log('   → Status checks: Every 5 minutes');
+  console.log('   → Quota sync: Every 2 minutes (real-time)');
   console.log('   → Daily stats: Daily at 1 AM');
   console.log('   → Session tracking: Real-time (database triggers)');
 }

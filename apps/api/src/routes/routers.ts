@@ -30,7 +30,7 @@ async function updateRouterStatusIfNeeded(
           ...(actualStatus === 'ONLINE' && { lastSeen: new Date() })
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         logger.error(`Failed to update router status for ${routerId}: ${err}`);
       });
   }
@@ -89,7 +89,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
     ]);
 
     // Check actual WebSocket connection status and update DB if needed
-    const routersWithRealStatus = routers.map((router) => {
+    const routersWithRealStatus = routers.map((router: typeof routers[0]) => {
       const actualStatus = checkRouterConnectionStatus(router.id);
       
       // Update DB asynchronously if status differs (don't block response)
@@ -437,5 +437,236 @@ export async function routerRoutes(fastify: FastifyInstance) {
         totalBytes: Number(result.total_bytes_in) + Number(result.total_bytes_out)
       }
     };
+  });
+
+  // Get router usage statistics for a specific time period
+  fastify.get('/:id/usage', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      tags: ['routers'],
+      summary: 'Get router usage statistics for a time period',
+      description: 'Calculate total data usage (bytes in/out) for a router over a specified time period',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }
+        },
+        required: ['id']
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          startDate: { 
+            type: 'string', 
+            format: 'date-time',
+            description: 'Start date (ISO 8601). Defaults to 30 days ago if not provided.'
+          },
+          endDate: { 
+            type: 'string', 
+            format: 'date-time',
+            description: 'End date (ISO 8601). Defaults to now if not provided.'
+          },
+          groupBy: {
+            type: 'string',
+            enum: ['day', 'week', 'month', 'none'],
+            default: 'none',
+            description: 'Group usage by time period. "none" returns total only.'
+          }
+        }
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            routerId: { type: 'string' },
+            routerName: { type: 'string' },
+            period: {
+              type: 'object',
+              properties: {
+                start: { type: 'string', format: 'date-time' },
+                end: { type: 'string', format: 'date-time' }
+              }
+            },
+            total: {
+              type: 'object',
+              properties: {
+                bytesIn: { type: 'number' },
+                bytesOut: { type: 'number' },
+                totalBytes: { type: 'number' },
+                totalGB: { type: 'number' },
+                sessions: { type: 'number' }
+              }
+            },
+            grouped: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  period: { type: 'string' },
+                  bytesIn: { type: 'number' },
+                  bytesOut: { type: 'number' },
+                  totalBytes: { type: 'number' },
+                  totalGB: { type: 'number' },
+                  sessions: { type: 'number' }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user as any;
+    const { id } = request.params as { id: string };
+    const query = request.query as {
+      startDate?: string;
+      endDate?: string;
+      groupBy?: 'day' | 'week' | 'month' | 'none';
+    };
+
+    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
+    const router = await prisma.router.findFirst({ where });
+    
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    // Parse dates or use defaults
+    const endDate = query.endDate ? new Date(query.endDate) : new Date();
+    const startDate = query.startDate 
+      ? new Date(query.startDate) 
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default: 30 days ago
+
+    if (startDate >= endDate) {
+      return reply.code(400).send({ error: 'Start date must be before end date' });
+    }
+
+    const groupBy = query.groupBy || 'none';
+
+    try {
+      if (groupBy === 'none') {
+        // Simple total calculation
+        const stats = await prisma.$queryRaw<[{
+          total_bytes_in: bigint;
+          total_bytes_out: bigint;
+          total_sessions: bigint;
+        }]>`
+          SELECT 
+            COALESCE(SUM(acctinputoctets), 0)::bigint as total_bytes_in,
+            COALESCE(SUM(acctoutputoctets), 0)::bigint as total_bytes_out,
+            COUNT(*)::bigint as total_sessions
+          FROM radacct
+          WHERE "routerId" = ${id}
+            AND acctstarttime >= ${startDate}
+            AND acctstarttime < ${endDate}
+            AND acctstoptime IS NOT NULL
+        `;
+
+        const result = stats[0] || {
+          total_bytes_in: 0n,
+          total_bytes_out: 0n,
+          total_sessions: 0n
+        };
+
+        const totalBytesIn = Number(result.total_bytes_in);
+        const totalBytesOut = Number(result.total_bytes_out);
+        const totalBytes = totalBytesIn + totalBytesOut;
+
+        return {
+          routerId: router.id,
+          routerName: router.name,
+          period: {
+            start: startDate.toISOString(),
+            end: endDate.toISOString()
+          },
+          total: {
+            bytesIn: totalBytesIn,
+            bytesOut: totalBytesOut,
+            totalBytes,
+            totalGB: totalBytes / (1024 * 1024 * 1024),
+            sessions: Number(result.total_sessions)
+          },
+          grouped: []
+        };
+      } else {
+        // Grouped by time period
+        let dateTrunc: string;
+        switch (groupBy) {
+          case 'day':
+            dateTrunc = 'day';
+            break;
+          case 'week':
+            dateTrunc = 'week';
+            break;
+          case 'month':
+            dateTrunc = 'month';
+            break;
+          default:
+            dateTrunc = 'day';
+        }
+
+        const stats = await prisma.$queryRaw<Array<{
+          period: Date;
+          total_bytes_in: bigint;
+          total_bytes_out: bigint;
+          total_sessions: bigint;
+        }>>`
+          SELECT 
+            DATE_TRUNC(${dateTrunc}, acctstarttime) as period,
+            COALESCE(SUM(acctinputoctets), 0)::bigint as total_bytes_in,
+            COALESCE(SUM(acctoutputoctets), 0)::bigint as total_bytes_out,
+            COUNT(*)::bigint as total_sessions
+          FROM radacct
+          WHERE "routerId" = ${id}
+            AND acctstarttime >= ${startDate}
+            AND acctstarttime < ${endDate}
+            AND acctstoptime IS NOT NULL
+          GROUP BY DATE_TRUNC(${dateTrunc}, acctstarttime)
+          ORDER BY period ASC
+        `;
+
+        const grouped = stats.map(row => {
+          const bytesIn = Number(row.total_bytes_in);
+          const bytesOut = Number(row.total_bytes_out);
+          const totalBytes = bytesIn + bytesOut;
+          
+          return {
+            period: row.period.toISOString(),
+            bytesIn,
+            bytesOut,
+            totalBytes,
+            totalGB: totalBytes / (1024 * 1024 * 1024),
+            sessions: Number(row.total_sessions)
+          };
+        });
+
+        // Calculate totals
+        const totalBytesIn = grouped.reduce((sum, g) => sum + g.bytesIn, 0);
+        const totalBytesOut = grouped.reduce((sum, g) => sum + g.bytesOut, 0);
+        const totalBytes = totalBytesIn + totalBytesOut;
+        const totalSessions = grouped.reduce((sum, g) => sum + g.sessions, 0);
+
+        return {
+          routerId: router.id,
+          routerName: router.name,
+          period: {
+            start: startDate.toISOString(),
+            end: endDate.toISOString()
+          },
+          total: {
+            bytesIn: totalBytesIn,
+            bytesOut: totalBytesOut,
+            totalBytes,
+            totalGB: totalBytes / (1024 * 1024 * 1024),
+            sessions: totalSessions
+          },
+          grouped
+        };
+      }
+    } catch (error: any) {
+      fastify.log.error(`Error calculating router usage: ${error}`);
+      return reply.code(500).send({ error: 'Failed to calculate usage statistics' });
+    }
   });
 }

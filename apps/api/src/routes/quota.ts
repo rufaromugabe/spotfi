@@ -8,6 +8,7 @@ import {
   hasRemainingQuota,
   updateRadiusQuotaLimit
 } from '../services/quota.js';
+import { syncUserQuota } from '../services/quota-sync.js';
 
 export async function quotaRoutes(fastify: FastifyInstance) {
   // Get user quota information
@@ -89,6 +90,11 @@ export async function quotaRoutes(fastify: FastifyInstance) {
         body.periodDays || 30
       );
 
+      // Sync quota in real-time if user has active session
+      await syncUserQuota(body.username).catch(err => {
+        fastify.log.warn(`Failed to sync quota for ${body.username}: ${err}`);
+      });
+
       fastify.log.info(`Quota created/updated for user: ${body.username}, ${body.maxQuotaGB} GB`);
       
       return {
@@ -126,6 +132,12 @@ export async function quotaRoutes(fastify: FastifyInstance) {
 
     try {
       await resetUserQuota(username);
+      
+      // Sync quota in real-time if user has active session
+      await syncUserQuota(username).catch(err => {
+        fastify.log.warn(`Failed to sync quota for ${username}: ${err}`);
+      });
+
       fastify.log.info(`Quota reset for user: ${username}`);
       
       return { message: 'Quota reset successfully', username };
