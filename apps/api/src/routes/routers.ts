@@ -626,7 +626,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
           ORDER BY period ASC
         `;
 
-        const grouped = stats.map(row => {
+        const grouped = stats.map((row: typeof stats[0]) => {
           const bytesIn = Number(row.total_bytes_in);
           const bytesOut = Number(row.total_bytes_out);
           const totalBytes = bytesIn + bytesOut;
@@ -642,10 +642,10 @@ export async function routerRoutes(fastify: FastifyInstance) {
         });
 
         // Calculate totals
-        const totalBytesIn = grouped.reduce((sum, g) => sum + g.bytesIn, 0);
-        const totalBytesOut = grouped.reduce((sum, g) => sum + g.bytesOut, 0);
+        const totalBytesIn = grouped.reduce((sum: number, g: typeof grouped[0]) => sum + g.bytesIn, 0);
+        const totalBytesOut = grouped.reduce((sum: number, g: typeof grouped[0]) => sum + g.bytesOut, 0);
         const totalBytes = totalBytesIn + totalBytesOut;
-        const totalSessions = grouped.reduce((sum, g) => sum + g.sessions, 0);
+        const totalSessions = grouped.reduce((sum: number, g: typeof grouped[0]) => sum + g.sessions, 0);
 
         return {
           routerId: router.id,

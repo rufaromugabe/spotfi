@@ -223,7 +223,7 @@ export async function syncActiveSessionsQuota(): Promise<{
       for (let i = 0; i < sessions.length; i += BATCH_SIZE) {
         const batch = sessions.slice(i, i + BATCH_SIZE);
         const results = await Promise.allSettled(
-          batch.map(session => syncSessionQuota(session, routerId))
+          batch.map((session: typeof sessions[0]) => syncSessionQuota(session, routerId))
         );
 
         for (const result of results) {
