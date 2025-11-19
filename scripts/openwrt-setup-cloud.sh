@@ -5,7 +5,7 @@
 # This script configures an OpenWRT router for SpotFi cloud monitoring only
 # WebSocket bridge for real-time monitoring and remote control
 #
-# Usage: ./openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN]
+# Usage: ./openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME]
 #
 
 set -e
@@ -23,8 +23,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
-    echo "Usage: $0 ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN]"
+if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
+    echo "Usage: $0 ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME]"
     echo ""
     echo "This script sets up SpotFi WebSocket bridge only (cloud monitoring)."
     echo "For CoovaChilli setup, use: openwrt-setup-chilli.sh"
@@ -34,6 +34,7 @@ if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
     echo "  TOKEN         - Router token from SpotFi dashboard"
     echo "  MAC_ADDRESS   - Router MAC address"
     echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
+    echo "  ROUTER_NAME   - (Optional) Router name to set in SpotFi dashboard"
     echo ""
     exit 1
 fi
@@ -42,6 +43,7 @@ ROUTER_ID="$1"
 TOKEN="$2"
 MAC_ADDRESS="$3"
 WS_URL="${4:-wss://api.spotfi.com/ws}"
+ROUTER_NAME="${5:-}"
 
 # Normalize WebSocket URL: add protocol if missing, ensure /ws path
 if echo "$WS_URL" | grep -qv "://"; then
@@ -58,6 +60,9 @@ echo ""
 echo "Router ID: $ROUTER_ID"
 echo "MAC Address: $MAC_ADDRESS"
 echo "WebSocket: $WS_URL"
+if [ -n "$ROUTER_NAME" ]; then
+    echo "Router Name: $ROUTER_NAME"
+fi
 echo ""
 
 TOTAL_STEPS=5
@@ -125,10 +130,11 @@ def load_config():
     token = config.get('SPOTFI_TOKEN')
     mac = config.get('SPOTFI_MAC')
     ws_url = config.get('SPOTFI_WS_URL')
+    router_name = config.get('SPOTFI_ROUTER_NAME', '')
     
-    return router_id, token, mac, ws_url
+    return router_id, token, mac, ws_url, router_name
 
-ROUTER_ID, TOKEN, MAC, WS_URL = load_config()
+ROUTER_ID, TOKEN, MAC, WS_URL, ROUTER_NAME = load_config()
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -199,6 +205,13 @@ class SpotFiBridge:
             self.handle_command(command, params)
         elif msg_type == 'connected':
             print(f"✓ Registered: {data.get('routerId')}")
+            # Send router name update if configured
+            if ROUTER_NAME and ROUTER_NAME.strip():
+                self.send_message({
+                    'type': 'update-router-name',
+                    'name': ROUTER_NAME.strip()
+                })
+                print(f"✓ Router name update sent: {ROUTER_NAME.strip()}")
         elif msg_type == 'x-start':
             self.handle_x_start(data)
         elif msg_type == 'x-data':
@@ -1161,7 +1174,10 @@ class SpotFiBridge:
         if not all([ROUTER_ID, TOKEN, MAC, WS_URL]):
             raise Exception("Environment variables not set")
         
+        from urllib.parse import quote
         url = f"{WS_URL}?id={ROUTER_ID}&token={TOKEN}&mac={MAC}"
+        if ROUTER_NAME and ROUTER_NAME.strip():
+            url += f"&name={quote(ROUTER_NAME.strip())}"
         print(f"Connecting to {WS_URL}...")
         
         self.connected = False
@@ -1208,6 +1224,8 @@ if __name__ == '__main__':
     print(f"Starting SpotFi Bridge...")
     print(f"  Router ID: {ROUTER_ID}")
     print(f"  WebSocket: {WS_URL}")
+    if ROUTER_NAME and ROUTER_NAME.strip():
+        print(f"  Router Name: {ROUTER_NAME.strip()}")
     
     bridge = SpotFiBridge()
     bridge.start()
@@ -1221,6 +1239,7 @@ SPOTFI_ROUTER_ID="$ROUTER_ID"
 SPOTFI_TOKEN="$TOKEN"
 SPOTFI_MAC="$MAC_ADDRESS"
 SPOTFI_WS_URL="$WS_URL"
+SPOTFI_ROUTER_NAME="$ROUTER_NAME"
 EOF
 
 chmod 600 /etc/spotfi.env
@@ -1283,6 +1302,9 @@ echo "Router Status:"
 echo "  - Mode: Cloud (WebSocket bridge only)"
 echo "  - Router ID: $ROUTER_ID"
 echo "  - WebSocket: $WS_URL"
+if [ -n "$ROUTER_NAME" ]; then
+    echo "  - Router Name: $ROUTER_NAME"
+fi
 echo ""
 echo "Verification:"
 echo "  1. Check WebSocket: ps | grep bridge.py"
