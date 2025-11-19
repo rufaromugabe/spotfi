@@ -12,9 +12,11 @@ import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
 import { quotaRoutes } from './routes/quota.js';
+import { sessionRoutes } from './routes/sessions.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
+import { RadiusDaeServer } from './services/radius-dae.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -60,6 +62,7 @@ await fastify.register(swagger, {
       { name: 'router-management', description: 'Router remote management via WebSocket bridge' },
       { name: 'invoices', description: 'Billing and invoice endpoints' },
       { name: 'quota', description: 'User quota management endpoints' },
+      { name: 'sessions', description: 'Active session management and remote disconnect' },
     ],
     components: {
       securitySchemes: {
@@ -107,6 +110,7 @@ await fastify.register(routerManagementRoutes);
 await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
 await fastify.register(quotaRoutes);
+await fastify.register(sessionRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
@@ -144,6 +148,15 @@ const start = async () => {
     
 // Start production scheduler
 startScheduler();
+
+    // Start RFC5176 DAE server for remote disconnect/CoA
+    const daeSecret = process.env.RADIUS_DAE_SECRET || process.env.RADIUS_SECRET || 'change-me-dae-secret';
+    const daeServer = new RadiusDaeServer({
+      port: parseInt(process.env.RADIUS_DAE_PORT || '3799', 10),
+      secret: daeSecret,
+      logger: fastify.log
+    });
+    daeServer.start();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

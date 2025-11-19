@@ -12,6 +12,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       const routerId = url.searchParams.get('id');
       const token = url.searchParams.get('token');
+      const routerName = url.searchParams.get('name'); // Optional router name from setup script
 
       if (!routerId || !token) {
         connection.close(1008, 'Missing credentials');
@@ -48,7 +49,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
         }
         
         const handler = new RouterConnectionHandler(routerId, connection, fastify.log);
-        await handler.initialize(clientIp);
+        await handler.initialize(clientIp, routerName || undefined);
         handler.setupMessageHandlers();
         handler.sendWelcome();
         activeConnections.set(routerId, connection);

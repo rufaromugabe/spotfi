@@ -130,7 +130,23 @@ export class RadClient {
       // Map common attribute names to RADIUS codes
       const attrCode = this.getAttributeCode(key);
       if (attrCode) {
-        attributesList.push(this.buildAttribute(attrCode, Buffer.from(value, 'utf8')));
+        // Handle numeric attributes (Service-Type, NAS-Port-Type, etc.)
+        let attrValue: Buffer;
+        if (this.isNumericAttribute(attrCode)) {
+          const numValue = parseInt(value, 10);
+          if (!isNaN(numValue)) {
+            attrValue = Buffer.alloc(4);
+            attrValue.writeUInt32BE(numValue, 0);
+          } else {
+            // Try to map string to number for common attributes
+            const mappedValue = this.mapStringToNumeric(attrCode, value);
+            attrValue = Buffer.alloc(4);
+            attrValue.writeUInt32BE(mappedValue, 0);
+          }
+        } else {
+          attrValue = Buffer.from(value, 'utf8');
+        }
+        attributesList.push(this.buildAttribute(attrCode, attrValue));
       }
     }
     
@@ -266,6 +282,77 @@ export class RadClient {
     };
     
     return attrMap[name] || null;
+  }
+
+  /**
+   * Check if attribute is numeric (4-byte integer)
+   */
+  private isNumericAttribute(code: number): boolean {
+    // These RADIUS attributes are 4-byte integers
+    const numericAttributes = [
+      5,   // NAS-Port
+      6,   // Service-Type
+      7,   // Framed-Protocol
+      8,   // Framed-IP-Address
+      9,   // Framed-IP-Netmask
+      10,  // Framed-Routing
+      12,  // Framed-MTU
+      13,  // Framed-Compression
+      14,  // Login-IP-Host
+      15,  // Login-Service
+      16,  // Login-TCP-Port
+      27,  // Session-Timeout
+      28,  // Idle-Timeout
+      29,  // Termination-Action
+    ];
+    return numericAttributes.includes(code);
+  }
+
+  /**
+   * Map string values to numeric codes for common attributes
+   */
+  private mapStringToNumeric(code: number, value: string): number {
+    if (code === 6) { // Service-Type
+      const serviceTypes: Record<string, number> = {
+        'Framed-User': 2,
+        'Callback-Login': 3,
+        'Callback-Framed': 4,
+        'Outbound': 5,
+        'Administrative': 6,
+        'NAS-Prompt': 7,
+        'Authenticate-Only': 8,
+        'Callback-NAS-Prompt': 9,
+        'Call-Check': 10,
+        'Callback-Administrative': 11,
+      };
+      return serviceTypes[value] || 2; // Default to Framed-User
+    }
+    if (code === 19) { // NAS-Port-Type (vendor-specific, but common values)
+      const portTypes: Record<string, number> = {
+        'Async': 0,
+        'Sync': 1,
+        'ISDN-Sync': 2,
+        'ISDN-Async-V.120': 3,
+        'ISDN-Async-V.110': 4,
+        'Virtual': 5,
+        'PIAFS': 6,
+        'HDLC-Clear-Channel': 7,
+        'X.25': 8,
+        'X.75': 9,
+        'G.3-Fax': 10,
+        'SDSL': 11,
+        'ADSL-CAP': 12,
+        'ADSL-DMT': 13,
+        'IDSL': 14,
+        'Ethernet': 15,
+        'xDSL': 16,
+        'Cable': 17,
+        'Wireless-Other': 18,
+        'Wireless-802.11': 19,
+      };
+      return portTypes[value] || 19; // Default to Wireless-802.11
+    }
+    return 0;
   }
 }
 

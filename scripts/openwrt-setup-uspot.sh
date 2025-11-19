@@ -57,7 +57,7 @@ echo "RADIUS Secret: (hidden)"
 echo "Portal: https://$PORTAL_DOMAIN/portal"
 echo ""
 
-TOTAL_STEPS=6
+TOTAL_STEPS=9
 STEP_NUM=1
 
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
@@ -123,6 +123,10 @@ uci -q set uspot.@instance[0].mac_address="$MAC_ADDRESS"
 uci -q set uspot.@instance[0].portal_url="https://$PORTAL_DOMAIN/portal"
 uci -q set uspot.@instance[0].lan_if="$LAN_BRIDGE"
 uci -q set uspot.@instance[0].interim_update='300'
+# Session and idle timeouts (handled by RADIUS Session-Timeout attribute)
+# These are defaults if RADIUS doesn't provide them
+uci -q set uspot.@instance[0].session_timeout='7200'  # 2 hours default
+uci -q set uspot.@instance[0].idle_timeout='600'       # 10 minutes idle timeout
 uci commit uspot
 echo -e "${GREEN}✓ Uspot configured${NC}"
 
@@ -159,11 +163,74 @@ if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-Acct'"; then
   uci set firewall.@rule[-1].proto='udp'
   uci set firewall.@rule[-1].target='ACCEPT'
 fi
+# RFC5176 DAE (Dynamic Authorization Extensions) - port 3799
+if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-DAE'"; then
+  uci add firewall rule
+  uci set firewall.@rule[-1].name='Allow-RADIUS-DAE'
+  uci set firewall.@rule[-1].src='wan'
+  uci set firewall.@rule[-1].dest_port='3799'
+  uci set firewall.@rule[-1].proto='udp'
+  uci set firewall.@rule[-1].target='ACCEPT'
+fi
 uci commit firewall
 echo -e "${GREEN}✓ Firewall configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${TOTAL_STEPS}/${TOTAL_STEPS}] Starting services...${NC}"
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring DHCP for RFC8908 Captive Portal API...${NC}"
+# Configure DHCP Option 114 for RFC8908 Captive Portal API support
+# This allows modern devices (iOS, Android, Windows) to automatically detect the captive portal
+if ! uci show dhcp 2>/dev/null | grep -q "name='captive'"; then
+  uci set dhcp.captive=dhcp
+  uci set dhcp.captive.interface='hotspot'
+  uci set dhcp.captive.start='100'
+  uci set dhcp.captive.limit='150'
+  uci set dhcp.captive.leasetime='12h'
+fi
+# Add DHCP Option 114 (RFC8908 Captive Portal API URL)
+# Remove existing option 114 if present
+uci del_list dhcp.captive.dhcp_option="114,*" 2>/dev/null || true
+uci add_list dhcp.captive.dhcp_option="114,https://$PORTAL_DOMAIN/api"
+uci commit dhcp
+echo -e "${GREEN}✓ DHCP configured with RFC8908 support${NC}"
+
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring HTTPS portal with TLS...${NC}"
+# Configure uhttpd for HTTPS portal
+# Generate self-signed certificate if not present
+if [ ! -f /etc/uhttpd.crt ] || [ ! -f /etc/uhttpd.key ]; then
+  echo "Generating self-signed certificate for HTTPS portal..."
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/uhttpd.key \
+    -out /etc/uhttpd.crt \
+    -subj "/C=US/ST=State/L=City/O=SpotFi/CN=$PORTAL_DOMAIN" 2>/dev/null || {
+    echo -e "${YELLOW}Warning: Could not generate certificate. Install openssl-util if needed.${NC}"
+  }
+fi
+
+# Configure uhttpd for HTTPS
+uci -q set uhttpd.main.listen_https='443'
+uci -q set uhttpd.main.cert='/etc/uhttpd.crt'
+uci -q set uhttpd.main.key='/etc/uhttpd.key'
+uci -q set uhttpd.main.redirect_https='0'  # Don't force redirect (uspot handles portal)
+uci commit uhttpd
+echo -e "${GREEN}✓ HTTPS portal configured${NC}"
+
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring bandwidth control (ratelimit)...${NC}"
+# Install ratelimit package for bandwidth control
+opkg install ratelimit 2>/dev/null || {
+  echo -e "${YELLOW}Note: ratelimit package not available. Bandwidth control via RADIUS attributes only.${NC}"
+}
+
+# Configure uspot to use bandwidth limits from RADIUS
+# uspot reads WISPr-Bandwidth-Max-Up/Down or ChilliSpot-Max-Input-Octets/Output-Octets
+# These are set via RADIUS Reply attributes in the database
+uci -q set uspot.@instance[0].ratelimit='1'  # Enable rate limiting
+uci commit uspot
+echo -e "${GREEN}✓ Bandwidth control configured${NC}"
+
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Starting services...${NC}"
 /etc/init.d/network restart || true
 sleep 2
 /etc/init.d/firewall restart || true

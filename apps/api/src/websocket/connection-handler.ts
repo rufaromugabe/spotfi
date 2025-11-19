@@ -31,7 +31,7 @@ export class RouterConnectionHandler {
     this.lastSeenUpdate = Date.now();
   }
 
-  async initialize(clientIp: string): Promise<void> {
+  async initialize(clientIp: string, routerName?: string): Promise<void> {
     const router = await prisma.router.findUnique({
       where: { id: this.routerId },
       select: { nasipaddress: true, name: true, radiusSecret: true }
@@ -42,19 +42,25 @@ export class RouterConnectionHandler {
     }
 
     const ipChanged = router.nasipaddress && router.nasipaddress !== clientIp;
+    const nameChanged = routerName && routerName.trim() && router.name !== routerName.trim();
 
-    // Update router status and IP
+    // Update router status, IP, and optionally name
     await prisma.router.update({
       where: { id: this.routerId },
       data: {
         status: 'ONLINE',
         lastSeen: new Date(),
         nasipaddress: clientIp,
+        ...(nameChanged && { name: routerName.trim() }),
         ...(!router.radiusSecret && { 
           radiusSecret: randomBytes(16).toString('hex') 
         })
       }
     });
+
+    if (nameChanged) {
+      this.logger.info(`Router ${this.routerId} name updated to: ${routerName.trim()}`);
+    }
 
     // Get updated router info (with generated secret if needed)
     const updatedRouter = await prisma.router.findUnique({
@@ -150,6 +156,11 @@ export class RouterConnectionHandler {
             if (message.commandId) {
               commandManager.handleResponse(message.commandId, message);
             }
+            break;
+
+          case 'update-router-name':
+            // Handle router name update from bridge
+            await this.handleRouterNameUpdate(message.name);
             break;
 
           default:
@@ -281,6 +292,23 @@ export class RouterConnectionHandler {
       session.sendToClient(binaryData);
     } catch (error) {
       this.logger.error(`[Router ${this.routerId}] Error handling x data: ${error}`);
+    }
+  }
+
+  private async handleRouterNameUpdate(name: string): Promise<void> {
+    if (!name || !name.trim()) {
+      this.logger.warn(`[Router ${this.routerId}] Invalid router name update: empty name`);
+      return;
+    }
+
+    try {
+      await prisma.router.update({
+        where: { id: this.routerId },
+        data: { name: name.trim() }
+      });
+      this.logger.info(`[Router ${this.routerId}] Router name updated to: ${name.trim()}`);
+    } catch (error) {
+      this.logger.error(`[Router ${this.routerId}] Failed to update router name: ${error}`);
     }
   }
 

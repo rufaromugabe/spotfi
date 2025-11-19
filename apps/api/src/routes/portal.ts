@@ -18,6 +18,62 @@ interface PortalBody {
 }
 
 export async function portalRoutes(fastify: FastifyInstance) {
+  // RFC8908 Captive Portal API endpoint
+  // This allows modern devices (iOS, Android, Windows) to automatically detect the captive portal
+  fastify.get('/api', {
+    schema: {
+      tags: ['portal'],
+      summary: 'RFC8908 Captive Portal API',
+      description: 'Provides portal information for automatic device detection',
+      querystring: {
+        type: 'object',
+        properties: {
+          nasid: { type: 'string' },
+          username: { type: 'string' }
+        }
+      }
+    }
+  }, async (request: FastifyRequest<{ Querystring: { nasid?: string } }>, reply: FastifyReply) => {
+    const { nasid } = request.query;
+    
+    // RFC8908 API: Devices call this endpoint to detect captive portals
+    // Before login: Just indicates portal exists
+    // After login: Could provide session info (but requires authentication mechanism)
+    // 
+    // Note: RFC8908 devices don't send username/password to this endpoint
+    // They just check if captive: true to know a portal exists
+    // Session info would require cookies/tokens after authentication
+    
+    const response: any = {
+      captive: true,
+      'user-portal-url': `${process.env.API_URL || 'https://api.spotfi.com'}/portal${nasid ? `?nasid=${nasid}` : ''}`
+    };
+
+    // Optional: If we can identify the user (via session cookie/token in future),
+    // we could add session information here. For now, we only return basic portal info.
+    // 
+    // To add session info after login, you would:
+    // 1. Set a session cookie after successful portal login
+    // 2. Check for that cookie here
+    // 3. Look up active session and quota info
+    // 4. Return seconds-remaining and bytes-remaining
+    
+    // Example future implementation:
+    // const sessionToken = request.cookies?.spotfi_session;
+    // if (sessionToken && nasid) {
+    //   const session = await getSessionFromToken(sessionToken);
+    //   if (session && session.routerId === nasid) {
+    //     const quotaInfo = await getUserQuota(session.username);
+    //     if (quotaInfo) {
+    //       response['seconds-remaining'] = calculateRemainingSeconds(quotaInfo);
+    //       response['bytes-remaining'] = Number(quotaInfo.remaining);
+    //     }
+    //   }
+    // }
+
+    return reply.send(response);
+  });
+
   // Serve login page
   fastify.get('/portal', async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
     const query = request.query;
@@ -453,12 +509,20 @@ export async function portalRoutes(fastify: FastifyInstance) {
       // Request IP would be router's public IP or proxy IP, not the client's IP
       const clientIp = ip || request.ip || request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || '0.0.0.0';
       
+      // Get router's public IP (NAS IP) - this is the router's WAN IP
+      // For RADIUS, NAS-IP-Address should be the router's IP, not the client's IP
+      const nasIp = router.nasipaddress || clientIp;
+      
+      // Authenticate user via RADIUS with proper attributes
+      // Following RFC2865 and uspot best practices
       const authResult = await radClient.authenticate(username, password, {
-        'NAS-IP-Address': clientIp,
-        'NAS-Identifier': router.id,
-        'Called-Station-Id': '',
-        'Calling-Station-Id': '',
-        'User-Name': username,
+        'NAS-IP-Address': nasIp,                    // Router's IP (NAS IP)
+        'NAS-Identifier': router.id,                 // Router ID for identification
+        'Called-Station-Id': router.macAddress || '', // Router MAC address
+        'Calling-Station-Id': clientIp,             // Client's hotspot IP
+        'User-Name': username,                      // Username for authentication
+        'NAS-Port-Type': 'Wireless-802.11',        // Indicate wireless connection
+        'Service-Type': 'Framed-User',             // Standard service type
       }).catch((error) => {
         fastify.log.error(`RADIUS authentication error: ${error.message}`);
         return { accept: false, message: 'RADIUS authentication failed' };
