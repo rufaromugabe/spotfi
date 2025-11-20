@@ -36,9 +36,9 @@ if [ ! -f .env ]; then
     POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d '\n')
     JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
     
-    # Update .env with generated passwords
-    sed -i "s/CHANGE_ME_TO_SECURE_PASSWORD/$POSTGRES_PASSWORD/" .env
-    sed -i "s/CHANGE_ME_TO_SECURE_JWT_SECRET_MIN_32_CHARACTERS/$JWT_SECRET/" .env
+    # Update .env with generated passwords (use | as delimiter to avoid issues with special chars)
+    sed -i "s|spotfi_password|$POSTGRES_PASSWORD|" .env
+    sed -i "s|CHANGE_ME_TO_SECURE_JWT_SECRET_MIN_32_CHARACTERS|$JWT_SECRET|" .env
     
     echo "✅ Created .env with auto-generated secure passwords"
     echo "⚠️  IMPORTANT: Keep your .env file secure! Passwords have been auto-generated."
