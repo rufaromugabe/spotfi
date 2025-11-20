@@ -68,25 +68,38 @@ while ! docker-compose -f docker-compose.production.yml exec -T postgres pg_isre
 done
 echo "✅ PostgreSQL is ready"
 
-# Run Prisma migrations (requires Node.js)
+# Run Prisma migrations
+echo ""
+echo "Running Prisma migrations..."
+
+# Get the Docker network name from the postgres container
+NETWORK_NAME=$(docker inspect spotfi-postgres --format='{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -1)
+
+if [ -z "$NETWORK_NAME" ]; then
+    # Fallback: try to find network by compose project
+    COMPOSE_PROJECT_NAME=$(basename "$(pwd)")
+    NETWORK_NAME="${COMPOSE_PROJECT_NAME}_spotfi-network"
+fi
+
+export DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-spotfi}?schema=public"
+
+# Try running migrations from host if Node.js is available
 if command -v node &> /dev/null && [ -f package.json ]; then
-    echo ""
-    echo "Running Prisma migrations..."
-    export DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-spotfi}?schema=public"
-    
+    echo "Running migrations from host (Node.js found)..."
     if [ ! -d node_modules ]; then
         echo "Installing dependencies..."
         npm install
     fi
-    
     npm run prisma:generate
     npm run prisma:migrate:deploy
     echo "✅ Prisma migrations completed"
 else
-    echo ""
-    echo "⚠️  Node.js not found or package.json missing. Skipping Prisma migrations."
-    echo "   You can run migrations manually later with:"
-    echo "   npm install && npm run prisma:migrate:deploy"
+    echo "Running migrations in temporary Docker container..."
+    docker run --rm --network "$NETWORK_NAME" \
+        -v "$(pwd):/app" -w /app \
+        -e DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-spotfi}?schema=public" \
+        node:20-slim sh -c "npm install && npm run prisma:generate && npm run prisma:migrate:deploy"
+    echo "✅ Prisma migrations completed"
 fi
 
 # Build and start all services
