@@ -211,15 +211,21 @@ POST /api/quota
 
 ## Setup Instructions
 
-### 1. Run Database Migration
+### 1. Run Prisma Migrations
+
+Database schema is managed by Prisma. Run migrations to create all tables:
+
 ```bash
-psql -h your-host -U your-user -d your-db -f postgres_schema.sql
+npm run prisma:migrate:deploy
 ```
 
-This creates:
+Prisma migrations will create:
 - `radquota` table
-- Database trigger for automatic quota updates
+- Database trigger for automatic quota updates (`update_quota_on_accounting`)
+- All required FreeRADIUS tables (radacct, radcheck, radreply, etc.)
 - Indexes for performance
+
+**Note:** No manual SQL schema file needs to be run. Prisma handles all database schema setup.
 
 ### 2. Create Quota via API
 ```bash

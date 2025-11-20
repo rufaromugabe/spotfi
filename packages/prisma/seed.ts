@@ -187,55 +187,61 @@ async function main() {
 
   for (const group of groups) {
     // Create group check
-    await prisma.radGroupCheck.upsert({
+    const existingGroupCheck = await prisma.radGroupCheck.findFirst({
       where: {
-        groupName_attribute: {
-          groupName: group.groupName,
-          attribute: 'Simultaneous-Use'
-        }
-      },
-      update: {},
-      create: {
         groupName: group.groupName,
-        attribute: 'Simultaneous-Use',
-        op: ':=',
-        value: '1',
-      },
+        attribute: 'Simultaneous-Use'
+      }
     });
 
-    // Create group reply
-    await prisma.radGroupReply.upsert({
-      where: {
-        groupName_attribute: {
+    if (!existingGroupCheck) {
+      await prisma.radGroupCheck.create({
+        data: {
           groupName: group.groupName,
-          attribute: 'WISPr-Bandwidth-Max-Down'
-        }
-      },
-      update: {},
-      create: {
+          attribute: 'Simultaneous-Use',
+          op: ':=',
+          value: '1',
+        },
+      });
+    }
+
+    // Create group reply
+    const existingGroupReply = await prisma.radGroupReply.findFirst({
+      where: {
         groupName: group.groupName,
-        attribute: 'WISPr-Bandwidth-Max-Down',
-        op: ':=',
-        value: group.maxBandwidth,
-      },
+        attribute: 'WISPr-Bandwidth-Max-Down'
+      }
     });
+
+    if (!existingGroupReply) {
+      await prisma.radGroupReply.create({
+        data: {
+          groupName: group.groupName,
+          attribute: 'WISPr-Bandwidth-Max-Down',
+          op: ':=',
+          value: group.maxBandwidth,
+        },
+      });
+    }
   }
 
   // Assign testuser to basic group
-  await prisma.radUserGroup.upsert({
+  const existingUserGroup = await prisma.radUserGroup.findFirst({
     where: {
-      userName_groupName: {
-        userName: 'testuser',
-        groupName: 'basic'
-      }
-    },
-    update: {},
-    create: {
       userName: 'testuser',
-      groupName: 'basic',
-      priority: 1,
-    },
+      groupName: 'basic'
+    }
   });
+
+  if (!existingUserGroup) {
+    await prisma.radUserGroup.create({
+      data: {
+        userName: 'testuser',
+        groupName: 'basic',
+        priority: 1,
+      },
+    });
+  }
 
   console.log('✅ Created user groups:', groups.length);
 
@@ -299,15 +305,422 @@ async function main() {
   }
   console.log('✅ Created sample sessions:', sessions.length);
 
+  // ============================================
+  // 7. CREATE SERVICE PLANS
+  // ============================================
+  const plans = [
+    {
+      name: 'Basic 5GB',
+      description: 'Basic plan with 5GB monthly data',
+      price: 19.99,
+      currency: 'USD',
+      dataQuota: BigInt(5 * 1024 * 1024 * 1024), // 5GB
+      quotaType: 'MONTHLY',
+      maxUploadSpeed: BigInt(5 * 1024 * 1024), // 5 Mbps
+      maxDownloadSpeed: BigInt(20 * 1024 * 1024), // 20 Mbps
+      sessionTimeout: 7200, // 2 hours
+      idleTimeout: 600, // 10 minutes
+      maxSessions: 1,
+      validityDays: 30,
+      isDefault: true,
+      status: 'ACTIVE',
+    },
+    {
+      name: 'Premium 20GB',
+      description: 'Premium plan with 20GB monthly data',
+      price: 39.99,
+      currency: 'USD',
+      dataQuota: BigInt(20 * 1024 * 1024 * 1024), // 20GB
+      quotaType: 'MONTHLY',
+      maxUploadSpeed: BigInt(10 * 1024 * 1024), // 10 Mbps
+      maxDownloadSpeed: BigInt(50 * 1024 * 1024), // 50 Mbps
+      sessionTimeout: 14400, // 4 hours
+      idleTimeout: 900, // 15 minutes
+      maxSessions: 2,
+      validityDays: 30,
+      isDefault: false,
+      status: 'ACTIVE',
+    },
+    {
+      name: 'Unlimited',
+      description: 'Unlimited data plan',
+      price: 59.99,
+      currency: 'USD',
+      dataQuota: null, // Unlimited
+      quotaType: 'MONTHLY',
+      maxUploadSpeed: BigInt(20 * 1024 * 1024), // 20 Mbps
+      maxDownloadSpeed: BigInt(100 * 1024 * 1024), // 100 Mbps
+      sessionTimeout: null, // No limit
+      idleTimeout: 1800, // 30 minutes
+      maxSessions: 3,
+      validityDays: 30,
+      isDefault: false,
+      status: 'ACTIVE',
+    },
+    {
+      name: 'Daily 1GB',
+      description: 'Daily plan with 1GB data (resets daily)',
+      price: 4.99,
+      currency: 'USD',
+      dataQuota: BigInt(1 * 1024 * 1024 * 1024), // 1GB
+      quotaType: 'DAILY',
+      maxUploadSpeed: BigInt(2 * 1024 * 1024), // 2 Mbps
+      maxDownloadSpeed: BigInt(10 * 1024 * 1024), // 10 Mbps
+      sessionTimeout: 3600, // 1 hour
+      idleTimeout: 300, // 5 minutes
+      maxSessions: 1,
+      validityDays: 7,
+      isDefault: false,
+      status: 'ACTIVE',
+    },
+  ];
+
+  const createdPlans = [];
+  for (const planData of plans) {
+    const plan = await prisma.plan.upsert({
+      where: { name: planData.name },
+      update: {},
+      create: {
+        ...planData,
+        createdById: admin.id,
+      },
+    });
+    createdPlans.push(plan);
+  }
+  console.log('✅ Created service plans:', createdPlans.length);
+
+  // ============================================
+  // 8. CREATE END USERS
+  // ============================================
+  const endUsers = [
+    {
+      username: 'testuser',
+      password: 'testpass',
+      email: 'testuser@example.com',
+      phone: '+1234567890',
+      fullName: 'Test User',
+      status: 'ACTIVE',
+      notes: 'Test account for development',
+    },
+    {
+      username: 'john.doe',
+      password: 'password123',
+      email: 'john.doe@example.com',
+      phone: '+1234567891',
+      fullName: 'John Doe',
+      status: 'ACTIVE',
+      notes: 'Premium customer',
+    },
+    {
+      username: 'jane.smith',
+      password: 'secure456',
+      email: 'jane.smith@example.com',
+      phone: '+1234567892',
+      fullName: 'Jane Smith',
+      status: 'ACTIVE',
+      notes: 'Business customer',
+    },
+    {
+      username: 'demo',
+      password: 'demo123',
+      email: 'demo@example.com',
+      phone: null,
+      fullName: 'Demo User',
+      status: 'ACTIVE',
+      notes: 'Demo account',
+    },
+    {
+      username: 'trial.user',
+      password: 'trial123',
+      email: 'trial@example.com',
+      phone: null,
+      fullName: 'Trial User',
+      status: 'ACTIVE',
+      notes: 'Trial account with daily plan',
+    },
+  ];
+
+  const createdEndUsers = [];
+  for (const userData of endUsers) {
+    // Hash password for app storage
+    const hashedPassword = await bcrypt.hash(userData.password, 10);
+    
+    const existingEndUser = await prisma.endUser.findUnique({
+      where: { username: userData.username },
+    });
+
+    let endUser;
+    if (existingEndUser) {
+      endUser = existingEndUser;
+    } else {
+      endUser = await prisma.endUser.create({
+        data: {
+          username: userData.username,
+          password: hashedPassword,
+          email: userData.email,
+          phone: userData.phone,
+          fullName: userData.fullName,
+          status: userData.status,
+          notes: userData.notes,
+          createdById: admin.id,
+        },
+      });
+    }
+    createdEndUsers.push({ ...endUser, plainPassword: userData.password });
+
+    // Create RADIUS entry (User-Password in radcheck)
+    // Note: RADIUS needs plain text or hashed based on FreeRADIUS config
+    // For testing, we'll use plain text (in production, use proper RADIUS hashing)
+    const existingRadCheck = await prisma.radCheck.findFirst({
+      where: {
+        userName: userData.username,
+        attribute: 'User-Password'
+      }
+    });
+
+    if (existingRadCheck) {
+      await prisma.radCheck.update({
+        where: { id: existingRadCheck.id },
+        data: { value: userData.password },
+      });
+    } else {
+      await prisma.radCheck.create({
+        data: {
+          userName: userData.username,
+          attribute: 'User-Password',
+          op: ':=',
+          value: userData.password,
+        },
+      });
+    }
+  }
+  console.log('✅ Created end users:', createdEndUsers.length);
+
+  // ============================================
+  // 9. ASSIGN PLANS TO USERS
+  // ============================================
+  const planAssignments = [
+    {
+      username: 'testuser',
+      planName: 'Basic 5GB',
+      autoRenew: true,
+    },
+    {
+      username: 'john.doe',
+      planName: 'Premium 20GB',
+      autoRenew: true,
+    },
+    {
+      username: 'jane.smith',
+      planName: 'Unlimited',
+      autoRenew: true,
+    },
+    {
+      username: 'demo',
+      planName: 'Basic 5GB',
+      autoRenew: false,
+    },
+    {
+      username: 'trial.user',
+      planName: 'Daily 1GB',
+      autoRenew: false,
+    },
+  ];
+
+  for (const assignment of planAssignments) {
+    const endUser = createdEndUsers.find(u => u.username === assignment.username);
+    const plan = createdPlans.find(p => p.name === assignment.planName);
+    
+    if (!endUser || !plan) continue;
+
+    // Calculate expiry
+    let expiresAt: Date | null = null;
+    if (plan.validityDays) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + plan.validityDays);
+    }
+
+    // Check if user plan already exists
+    const existingUserPlan = await prisma.userPlan.findFirst({
+      where: {
+        userId: endUser.id,
+        planId: plan.id,
+        status: 'ACTIVE',
+      },
+    });
+
+    if (existingUserPlan) {
+      continue; // Skip if already assigned
+    }
+
+    // Create user plan
+    await prisma.userPlan.create({
+      data: {
+        userId: endUser.id,
+        planId: plan.id,
+        status: 'ACTIVE',
+        activatedAt: new Date(),
+        expiresAt,
+        dataQuota: plan.dataQuota,
+        dataUsed: 0n,
+        autoRenew: assignment.autoRenew,
+        assignedById: admin.id,
+      },
+    });
+
+    // Sync to RADIUS (radreply attributes)
+    // Helper function to upsert radreply
+    const upsertRadReply = async (username: string, attribute: string, value: string) => {
+      const existing = await prisma.radReply.findFirst({
+        where: {
+          userName: username,
+          attribute
+        }
+      });
+
+      if (existing) {
+        await prisma.radReply.update({
+          where: { id: existing.id },
+          data: { value },
+        });
+      } else {
+        await prisma.radReply.create({
+          data: {
+            userName: username,
+            attribute,
+            op: '=',
+            value,
+          },
+        });
+      }
+    };
+
+    // Helper function to upsert radcheck
+    const upsertRadCheck = async (username: string, attribute: string, value: string) => {
+      const existing = await prisma.radCheck.findFirst({
+        where: {
+          userName: username,
+          attribute
+        }
+      });
+
+      if (existing) {
+        await prisma.radCheck.update({
+          where: { id: existing.id },
+          data: { value },
+        });
+      } else {
+        await prisma.radCheck.create({
+          data: {
+            userName: username,
+            attribute,
+            op: ':=',
+            value,
+          },
+        });
+      }
+    };
+
+    // Session-Timeout
+    if (plan.sessionTimeout) {
+      await upsertRadReply(assignment.username, 'Session-Timeout', plan.sessionTimeout.toString());
+    }
+
+    // Idle-Timeout
+    if (plan.idleTimeout) {
+      await upsertRadReply(assignment.username, 'Idle-Timeout', plan.idleTimeout.toString());
+    }
+
+    // Bandwidth limits
+    if (plan.maxUploadSpeed) {
+      await upsertRadReply(assignment.username, 'WISPr-Bandwidth-Max-Up', plan.maxUploadSpeed.toString());
+    }
+
+    if (plan.maxDownloadSpeed) {
+      await upsertRadReply(assignment.username, 'WISPr-Bandwidth-Max-Down', plan.maxDownloadSpeed.toString());
+    }
+
+    // Data quota
+    if (plan.dataQuota) {
+      await upsertRadReply(assignment.username, 'MikroTik-Total-Limit', plan.dataQuota.toString());
+    }
+
+    // Max sessions
+    if (plan.maxSessions) {
+      await upsertRadCheck(assignment.username, 'Max-Daily-Session', plan.maxSessions.toString());
+    }
+
+    // Service-Type
+    await upsertRadReply(assignment.username, 'Service-Type', 'Framed-User');
+  }
+  console.log('✅ Assigned plans to users:', planAssignments.length);
+
+  // ============================================
+  // 10. CREATE QUOTA TRACKING
+  // ============================================
+  const currentDate = new Date();
+  const monthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+  const monthEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+
+  for (const endUser of createdEndUsers) {
+    const userPlan = await prisma.userPlan.findFirst({
+      where: {
+        userId: endUser.id,
+        status: 'ACTIVE',
+      },
+      include: { plan: true },
+    });
+
+    if (userPlan && userPlan.plan.dataQuota) {
+      // Check if quota entry exists
+      const existingQuota = await prisma.radQuota.findFirst({
+        where: {
+          username: endUser.username,
+          quotaType: userPlan.plan.quotaType.toLowerCase(),
+          periodStart: monthStart,
+        }
+      });
+
+      if (!existingQuota) {
+        await prisma.radQuota.create({
+          data: {
+            username: endUser.username,
+            quotaType: userPlan.plan.quotaType.toLowerCase(),
+            maxOctets: userPlan.plan.dataQuota,
+            usedOctets: 0n,
+            periodStart: monthStart,
+            periodEnd: monthEnd,
+          },
+        });
+      }
+    }
+  }
+  console.log('✅ Created quota tracking entries');
+
   console.log('✨ Seeding completed successfully!');
   console.log('');
   console.log('📝 Test Credentials:');
   console.log('   App Admin: admin@spotfi.com / admin123');
   console.log('   App Host:  host@spotfi.com / host123');
-  console.log('   RADIUS:    testuser / testpass');
-  console.log('   RADIUS:    john.doe / password123');
-  console.log('   RADIUS:    jane.smith / secure456');
-  console.log('   RADIUS:    demo / demo123');
+  console.log('');
+  console.log('📱 End Users (WiFi):');
+  for (const user of createdEndUsers) {
+    const userPlan = await prisma.userPlan.findFirst({
+      where: {
+        userId: user.id,
+        status: 'ACTIVE',
+      },
+      include: { plan: true },
+    });
+    const planName = userPlan?.plan.name || 'No plan';
+    console.log(`   ${user.username} / ${user.plainPassword} (Plan: ${planName})`);
+  }
+  console.log('');
+  console.log('📦 Service Plans:');
+  for (const plan of createdPlans) {
+    const quota = plan.dataQuota ? `${Number(plan.dataQuota) / (1024 * 1024 * 1024)}GB` : 'Unlimited';
+    console.log(`   ${plan.name}: $${plan.price}/${plan.quotaType.toLowerCase()} - ${quota}`);
+  }
   console.log('');
 }
 

@@ -251,3 +251,133 @@ enum InvoiceStatus {
   CANCELLED
 }
 
+// End User - WiFi users (separate from admin/host users)
+model EndUser {
+  id            String     @id @default(cuid())
+  username      String     @unique // RADIUS username (must be unique)
+  password      String     // Hashed password for RADIUS (stored in radcheck)
+  email         String?    // Optional email for notifications
+  phone         String?    // Optional phone number
+  fullName      String?    @map("full_name")
+  status        EndUserStatus @default(ACTIVE)
+  notes         String?    // Admin notes
+  createdById   String?    // ID of admin/host who created this user
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  
+  // Relations
+  userPlans     UserPlan[] // Current and historical plan assignments
+  
+  @@index([username])
+  @@index([status])
+  @@index([createdById])
+  @@map("end_users")
+}
+
+// Service Plans - Define data quotas, bandwidth, time limits
+model Plan {
+  id                String     @id @default(cuid())
+  name              String     // e.g., "Basic 10GB", "Premium Unlimited"
+  description       String?    // Plan description
+  price             Float      @default(0) // Monthly price
+  currency          String     @default("USD")
+  
+  // Data Quota (in bytes)
+  dataQuota         BigInt?    @map("data_quota") // Total data allowed (null = unlimited)
+  quotaType         QuotaType  @default(MONTHLY) @map("quota_type") // MONTHLY, DAILY, WEEKLY, ONE_TIME
+  
+  // Bandwidth Limits (in bytes per second)
+  maxUploadSpeed    BigInt?    @map("max_upload_speed") // Upload bandwidth limit (null = unlimited)
+  maxDownloadSpeed  BigInt?    @map("max_download_speed") // Download bandwidth limit (null = unlimited)
+  
+  // Time Limits
+  sessionTimeout    Int?       @map("session_timeout") // Max session duration in seconds (null = unlimited)
+  idleTimeout       Int?       @map("idle_timeout") // Idle timeout in seconds (null = unlimited)
+  maxSessions       Int?       @default(1) @map("max_sessions") // Max concurrent sessions (null = unlimited)
+  
+  // Validity Period
+  validityDays      Int?       @map("validity_days") // Plan validity in days (null = unlimited)
+  
+  // Status
+  status            PlanStatus @default(ACTIVE)
+  isDefault         Boolean    @default(false) @map("is_default") // Default plan for new users
+  
+  // Metadata
+  createdById       String?    @map("created_by_id")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+  
+  // Relations
+  userPlans         UserPlan[]
+  renewalPlans      UserPlan[] @relation("PlanRenewal")
+  
+  @@index([status])
+  @@index([isDefault])
+  @@map("plans")
+}
+
+// User Plan Assignment - Links users to plans with expiry
+model UserPlan {
+  id                String     @id @default(cuid())
+  userId            String     @map("user_id")
+  user              EndUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId            String     @map("plan_id")
+  status            UserPlanStatus @default(ACTIVE)
+  
+  // Assignment period
+  assignedAt        DateTime   @default(now()) @map("assigned_at")
+  activatedAt       DateTime?  @map("activated_at") // When plan becomes active
+  expiresAt         DateTime?  @map("expires_at") // Plan expiry (null = never expires)
+  
+  // Usage tracking
+  dataUsed          BigInt     @default(0) @map("data_used") // Bytes used in this period
+  dataQuota         BigInt?    @map("data_quota") // Quota for this assignment (can override plan default)
+  
+  // Auto-renewal
+  autoRenew         Boolean    @default(false) @map("auto_renew")
+  renewalPlanId     String?    @map("renewal_plan_id") // Plan to renew to (null = same plan)
+  
+  // Metadata
+  assignedById      String?    @map("assigned_by_id") // Admin who assigned this plan
+  notes             String?    // Assignment notes
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+  
+  // Relations
+  plan              Plan       @relation(fields: [planId], references: [id], onDelete: Restrict)
+  renewalPlan       Plan?      @relation("PlanRenewal", fields: [renewalPlanId], references: [id])
+  
+  @@index([userId, status])
+  @@index([planId])
+  @@index([expiresAt])
+  @@index([status, expiresAt])
+  @@map("user_plans")
+}
+
+enum EndUserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+enum PlanStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum UserPlanStatus {
+  PENDING    // Assigned but not yet active
+  ACTIVE     // Currently active
+  EXPIRED    // Expired
+  CANCELLED  // Manually cancelled
+}
+
+enum QuotaType {
+  MONTHLY    // Resets monthly
+  DAILY     // Resets daily
+  WEEKLY    // Resets weekly
+  ONE_TIME  // One-time quota (doesn't reset)
+}
+

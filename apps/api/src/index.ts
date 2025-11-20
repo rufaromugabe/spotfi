@@ -13,6 +13,9 @@ import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
 import { quotaRoutes } from './routes/quota.js';
 import { sessionRoutes } from './routes/sessions.js';
+import { planRoutes } from './routes/plans.js';
+import { endUserRoutes } from './routes/end-users.js';
+import { userPlanRoutes } from './routes/user-plans.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
@@ -63,6 +66,9 @@ await fastify.register(swagger, {
       { name: 'invoices', description: 'Billing and invoice endpoints' },
       { name: 'quota', description: 'User quota management endpoints' },
       { name: 'sessions', description: 'Active session management and remote disconnect' },
+      { name: 'plans', description: 'Service plan management (CRUD)' },
+      { name: 'end-users', description: 'End user registration and management' },
+      { name: 'user-plans', description: 'User plan assignment and management' },
     ],
     components: {
       securitySchemes: {
@@ -111,6 +117,9 @@ await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
 await fastify.register(quotaRoutes);
 await fastify.register(sessionRoutes);
+await fastify.register(planRoutes);
+await fastify.register(endUserRoutes);
+await fastify.register(userPlanRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server

@@ -105,19 +105,27 @@ docker exec freeradius radtest testuser testpass localhost 0 testing123
 
 ### SQL module not loading
 - Verify database credentials are correct
-- Check that the database schema is created (use `postgres_schema.sql`)
+- Ensure Prisma migrations have been run (creates all database tables including FreeRADIUS tables)
 - Review FreeRADIUS logs for SQL connection errors
 
 ## Database Setup
 
-Before deploying, ensure your PostgreSQL database has the RADIUS schema:
+**Note:** Database schema is managed by Prisma migrations. Before deploying FreeRADIUS, ensure Prisma migrations have been run:
 
 ```bash
-psql -h your-host -p your-port -U your-user -d your-db -f postgres_schema.sql
+npm run prisma:migrate:deploy
 ```
 
-Then add test users:
-```bash
-psql -h your-host -p your-port -U your-user -d your-db -f add-test-user.sql
-```
+Prisma migrations will create all required FreeRADIUS tables:
+- `radacct` - RADIUS accounting records
+- `radcheck` - RADIUS user check attributes
+- `radreply` - RADIUS user reply attributes
+- `radusergroup` - RADIUS user group assignments
+- `radgroupcheck` - RADIUS group check attributes
+- `radgroupreply` - RADIUS group reply attributes
+- `radpostauth` - RADIUS post-authentication records
+- `nas` - Network Access Server (router) definitions
+- `radquota` - User quota tracking
+
+No manual schema initialization is needed.
 
