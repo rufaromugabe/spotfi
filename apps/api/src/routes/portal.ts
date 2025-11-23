@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { RadClient } from '../lib/radclient.js';
 import { prisma } from '../lib/prisma.js';
+import { RadiusAuthService } from '../services/radius-auth.service.js';
 import { updateRadiusQuotaLimit } from '../services/quota.js';
 
 interface PortalQuery {
@@ -18,6 +18,7 @@ interface PortalBody {
 }
 
 export async function portalRoutes(fastify: FastifyInstance) {
+  const authService = new RadiusAuthService(fastify.log);
   // RFC8908 Captive Portal API endpoint
   // This allows modern devices (iOS, Android, Windows) to automatically detect the captive portal
   fastify.get('/api', {
@@ -404,167 +405,70 @@ export async function portalRoutes(fastify: FastifyInstance) {
     reply.type('text/html').send(html);
   });
 
-  // Handle login POST request
-  fastify.post('/portal/login', async (request: FastifyRequest<{ Body: PortalBody }>, reply: FastifyReply) => {
-    const { username, password, nasid, ip, userurl } = request.body;
+  // 1. Login Submission
+  fastify.post<{ Body: PortalBody }>('/portal/login', async (req, reply) => {
+    const { username, password, nasid, ip, userurl } = req.body;
 
-    if (!username || !password) {
-      return reply.code(400).send({ error: 'Username and password are required' });
+    // Validation
+    if (!username || !password || !nasid) {
+      return reply.code(400).send({ error: 'Missing credentials or router ID' });
     }
 
-    try {
-      // Find router by NAS ID (router ID) only
-      // The flow:
-      // 1. When a router is created via POST /api/routers, it generates:
-      //    - router.id (unique ID)
-      //    - router.radiusSecret (random 32-char hex string)
-      //
-      // 2. Uspot config has nas_id=$ROUTER_ID, which sends router.id as NAS-Identifier
-      //
-      // 3. Portal receives request and looks up router by NAS ID (from query param 'nasid')
-      //
-      // 4. Once router is found, portal uses router.radiusSecret for RADIUS authentication
-      
-      if (!nasid) {
-        fastify.log.warn('Portal login request missing nasid parameter');
-        return reply.code(400).send({ 
-          error: 'Missing router identifier',
-          message: 'The nasid parameter is required. Please ensure uspot is properly configured with nas_id.'
-        });
-      }
+    // 1. Fetch Router (Cache this in production!)
+    const router = await prisma.router.findUnique({
+      where: { id: nasid },
+      select: { id: true, radiusSecret: true, nasipaddress: true }
+    });
 
-      const router = await prisma.router.findUnique({
-        where: { id: nasid },
-      });
+    if (!router || !router.radiusSecret) {
+      return reply.code(401).send({ error: 'Router not authorized' });
+    }
 
-      if (!router) {
-        fastify.log.warn(`Router not found - NAS ID: ${nasid}`);
-        return reply.code(401).send({ 
-          error: 'Router not found',
-          message: `Router with ID '${nasid}' not found. Please ensure the router is properly registered.`
-        });
-      }
+    // 2. Single Login Check (Database Indexed Query)
+    const activeSession = await prisma.radAcct.findFirst({
+      where: { userName: username, acctStopTime: null },
+      select: { acctSessionId: true } // Select minimum fields
+    });
 
-      if (!router.radiusSecret) {
-        fastify.log.warn(`Router missing RADIUS secret - NAS ID: ${nasid}`);
-        return reply.code(401).send({ 
-          error: 'Invalid router configuration',
-          message: 'Router is missing RADIUS secret. Please ensure the router is properly configured.'
-        });
-      }
-
-      fastify.log.info(`Router identified: ${router.id} (${router.name})`);
-
-      // Check for active sessions to prevent simultaneous logins
-      const activeSession = await prisma.radAcct.findFirst({
-        where: {
-          userName: username,
-          acctStopTime: null  // Active session (not stopped)
-        }
-      });
-
-      if (activeSession) {
-        fastify.log.warn(`User ${username} already has an active session on router ${activeSession.nasIpAddress}`);
-        return reply.code(403).send({
-          error: 'Already logged in',
-          message: 'You are already logged in to another router. Please disconnect from your current session first.'
-        });
-      }
-
-      // Update quota limit in RADIUS before authentication
-      // This ensures the session limit is set to remaining quota and session timeout
-      // Optimized: updateRadiusQuotaLimit now returns quota info, eliminating duplicate queries
-      try {
-        const quotaInfo = await updateRadiusQuotaLimit(username);
-        
-        if (!quotaInfo || quotaInfo.remaining <= 0n) {
-          fastify.log.warn(`User ${username} quota exhausted or not found`);
-          return reply.code(403).send({
-            error: 'Quota exhausted',
-            message: 'Your data quota has been used up. Please upgrade your plan or wait for the next billing period.'
-          });
-        }
-      } catch (error) {
-        fastify.log.warn(`Quota check failed for ${username}: ${error}`);
-        // Continue with authentication even if quota check fails
-        // FreeRADIUS will handle quota enforcement via radreply
-      }
-
-      // Get RADIUS server IP from environment or router's nasipaddress
-      // Note: The router's nasipaddress is the router's IP, not the RADIUS server IP
-      // For RADIUS server IP, we should use environment variable or router-specific config
-      // For now, use environment variable RADIUS_HOST or default to router's IP
-      const radiusHost = process.env.RADIUS_HOST || router.nasipaddress || '127.0.0.1';
-      const radiusPort = parseInt(process.env.RADIUS_PORT || '1812', 10);
-
-      // Authenticate user via RADIUS
-      const radClient = new RadClient({
-        host: radiusHost,
-        secret: router.radiusSecret,
-        port: radiusPort,
-      });
-
-      // Get client IP from router (uspot) - more accurate than request IP
-      // Router provides the client's hotspot IP (e.g., 10.1.0.50)
-      // Request IP would be router's public IP or proxy IP, not the client's IP
-      const clientIp = ip || request.ip || request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || '0.0.0.0';
-      
-      // Get router's public IP (NAS IP) - this is the router's WAN IP
-      // For RADIUS, NAS-IP-Address should be the router's IP, not the client's IP
-      const nasIp = router.nasipaddress || clientIp;
-      
-      // Authenticate user via RADIUS with proper attributes
-      // Following RFC2865 and uspot best practices
-      const authResult = await radClient.authenticate(username, password, {
-        'NAS-IP-Address': nasIp,                    // Router's IP (NAS IP)
-        'NAS-Identifier': router.id,                 // Router ID for identification
-        'Called-Station-Id': router.macAddress || '', // Router MAC address
-        'Calling-Station-Id': clientIp,             // Client's hotspot IP
-        'User-Name': username,                      // Username for authentication
-        'NAS-Port-Type': 'Wireless-802.11',        // Indicate wireless connection
-        'Service-Type': 'Framed-User',             // Standard service type
-      }).catch((error) => {
-        fastify.log.error(`RADIUS authentication error: ${error.message}`);
-        return { accept: false, message: 'RADIUS authentication failed' };
-      });
-
-      if (authResult.accept) {
-        // Authentication successful - redirect to user's destination
-        // Uspot handles the authentication internally via RADIUS, so we just redirect to the destination
-        const redirectUrl = userurl || 'http://www.google.com';
-        
-        // Return HTML that redirects
-        const successHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta http-equiv="refresh" content="0;url=${redirectUrl}">
-    <script>window.location.href = "${redirectUrl}";</script>
-</head>
-<body>
-    <p>Authentication successful. Redirecting...</p>
-    <p>If you are not redirected, <a href="${redirectUrl}">click here</a>.</p>
-</body>
-</html>
-        `;
-
-        fastify.log.info(`Portal authentication successful for router ${router.id}, redirecting to: ${redirectUrl}`);
-        return reply.type('text/html').send(successHtml);
-      } else {
-        // Authentication failed
-        return reply.code(401).send({ 
-          error: 'Invalid username or password',
-          message: 'Please check your credentials and try again.'
-        });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      fastify.log.error(`Portal login error: ${errorMessage}`);
-      return reply.code(500).send({ 
-        error: 'Authentication service error',
-        message: 'Please try again later.'
+    if (activeSession) {
+      return reply.code(403).send({ 
+        error: 'Active session exists',
+        message: 'Please disconnect your other device first.' 
       });
     }
+
+    // 3. Quota Check & Sync (updates radreply for FreeRADIUS to read)
+    const quota = await updateRadiusQuotaLimit(username);
+    if (quota && quota.remaining <= 0n) {
+      return reply.code(403).send({ error: 'Quota exceeded' });
+    }
+
+    // 4. RADIUS Auth (The Source of Truth)
+    const isAuthenticated = await authService.authenticate({
+      username,
+      password,
+      nasIp: router.nasipaddress || '127.0.0.1',
+      nasIdentifier: router.id,
+      radiusSecret: router.radiusSecret,
+      clientIp: ip || '0.0.0.0',
+      radiusServer: process.env.RADIUS_HOST || '127.0.0.1',
+      radiusPort: parseInt(process.env.RADIUS_PORT || '1812')
+    });
+
+    if (!isAuthenticated) {
+      return reply.code(401).send({ error: 'Invalid credentials' });
+    }
+
+    // 5. Success - Redirect user
+    const redirectUrl = userurl || 'http://www.google.com';
+    
+    // Return JSON for SPA or simple HTML redirect
+    return reply.type('text/html').send(`
+      <html>
+        <head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head>
+        <body>Authenticated. Redirecting...</body>
+      </html>
+    `);
   });
 
   // Logout endpoint (for uspot)

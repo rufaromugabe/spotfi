@@ -87,97 +87,59 @@ export async function createOrUpdateQuota(
  * Sets both ChilliSpot-Max-Total-Octets (data limit) and Session-Timeout (period expiry)
  * This ensures the NAS enforces both limits natively without periodic checks
  * 
+ * Simplified: Just updates radreply limits for the NEXT login/re-auth
+ * Does NOT calc usage from logs (DB trigger does that into radquota)
+ * 
  * @returns QuotaInfo if quota exists and has remaining, null otherwise
  */
 export async function updateRadiusQuotaLimit(userName: string): Promise<QuotaInfo | null> {
   const now = new Date();
   
-  // Optimized: Get quota and period info in a single query
   const quota = await prisma.radQuota.findFirst({
     where: {
       username: userName,
       periodEnd: { gt: now },
       periodStart: { lte: now }
-    },
-    orderBy: {
-      periodEnd: 'desc'
     }
   });
 
-  if (!quota) {
-    // No active quota period found - remove attributes
-    await prisma.radReply.deleteMany({
-      where: {
-        userName,
-        attribute: { in: ['ChilliSpot-Max-Total-Octets', 'Session-Timeout'] }
-      }
-    });
-    return null;
-  }
+  if (!quota) return null;
 
-  // Calculate quota info from the quota record
+  // usedOctets is now updated automatically by Postgres Trigger
   const remaining = quota.maxOctets - quota.usedOctets;
-  const quotaInfo: QuotaInfo = {
-    remaining: remaining > 0n ? BigInt(remaining) : 0n,
-    total: quota.maxOctets,
-    used: quota.usedOctets,
-    percentage: Number(quota.usedOctets) / Number(quota.maxOctets) * 100
-  };
-
-  if (quotaInfo.remaining <= 0n) {
-    // Quota exhausted - remove attributes
+  
+  if (remaining <= 0n) {
+    // Clean up to ensure immediate rejection
     await prisma.radReply.deleteMany({
-      where: {
-        userName,
-        attribute: { in: ['ChilliSpot-Max-Total-Octets', 'Session-Timeout'] }
-      }
+      where: { userName, attribute: { in: ['ChilliSpot-Max-Total-Octets', 'Session-Timeout'] } }
     });
-    return null;
+    return { remaining: 0n, total: quota.maxOctets, used: quota.usedOctets, percentage: 100 };
   }
 
   // Calculate seconds until period expires
   const secondsUntilExpiry = Math.max(0, Math.floor((quota.periodEnd.getTime() - now.getTime()) / 1000));
-  
+
   // Set data quota limit (remaining quota in bytes)
   await prisma.radReply.upsert({
-    where: {
-      userName_attribute: {
-        userName,
-        attribute: 'ChilliSpot-Max-Total-Octets'
-      }
-    },
-    update: {
-      value: quotaInfo.remaining.toString()
-    },
-    create: {
-      userName,
-      attribute: 'ChilliSpot-Max-Total-Octets',
-      op: '=',
-      value: quotaInfo.remaining.toString()
-    }
+    where: { userName_attribute: { userName, attribute: 'ChilliSpot-Max-Total-Octets' }},
+    update: { value: remaining.toString() },
+    create: { userName, attribute: 'ChilliSpot-Max-Total-Octets', op: '=', value: remaining.toString() }
   });
 
   // Set session timeout (period expiry in seconds)
   // NAS will automatically disconnect user when this time expires
   await prisma.radReply.upsert({
-    where: {
-      userName_attribute: {
-        userName,
-        attribute: 'Session-Timeout'
-      }
-    },
-    update: {
-      value: secondsUntilExpiry.toString()
-    },
-    create: {
-      userName,
-      attribute: 'Session-Timeout',
-      op: '=',
-      value: secondsUntilExpiry.toString()
-    }
+    where: { userName_attribute: { userName, attribute: 'Session-Timeout' }},
+    update: { value: secondsUntilExpiry.toString() },
+    create: { userName, attribute: 'Session-Timeout', op: '=', value: secondsUntilExpiry.toString() }
   });
 
-  return quotaInfo;
+  return {
+    remaining: remaining,
+    total: quota.maxOctets,
+    used: quota.usedOctets,
+    percentage: Number(quota.usedOctets) / Number(quota.maxOctets) * 100
+  };
 }
 
 /**

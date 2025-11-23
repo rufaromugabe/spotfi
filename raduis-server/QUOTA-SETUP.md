@@ -61,10 +61,13 @@ NAS enforces limits:
 ```
 
 ### 3. Quota Tracking
-- Database trigger `update_quota_on_accounting` automatically updates `used_octets` when sessions end
-- Trigger fires on `radacct` table `AFTER UPDATE` when `acctstoptime` transitions from NULL to a timestamp
+- Database trigger `trg_update_quota` automatically updates `used_octets` when sessions are updated or end
+- Trigger fires on `radacct` table `AFTER UPDATE` for both:
+  - **Interim-Update packets**: Sent by uspot every 5 minutes with current usage
+  - **Stop packets**: Sent when session ends
+- Sums ALL sessions for the user in the current period (idempotent and self-correcting)
 - Only updates active quota periods (not expired periods)
-- No application-level polling needed - trigger handles everything automatically
+- No application-level polling needed - uspot sends updates natively, trigger handles everything automatically
 
 ## Database Schema
 
@@ -86,56 +89,78 @@ CREATE TABLE radquota (
 
 ### Automatic Quota Updates
 
-The database trigger `update_quota_on_accounting` automatically updates quota when sessions end.
+The database trigger `trg_update_quota` automatically updates quota when sessions are updated (Interim-Updates) or end (Stop packets).
 
 **Trigger Details:**
-- **Function**: `update_user_quota()`
-- **Trigger**: `update_quota_on_accounting`
+- **Function**: `update_quota_on_accounting()`
+- **Trigger**: `trg_update_quota`
 - **Table**: `radacct`
 - **Event**: `AFTER UPDATE`
-- **Condition**: Fires when `acctstoptime` is set (session ends)
+- **Condition**: Fires on any update to `radacct` when usage data is present
 
 **What it does:**
-1. Calculates total session bytes: `acctinputoctets + acctoutputoctets`
-   - Uses `COALESCE()` to handle NULL values (defaults to 0)
-2. Updates `radquota.used_octets` for the user's active quota period
-3. Only updates quotas where:
+1. Handles both Interim-Update packets (every 5 minutes) and Stop packets
+2. Finds active quota period for the user
+3. Sums ALL sessions for the user in the current period (idempotent and self-correcting)
+4. Updates `radquota.used_octets` with the total usage
+5. Only updates quotas where:
    - `period_end > now()` (period not expired)
    - `period_start <= now()` (period has started)
-4. Updates `updated_at` timestamp
+6. Updates `updated_at` timestamp
 
 **Note:** The trigger uses lowercase column names (e.g., `acctstoptime`) which PostgreSQL automatically matches to the mixed-case schema columns (e.g., `AcctStopTime`) since unquoted identifiers are case-insensitive.
 
+**Key Benefits:**
+- ✅ Handles Interim-Updates (real-time quota tracking every 5 minutes)
+- ✅ Handles Stop packets (final quota update on session end)
+- ✅ Idempotent: Recalculates total usage, preventing double-counting
+- ✅ Self-correcting: If a packet is missed, next update corrects it
+- ✅ No application polling needed - uspot sends updates natively
+
 **SQL Structure:**
 ```sql
-CREATE OR REPLACE FUNCTION update_user_quota()
+CREATE OR REPLACE FUNCTION update_quota_on_accounting()
 RETURNS TRIGGER AS $$
 DECLARE
-    session_bytes bigint;
+    period_start_ts timestamp;
+    period_end_ts timestamp;
 BEGIN
-    -- Only update quota when session stops (acctstoptime is set)
-    IF NEW.acctstoptime IS NOT NULL AND OLD.acctstoptime IS NULL THEN
-        -- Calculate session bytes (input + output)
-        session_bytes := COALESCE(NEW.acctinputoctets, 0) + COALESCE(NEW.acctoutputoctets, 0);
-        
-        -- Update quota for active period
-        UPDATE radquota
-        SET used_octets = used_octets + session_bytes,
+    -- Only process if we have usage data
+    IF COALESCE(NEW.acctinputoctets, 0) + COALESCE(NEW.acctoutputoctets, 0) > 0 THEN
+        -- Find active quota definition
+        SELECT period_start, period_end 
+        INTO period_start_ts, period_end_ts
+        FROM radquota 
+        WHERE username = NEW.username 
+        AND period_end > now() 
+        AND period_start <= now()
+        LIMIT 1;
+
+        IF FOUND THEN
+            -- Update the quota usage directly from the accounting session totals
+            -- We use a subquery to sum ALL sessions for this user in this period
+            -- This is idempotent and self-correcting
+            UPDATE radquota
+            SET used_octets = (
+                SELECT COALESCE(SUM(acctinputoctets + acctoutputoctets), 0)
+                FROM radacct
+                WHERE username = NEW.username
+                AND acctstarttime >= period_start_ts
+            ),
             updated_at = now()
-        WHERE username = NEW.username
-          AND period_end > now()
-          AND period_start <= now();
+            WHERE username = NEW.username 
+            AND period_start = period_start_ts;
+        END IF;
     END IF;
-    
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_quota_on_accounting
+CREATE TRIGGER trg_update_quota
 AFTER UPDATE ON radacct
 FOR EACH ROW
-WHEN (NEW.acctstoptime IS NOT NULL AND OLD.acctstoptime IS NULL)
-EXECUTE FUNCTION update_user_quota();
+EXECUTE FUNCTION update_quota_on_accounting();
 ```
 
 ## API Endpoints
@@ -221,11 +246,11 @@ npm run prisma:migrate:deploy
 
 Prisma migrations will create:
 - `radquota` table
-- Database trigger for automatic quota updates (`update_quota_on_accounting`)
+- Database trigger for automatic quota updates (`trg_update_quota` with function `update_quota_on_accounting`)
 - All required FreeRADIUS tables (radacct, radcheck, radreply, etc.)
 - Indexes for performance
 
-**Note:** No manual SQL schema file needs to be run. Prisma handles all database schema setup.
+**Note:** No manual SQL schema file needs to be run. Prisma handles all database schema setup. All triggers and functions are managed through Prisma migrations.
 
 ### 2. Create Quota via API
 ```bash
@@ -289,15 +314,16 @@ SELECT * FROM radacct WHERE username = 'testuser' AND acctstoptime IS NULL;
 ### Quota not updating
 1. Verify database trigger exists:
 ```sql
-SELECT * FROM pg_trigger WHERE tgname = 'update_quota_on_accounting';
+SELECT * FROM pg_trigger WHERE tgname = 'trg_update_quota';
 ```
 
 2. Check trigger function:
 ```sql
-SELECT * FROM pg_proc WHERE proname = 'update_user_quota';
+SELECT * FROM pg_proc WHERE proname = 'update_quota_on_accounting';
 ```
 
-3. Verify sessions are ending (check `radacct.acctstoptime`)
+3. Verify uspot is sending Interim-Updates (check `radacct.acctupdatetime` - should update every 5 minutes)
+4. Verify sessions are ending (check `radacct.acctstoptime`)
 
 ## Notes
 
