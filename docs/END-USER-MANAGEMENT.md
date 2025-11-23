@@ -148,7 +148,7 @@ The system automatically syncs user plans to RADIUS tables:
 - `WISPr-Bandwidth-Max-Down` - Download bandwidth limit
 - `ChilliSpot-Max-Input-Octets` - Alternative upload limit
 - `ChilliSpot-Max-Output-Octets` - Alternative download limit
-- `MikroTik-Total-Limit` - Data quota limit
+- `ChilliSpot-Max-Total-Octets` - **Data quota limit (for OpenWRT/uspot)** ⭐
 
 ### radquota (Quota Tracking)
 - Tracks data usage per quota period
@@ -219,7 +219,7 @@ curl http://localhost:8080/api/end-users/user-id \
 
 ### ✅ Bandwidth Control
 - Upload/download speed limits
-- Multiple attribute formats (WISPr, ChilliSpot, MikroTik)
+- Multiple attribute formats (WISPr, ChilliSpot)
 - Enforced at router level via RADIUS
 
 ### ✅ Time Limits

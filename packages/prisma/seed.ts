@@ -69,9 +69,9 @@ async function main() {
     {
       nasName: '192.168.1.1',
       shortName: `rtr-${router.id.substring(0, 8)}`,
-      type: 'mikrotik',
+      type: 'other',
       secret: testRouterSecret, // Use router's unique RADIUS secret
-      description: 'Main Office Router (Auto-managed)',
+      description: 'Main Office Router (OpenWRT - Auto-managed)',
     },
     {
       nasName: '0.0.0.0/0',
@@ -648,9 +648,9 @@ async function main() {
       await upsertRadReply(assignment.username, 'WISPr-Bandwidth-Max-Down', plan.maxDownloadSpeed.toString());
     }
 
-    // Data quota
+    // Data quota (ChilliSpot-Max-Total-Octets is supported by uspot/OpenWRT)
     if (plan.dataQuota) {
-      await upsertRadReply(assignment.username, 'MikroTik-Total-Limit', plan.dataQuota.toString());
+      await upsertRadReply(assignment.username, 'ChilliSpot-Max-Total-Octets', plan.dataQuota.toString());
     }
 
     // Max concurrent sessions (Simultaneous-Use is the valid FreeRADIUS attribute)

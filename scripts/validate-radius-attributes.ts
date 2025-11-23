@@ -51,7 +51,6 @@ const VALID_RADREPLY_ATTRIBUTES = [
   'Framed-IPv6-Route',
   'Class',
   'Reply-Message',
-  'MikroTik-Total-Limit', // Vendor-specific but commonly used
 ];
 
 // Known invalid attributes that should never be used
