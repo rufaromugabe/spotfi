@@ -145,9 +145,9 @@ export class RouterConnectionHandler {
             break;
 
           case 'ubus-result':
-            // Handle ubus call result (alias for command-result)
-            if (message.commandId || message.id) {
-              commandManager.handleResponse(message.commandId || message.id, message);
+            // Handle ubus call result (generic ubus response)
+            if (message.id) {
+              commandManager.handleResponse(message.id, message);
             }
             break;
 

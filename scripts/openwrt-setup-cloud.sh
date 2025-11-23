@@ -79,6 +79,11 @@ echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing required packages...${
 echo "  - Installing Python..."
 opkg install python3-light
 
+echo "  - Installing python3-ubus (native ubus bindings)..."
+opkg install python3-ubus || {
+    echo -e "${YELLOW}Warning: python3-ubus not available via opkg, will use subprocess fallback${NC}"
+}
+
 echo "  - Installing WebSocket support..."
 if opkg list | grep -q "^python3-websocket-client "; then
     opkg install python3-websocket-client
@@ -166,37 +171,107 @@ class SpotFiBridge:
         self.connected = False
         self.connection_start_time = 0
         self.x_sessions = {}  # sessionId -> {'master_fd': int, 'process': subprocess.Popen, 'thread': threading.Thread}
+        self.ubus = None
+        self.ubus_available = False
+        
+        # Try to import native ubus (faster)
+        try:
+            import ubus
+            self.ubus = ubus.connect()
+            self.ubus_available = True
+            print("✓ Using native python3-ubus (fast)")
+        except ImportError:
+            print("⚠ python3-ubus not available, using subprocess fallback")
+            self.ubus_available = False
+        
+    def _ubus_call(self, path, method, args={}):
+        """Generic ubus call - uses native binding if available, else subprocess"""
+        if self.ubus_available and self.ubus:
+            try:
+                return self.ubus.call(path, method, args)
+            except Exception as e:
+                print(f"Native ubus call failed: {e}, falling back to subprocess", file=sys.stderr)
+                # Fall through to subprocess
+        
+        # Fallback to subprocess
+        args_json = json.dumps(args) if args else '{}'
+        result = subprocess.run(
+            ['ubus', 'call', path, method, args_json],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout) if result.stdout else {}
+        else:
+            raise Exception(f"ubus call failed: {result.stderr}")
         
     def get_router_metrics(self):
-        """Get router metrics"""
-        metrics = {}
-        
-        with open('/proc/loadavg', 'r') as f:
-            load = f.read().split()[0]
-        metrics['cpuLoad'] = float(load) * 100
-        
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                if line.startswith('MemTotal:'):
-                    metrics['totalMemory'] = int(line.split()[1])
-                elif line.startswith('MemFree:'):
-                    metrics['freeMemory'] = int(line.split()[1])
-                if 'totalMemory' in metrics and 'freeMemory' in metrics:
-                    break
-        
-        with open('/proc/uptime', 'r') as f:
-            uptime_seconds = int(float(f.read().split()[0]))
-        metrics['uptime'] = str(uptime_seconds)
-        
-        metrics['activeUsers'] = 0
-        return metrics
+        """Get router metrics using ubus (native)"""
+        try:
+            # Get system info natively via ubus
+            sys_info = self._ubus_call("system", "info", {})
+            
+            # Get uspot client count natively
+            try:
+                clients = self._ubus_call("uspot", "client_list", {})
+                # Calculate active users (count keys in all interfaces)
+                active_users = sum(len(v) if isinstance(v, dict) else 1 for v in clients.values()) if clients else 0
+            except:
+                active_users = 0
+            
+            # Extract metrics from ubus system.info response
+            metrics = {
+                'uptime': str(sys_info.get('uptime', 0)),
+                'cpuLoad': (sys_info.get('load', [0])[0] / 65535.0 * 100) if isinstance(sys_info.get('load'), list) and len(sys_info.get('load', [])) > 0 else 0,
+                'totalMemory': sys_info.get('memory', {}).get('total', 0),
+                'freeMemory': sys_info.get('memory', {}).get('free', 0),
+                'activeUsers': active_users
+            }
+            return metrics
+        except Exception as e:
+            print(f"Error getting metrics via ubus: {e}, falling back to /proc", file=sys.stderr)
+            # Fallback to /proc parsing
+            metrics = {}
+            try:
+                with open('/proc/loadavg', 'r') as f:
+                    load = f.read().split()[0]
+                metrics['cpuLoad'] = float(load) * 100
+            except:
+                metrics['cpuLoad'] = 0
+            
+            try:
+                with open('/proc/meminfo', 'r') as f:
+                    for line in f:
+                        if line.startswith('MemTotal:'):
+                            metrics['totalMemory'] = int(line.split()[1]) * 1024  # Convert KB to bytes
+                        elif line.startswith('MemFree:'):
+                            metrics['freeMemory'] = int(line.split()[1]) * 1024
+                        if 'totalMemory' in metrics and 'freeMemory' in metrics:
+                            break
+            except:
+                pass
+            
+            try:
+                with open('/proc/uptime', 'r') as f:
+                    uptime_seconds = int(float(f.read().split()[0]))
+                metrics['uptime'] = str(uptime_seconds)
+            except:
+                metrics['uptime'] = '0'
+            
+            metrics['activeUsers'] = 0
+            return metrics
     
     def on_message(self, ws, message):
         data = json.loads(message)
         msg_type = data.get('type')
         print(f"Received: {msg_type}")
         
-        if msg_type == 'command':
+        if msg_type == 'ubus_call':
+            # Generic UBUS proxy - the Holy Grail!
+            # Backend sends: { "type": "ubus_call", "id": "req1", "path": "system", "method": "info", "args": {} }
+            self.handle_ubus_call_generic(data)
+        elif msg_type == 'command':
             command = data.get('command')
             params = data.get('params', {})
             # Extract commandId from message if present
@@ -272,8 +347,40 @@ class SpotFiBridge:
             if command_id:
                 self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
     
+    def handle_ubus_call_generic(self, data):
+        """Handle generic ubus_call message type (new optimized approach)"""
+        req_id = data.get('id')
+        path = data.get('path')
+        method = data.get('method')
+        args = data.get('args', {})
+        
+        if not path or not method:
+            error_msg = "Missing path or method for ubus_call"
+            if req_id:
+                self.send_message({'type': 'ubus-result', 'id': req_id, 'status': 'error', 'error': error_msg})
+            return
+        
+        try:
+            # Use native ubus binding if available (much faster)
+            result = self._ubus_call(path, method, args)
+            response = {
+                'type': 'ubus-result',
+                'id': req_id,
+                'status': 'success',
+                'data': result
+            }
+        except Exception as e:
+            response = {
+                'type': 'ubus-result',
+                'id': req_id,
+                'status': 'error',
+                'error': str(e)
+            }
+        
+        self.send_message(response)
+    
     def handle_ubus_call(self, params):
-        """Handle ubus call command"""
+        """Handle legacy ubus-call command (for backward compatibility)"""
         command_id = params.get('commandId') or params.get('command_id')
         namespace = params.get('namespace')
         method = params.get('method')
@@ -286,30 +393,11 @@ class SpotFiBridge:
             return
         
         try:
-            # Convert args dict to JSON string for ubus
-            args_json = json.dumps(args) if args else '{}'
-            
-            result = subprocess.run(
-                ['ubus', 'call', namespace, method, args_json],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                data = json.loads(result.stdout) if result.stdout else {}
-                if command_id:
-                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': data})
-                else:
-                    self.send_message({'type': 'ubus-result', 'id': command_id, 'data': data})
-            else:
-                error_msg = f"ubus call failed: {result.stderr}"
-                if command_id:
-                    self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
-        except subprocess.TimeoutExpired:
-            error_msg = "ubus call timed out"
+            result = self._ubus_call(namespace, method, args)
             if command_id:
-                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'error', 'error': error_msg})
+                self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': result})
+            else:
+                self.send_message({'type': 'ubus-result', 'id': command_id, 'data': result})
         except Exception as e:
             error_msg = f"ubus call error: {str(e)}"
             if command_id:
@@ -1155,6 +1243,41 @@ class SpotFiBridge:
         print("✓ WebSocket connected")
         self.connected = True
         self.send_metrics()
+        # Start heartbeat thread for periodic metrics
+        self.start_heartbeat()
+    
+    def start_heartbeat(self):
+        """Send metrics every 30s using UBUS instead of parsing /proc files"""
+        def heartbeat_loop():
+            while self.running and self.ws and self.connected:
+                try:
+                    # Get system info natively
+                    sys_info = self._ubus_call("system", "info", {})
+                    # Get uspot client count natively
+                    try:
+                        clients = self._ubus_call("uspot", "client_list", {})
+                        active_users = sum(len(v) if isinstance(v, dict) else 1 for v in clients.values()) if clients else 0
+                    except:
+                        active_users = 0
+                    
+                    metrics = {
+                        'type': 'metrics',
+                        'metrics': {
+                            'uptime': str(sys_info.get('uptime', 0)),
+                            'cpuLoad': (sys_info.get('load', [0])[0] / 65535.0 * 100) if isinstance(sys_info.get('load'), list) and len(sys_info.get('load', [])) > 0 else 0,
+                            'totalMemory': sys_info.get('memory', {}).get('total', 0),
+                            'freeMemory': sys_info.get('memory', {}).get('free', 0),
+                            'activeUsers': active_users
+                        }
+                    }
+                    self.send_message(metrics)
+                    time.sleep(30)
+                except Exception as e:
+                    print(f"Heartbeat Error: {e}", file=sys.stderr)
+                    time.sleep(5)
+        
+        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
     
     def send_message(self, data):
         if self.ws and self.connected:

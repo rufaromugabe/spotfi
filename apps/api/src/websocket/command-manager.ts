@@ -46,19 +46,32 @@ class CommandManager {
         commandId
       });
 
-      // Send command
-      const message = {
-        type: 'command',
-        commandId,
-        command,
-        params,
-        timestamp: new Date().toISOString()
-      };
+      // Handle generic ubus_call message type
+      let message: any;
+      if (command === 'ubus_call') {
+        // Generic ubus call - params contains path, method, args
+        message = {
+          type: 'ubus_call',
+          id: commandId,
+          path: params.path,
+          method: params.method,
+          args: params.args || {}
+        };
+      } else {
+        // Legacy command format
+        message = {
+          type: 'command',
+          commandId,
+          command,
+          params,
+          timestamp: new Date().toISOString()
+        };
+      }
 
       try {
         socket.send(JSON.stringify(message));
         if (this.logger) {
-          this.logger.debug(`[Router ${routerId}] Sent command: ${command} (id: ${commandId})`);
+          this.logger.debug(`[Router ${routerId}] Sent ${command === 'ubus_call' ? 'ubus_call' : `command: ${command}`} (id: ${commandId})`);
         }
       } catch (error: any) {
         clearTimeout(timeoutId);

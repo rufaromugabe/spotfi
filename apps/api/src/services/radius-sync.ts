@@ -233,36 +233,30 @@ async function syncRadReply(
     await deleteRadReply(username, 'Idle-Timeout');
   }
 
-  // WISPr-Bandwidth-Max-Up (vendor-specific, but widely supported)
-  if (maxUploadSpeed !== null && maxUploadSpeed !== undefined) {
-    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', maxUploadSpeed.toString());
-  } else {
-    await deleteRadReply(username, 'WISPr-Bandwidth-Max-Up');
-  }
-
-  // WISPr-Bandwidth-Max-Down
+  // Bandwidth Limits (Enforced by uspot + ratelimit/tc)
+  // uspot supports WISPr attributes natively
   if (maxDownloadSpeed !== null && maxDownloadSpeed !== undefined) {
-    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', maxDownloadSpeed.toString());
+    // WISPr is in bits per second
+    const bitsPerSec = maxDownloadSpeed * 8n;
+    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', bitsPerSec.toString());
   } else {
     await deleteRadReply(username, 'WISPr-Bandwidth-Max-Down');
   }
 
-  // ChilliSpot attributes (alternative bandwidth control)
   if (maxUploadSpeed !== null && maxUploadSpeed !== undefined) {
-    await upsertRadReply(username, 'ChilliSpot-Max-Input-Octets', maxUploadSpeed.toString());
-  }
-  if (maxDownloadSpeed !== null && maxDownloadSpeed !== undefined) {
-    await upsertRadReply(username, 'ChilliSpot-Max-Output-Octets', maxDownloadSpeed.toString());
-  }
-
-  // Data quota (using MikroTik-Total-Limit or custom attribute)
-  if (dataQuota !== null && dataQuota !== undefined) {
-    await upsertRadReply(username, 'MikroTik-Total-Limit', dataQuota.toString());
+    const bitsPerSec = maxUploadSpeed * 8n;
+    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', bitsPerSec.toString());
+  } else {
+    await deleteRadReply(username, 'WISPr-Bandwidth-Max-Up');
   }
 
-  // Remaining quota (for tracking)
+  // Data Quota (Enforced by uspot BPF accounting)
+  // ChilliSpot-Max-Total-Octets is supported by uspot
   if (remainingQuota !== null && remainingQuota !== undefined && remainingQuota > 0n) {
-    await upsertRadReply(username, 'MikroTik-Total-Limit-Remaining', remainingQuota.toString());
+    await upsertRadReply(username, 'ChilliSpot-Max-Total-Octets', remainingQuota.toString());
+  } else {
+    // Remove quota limit if exhausted or not set
+    await deleteRadReply(username, 'ChilliSpot-Max-Total-Octets');
   }
 }
 
