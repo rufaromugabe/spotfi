@@ -12,7 +12,8 @@ COPY packages/prisma/package.json packages/prisma/package.json
 COPY packages/shared/package.json packages/shared/package.json
 
 # Install workspace dependencies
-RUN npm ci
+# Try npm ci first (faster, reproducible), fallback to npm install if lock file is out of sync
+RUN npm ci || (echo "Warning: package-lock.json out of sync, using npm install..." && npm install)
 
 # Copy the rest of the source
 COPY . .

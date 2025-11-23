@@ -154,12 +154,12 @@ async function syncRadCheck(
     }
   });
 
-  // Set Max-Daily-Session if maxSessions is set
+  // Set Simultaneous-Use if maxSessions is set (valid FreeRADIUS attribute for concurrent session limits)
   if (maxSessions !== null && maxSessions !== undefined) {
     const existing = await prisma.radCheck.findFirst({
       where: {
         userName: username,
-        attribute: 'Max-Daily-Session'
+        attribute: 'Simultaneous-Use'
       }
     });
 
@@ -175,18 +175,18 @@ async function syncRadCheck(
       await prisma.radCheck.create({
         data: {
           userName: username,
-          attribute: 'Max-Daily-Session',
+          attribute: 'Simultaneous-Use',
           op: ':=',
           value: maxSessions.toString()
         }
       });
     }
   } else {
-    // Remove Max-Daily-Session if unlimited
+    // Remove Simultaneous-Use if unlimited
     await prisma.radCheck.deleteMany({
       where: {
         userName: username,
-        attribute: 'Max-Daily-Session'
+        attribute: 'Simultaneous-Use'
       }
     });
   }

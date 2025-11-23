@@ -7,12 +7,12 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-spotfi}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 10s
@@ -33,11 +33,11 @@ services:
       DB_PORT: ${POSTGRES_PORT:-5432}
       DB_NAME: ${POSTGRES_DB:-spotfi}
       DB_USER: ${POSTGRES_USER:-postgres}
-      DB_PASS: ${POSTGRES_PASSWORD}
+      DB_PASS: ${POSTGRES_PASSWORD:-postgres}
       DB_DIALECT: postgresql
     ports:
-      - "1812:1812/udp"
-      - "1813:1813/udp"
+      - "${RADIUS_AUTH_PORT:-1812}:1812/udp"
+      - "${RADIUS_ACCT_PORT:-1813}:1813/udp"
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,18 +64,21 @@ services:
       PORT: ${PORT:-8080}
       HOST: ${HOST:-0.0.0.0}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-spotfi}?schema=public
-      JWT_SECRET: ${JWT_SECRET}
-      API_URL: ${API_URL:-http://20.253.179.225:8080}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-spotfi}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-secret-key}
+      # API_URL defaults to localhost for local Docker, override in .env for production
+      # For local: http://localhost:8080
+      # For production: http://your-domain.com or http://your-ip:8080
+      API_URL: ${API_URL:-http://localhost:8080}
     ports:
-      - "${PORT:-8080}:8080"
+      - "${API_PORT:-8080}:${PORT:-8080}"
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - spotfi-network
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:${PORT:-8080}/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

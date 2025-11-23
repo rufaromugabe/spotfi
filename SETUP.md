@@ -66,10 +66,30 @@ Once running, the API will be available at `http://localhost:8080`
 - `GET /api/routers` - List routers (requires auth)
 - `WS /ws?id=ROUTER_ID&token=TOKEN` - WebSocket connection
 
+## Validation
+
+Before deploying, validate RADIUS attributes:
+
+```bash
+npm run validate:radius
+```
+
+This checks for invalid RADIUS attributes that could cause authentication failures. See [RADIUS Validation Guide](docs/RADIUS-VALIDATION.md) for details.
+
 ## Next Steps
 
-1. Create routers via API or dashboard
-2. Configure MikroTik routers to connect via WebSocket
-3. Set up FreeRADIUS integration
-4. Monitor usage and billing
+1. **Validate RADIUS attributes**: `npm run validate:radius`
+2. Create routers via API or dashboard
+3. Configure OpenWRT routers to connect via WebSocket
+4. Set up FreeRADIUS integration
+5. Monitor usage and billing
+
+## Deployment
+
+Before deploying to production:
+
+1. Run validation: `npm run validate:radius`
+2. Check deployment checklist: [Deployment Checklist](docs/DEPLOYMENT-CHECKLIST.md)
+3. Verify all environment variables are set
+4. Test RADIUS authentication
 

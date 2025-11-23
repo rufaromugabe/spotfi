@@ -234,33 +234,33 @@ class SpotFiBridge:
             # Fallback to /proc parsing
             metrics = {}
             try:
-                with open('/proc/loadavg', 'r') as f:
-                    load = f.read().split()[0]
-                metrics['cpuLoad'] = float(load) * 100
+        with open('/proc/loadavg', 'r') as f:
+            load = f.read().split()[0]
+        metrics['cpuLoad'] = float(load) * 100
             except:
                 metrics['cpuLoad'] = 0
-            
+        
             try:
-                with open('/proc/meminfo', 'r') as f:
-                    for line in f:
-                        if line.startswith('MemTotal:'):
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
                             metrics['totalMemory'] = int(line.split()[1]) * 1024  # Convert KB to bytes
-                        elif line.startswith('MemFree:'):
+                elif line.startswith('MemFree:'):
                             metrics['freeMemory'] = int(line.split()[1]) * 1024
-                        if 'totalMemory' in metrics and 'freeMemory' in metrics:
-                            break
+                if 'totalMemory' in metrics and 'freeMemory' in metrics:
+                    break
             except:
                 pass
-            
+        
             try:
-                with open('/proc/uptime', 'r') as f:
-                    uptime_seconds = int(float(f.read().split()[0]))
-                metrics['uptime'] = str(uptime_seconds)
+        with open('/proc/uptime', 'r') as f:
+            uptime_seconds = int(float(f.read().split()[0]))
+        metrics['uptime'] = str(uptime_seconds)
             except:
                 metrics['uptime'] = '0'
-            
-            metrics['activeUsers'] = 0
-            return metrics
+        
+        metrics['activeUsers'] = 0
+        return metrics
     
     def on_message(self, ws, message):
         data = json.loads(message)
@@ -394,9 +394,9 @@ class SpotFiBridge:
         
         try:
             result = self._ubus_call(namespace, method, args)
-            if command_id:
+                if command_id:
                 self.send_message({'type': 'command-result', 'commandId': command_id, 'status': 'success', 'data': result})
-            else:
+                else:
                 self.send_message({'type': 'ubus-result', 'id': command_id, 'data': result})
         except Exception as e:
             error_msg = f"ubus call error: {str(e)}"

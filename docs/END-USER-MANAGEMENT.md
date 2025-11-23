@@ -139,7 +139,7 @@ The system automatically syncs user plans to RADIUS tables:
 ### radcheck (Authentication Checks)
 - `User-Password` - User password
 - `Auth-Type` - Set to "Reject" if user disabled
-- `Max-Daily-Session` - Max concurrent sessions
+- `Simultaneous-Use` - Max concurrent sessions (valid FreeRADIUS attribute)
 
 ### radreply (Reply Attributes)
 - `Session-Timeout` - Max session duration

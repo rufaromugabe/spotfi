@@ -377,14 +377,22 @@ async function main() {
 
   const createdPlans = [];
   for (const planData of plans) {
-    const plan = await prisma.plan.upsert({
+    // Find existing plan by name
+    const existing = await prisma.plan.findFirst({
       where: { name: planData.name },
-      update: {},
-      create: {
-        ...planData,
-        createdById: admin.id,
-      },
     });
+    
+    let plan;
+    if (existing) {
+      plan = existing;
+    } else {
+      plan = await prisma.plan.create({
+        data: {
+          ...planData,
+          createdById: admin.id,
+        },
+      });
+    }
     createdPlans.push(plan);
   }
   console.log('✅ Created service plans:', createdPlans.length);
@@ -645,9 +653,9 @@ async function main() {
       await upsertRadReply(assignment.username, 'MikroTik-Total-Limit', plan.dataQuota.toString());
     }
 
-    // Max sessions
+    // Max concurrent sessions (Simultaneous-Use is the valid FreeRADIUS attribute)
     if (plan.maxSessions) {
-      await upsertRadCheck(assignment.username, 'Max-Daily-Session', plan.maxSessions.toString());
+      await upsertRadCheck(assignment.username, 'Simultaneous-Use', plan.maxSessions.toString());
     }
 
     // Service-Type
