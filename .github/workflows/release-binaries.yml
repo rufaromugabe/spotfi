@@ -1,0 +1,110 @@
+name: Build and Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v1.2.3, etc.
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+      
+      - name: Build all architectures
+        working-directory: ./spotfi-bridge-go
+        run: |
+          chmod +x build.sh
+          ./build.sh
+      
+      - name: Get version from tag or input
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building release: $VERSION"
+      
+      - name: Create release archive
+        working-directory: ./spotfi-bridge-go
+        run: |
+          mkdir -p release
+          cp spotfi-bridge-* release/ 2>/dev/null || true
+          cd release
+          tar -czf ../spotfi-bridge-binaries.tar.gz spotfi-bridge-* 2>/dev/null || true
+          cd ..
+          ls -lh spotfi-bridge-* release/ || true
+      
+      - name: Move binaries to root for upload
+        run: |
+          mkdir -p release-binaries
+          cp spotfi-bridge-go/spotfi-bridge-* release-binaries/ 2>/dev/null || true
+          cp spotfi-bridge-go/spotfi-bridge-binaries.tar.gz release-binaries/ 2>/dev/null || true
+          ls -lh release-binaries/
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body: |
+            ## SpotFi Bridge Binaries
+            
+            Pre-built binaries for all supported architectures.
+            
+            ### Supported Architectures
+            
+            - **MIPS** (mips_24kc) - `spotfi-bridge-mips`
+            - **MIPSLE** (mipsel_24kc) - `spotfi-bridge-mipsle`
+            - **MIPS64** (64-bit MIPS) - `spotfi-bridge-mips64`
+            - **MIPS64LE** (64-bit MIPS little-endian) - `spotfi-bridge-mips64le`
+            - **ARM64** (aarch64) - `spotfi-bridge-arm64`
+            - **ARM** (32-bit ARM) - `spotfi-bridge-arm`
+            - **AMD64** (x86_64) - `spotfi-bridge-amd64`
+            - **386** (32-bit x86) - `spotfi-bridge-386`
+            - **RISC-V 64** - `spotfi-bridge-riscv64`
+            
+            ### Installation
+            
+            The OpenWRT setup script will automatically download the correct binary for your architecture.
+            
+            ```bash
+            wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
+            sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS WS_URL
+            ```
+            
+            ### Binary Sizes
+            
+            All binaries are compressed with UPX for optimal size:
+            - Compressed: ~1.5-2MB per binary
+            - Original: ~5-6MB per binary
+            - Reduction: ~70% smaller
+          files: |
+            release-binaries/spotfi-bridge-*
+            release-binaries/spotfi-bridge-binaries.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

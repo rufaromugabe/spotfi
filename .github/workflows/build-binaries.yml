@@ -1,0 +1,55 @@
+name: Build Binaries (CI)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'spotfi-bridge-go/**'
+      - '.github/workflows/build-binaries.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'spotfi-bridge-go/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+      
+      - name: Build all architectures
+        working-directory: ./spotfi-bridge-go
+        run: |
+          chmod +x build.sh
+          ./build.sh
+      
+      - name: List built binaries
+        working-directory: ./spotfi-bridge-go
+        run: |
+          echo "Built binaries:"
+          ls -lh spotfi-bridge-* | grep -vE '\.(bat|ps1|sh|md|go|mod)$' || true
+          echo ""
+          echo "Binary sizes:"
+          ls -lh spotfi-bridge-* 2>/dev/null | grep -vE '\.(bat|ps1|sh|md|go|mod)$' | awk '{print $5, $9}' || true
+      
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotfi-bridge-binaries
+          path: spotfi-bridge-go/spotfi-bridge-*
+          retention-days: 7
+
