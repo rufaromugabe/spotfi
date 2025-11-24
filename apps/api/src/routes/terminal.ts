@@ -102,7 +102,7 @@ export async function terminalRoutes(fastify: FastifyInstance) {
           }, 100);
         }
         // Send an initial newline to encourage a prompt if needed
-        ws.send(new TextEncoder().encode('\n'));
+        ws.send(new TextEncoder().encode(String.fromCharCode(10)));
       };
 
       ws.onclose = (evt) => {
