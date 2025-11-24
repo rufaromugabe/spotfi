@@ -354,9 +354,44 @@ func connect() error {
 }
 
 func main() {
+	// Check for version/test flags
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-v":
+			fmt.Println("spotfi-bridge v1.0.0")
+			os.Exit(0)
+		case "--test", "-t":
+			fmt.Println("Testing configuration...")
+			loadEnv()
+			if config.RouterID == "" {
+				fmt.Println("ERROR: Missing SPOTFI_ROUTER_ID")
+				os.Exit(1)
+			}
+			if config.Token == "" {
+				fmt.Println("ERROR: Missing SPOTFI_TOKEN")
+				os.Exit(1)
+			}
+			if config.WsURL == "" {
+				fmt.Println("ERROR: Missing SPOTFI_WS_URL")
+				os.Exit(1)
+			}
+			fmt.Println("Configuration OK:")
+			fmt.Printf("  Router ID: %s\n", config.RouterID)
+			fmt.Printf("  WebSocket URL: %s\n", config.WsURL)
+			fmt.Printf("  MAC Address: %s\n", config.Mac)
+			os.Exit(0)
+		case "--help", "-h":
+			fmt.Println("Usage: spotfi-bridge [--version|--test|--help]")
+			fmt.Println("  --version, -v  Show version")
+			fmt.Println("  --test, -t     Test configuration")
+			fmt.Println("  --help, -h     Show this help")
+			os.Exit(0)
+		}
+	}
+
 	loadEnv()
 	if config.RouterID == "" {
-		log.Fatal("Missing configuration")
+		log.Fatal("Missing configuration: SPOTFI_ROUTER_ID not set")
 	}
 
 	// Heartbeat ticker

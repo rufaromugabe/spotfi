@@ -211,10 +211,8 @@ if [ ! -f /usr/bin/spotfi-bridge ]; then
 fi
 
 # Verify binary is actually executable for this architecture
-if ! file /usr/bin/spotfi-bridge | grep -q "executable"; then
-    echo -e "${YELLOW}Warning: Binary may not be compatible with this architecture${NC}"
-    echo "File type: $(file /usr/bin/spotfi-bridge)"
-fi
+BINARY_TYPE=$(file /usr/bin/spotfi-bridge 2>/dev/null || echo "unknown")
+echo "  - Binary type: $BINARY_TYPE"
 
 echo -e "${GREEN}✓ SpotFi Bridge binary installed${NC}"
 
@@ -228,6 +226,25 @@ SPOTFI_ROUTER_NAME="$ROUTER_NAME"
 EOF
 
 chmod 600 /etc/spotfi.env
+
+# Test binary with --test flag (tests configuration without connecting)
+echo "  - Testing binary and configuration..."
+if /usr/bin/spotfi-bridge --test 2>&1; then
+    echo -e "${GREEN}✓ Binary test passed - configuration is valid${NC}"
+else
+    TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1 || true)
+    if [ -n "$TEST_OUTPUT" ]; then
+        echo -e "${RED}✗ Binary test failed:${NC}"
+        echo "$TEST_OUTPUT"
+        echo ""
+        echo "Please check /etc/spotfi.env configuration"
+        exit 1
+    else
+        echo -e "${YELLOW}⚠ Binary does not support --test flag (older version?)${NC}"
+        # Fallback: try to run it briefly
+        timeout 3 /usr/bin/spotfi-bridge 2>&1 | head -n 3 || true
+    fi
+fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
 
@@ -264,11 +281,16 @@ start_service() {
         exit 1
     fi
     
+    # Create log directory if it doesn't exist
+    mkdir -p /var/log
+    
     procd_open_instance
     procd_set_param command $PROG
     procd_set_param respawn 3600 5 5
+    # Redirect stdout and stderr to syslog with tag
     procd_set_param stdout 1
     procd_set_param stderr 1
+    procd_set_param env "SPOTFI_LOG=1"
     procd_close_instance
 }
 INITEOF
