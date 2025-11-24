@@ -7,14 +7,35 @@ set -e
 echo "Building SpotFi Bridge for all architectures..."
 echo ""
 
-# Check if UPX is available
+# Check if UPX is available - check local directory first, then PATH
 HAS_UPX=false
-if command -v upx &> /dev/null; then
+UPX_CMD=""
+
+# Find UPX - check local directory first, then PATH
+if [ -f "./upx/upx-4.2.1-win64/upx.exe" ]; then
+    UPX_CMD="./upx/upx-4.2.1-win64/upx.exe"
     HAS_UPX=true
-    echo "✓ UPX found - binaries will be compressed"
+    echo "✓ UPX found (local: ./upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
+elif [ -f "./upx/upx.exe" ]; then
+    UPX_CMD="./upx/upx.exe"
+    HAS_UPX=true
+    echo "✓ UPX found (local: ./upx/upx.exe) - binaries will be compressed"
+elif [ -f "upx/upx-4.2.1-win64/upx.exe" ]; then
+    UPX_CMD="upx/upx-4.2.1-win64/upx.exe"
+    HAS_UPX=true
+    echo "✓ UPX found (local: upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
+elif [ -f "upx/upx.exe" ]; then
+    UPX_CMD="upx/upx.exe"
+    HAS_UPX=true
+    echo "✓ UPX found (local: upx/upx.exe) - binaries will be compressed"
+elif command -v upx &> /dev/null 2>&1; then
+    UPX_CMD="upx"
+    HAS_UPX=true
+    echo "✓ UPX found (PATH) - binaries will be compressed"
 else
     echo "⚠ UPX not found - binaries will not be compressed"
     echo "  Install from: https://upx.github.io/"
+    echo "  Or place UPX in ./upx/upx.exe or ./upx/upx-4.2.1-win64/upx.exe"
 fi
 
 echo ""
@@ -26,7 +47,7 @@ export GOARCH=mips
 export GOMIPS=softfloat
 go build -ldflags="-s -w" -o spotfi-bridge-mips
 if [ "$HAS_UPX" = true ]; then
-    upx --best --lzma spotfi-bridge-mips
+    $UPX_CMD --best --lzma spotfi-bridge-mips
     echo "✓ Built and compressed: spotfi-bridge-mips"
 else
     echo "✓ Built: spotfi-bridge-mips (not compressed)"
@@ -40,7 +61,7 @@ export GOARCH=mipsle
 export GOMIPS=softfloat
 go build -ldflags="-s -w" -o spotfi-bridge-mipsle
 if [ "$HAS_UPX" = true ]; then
-    upx --best --lzma spotfi-bridge-mipsle
+    $UPX_CMD --best --lzma spotfi-bridge-mipsle
     echo "✓ Built and compressed: spotfi-bridge-mipsle"
 else
     echo "✓ Built: spotfi-bridge-mipsle (not compressed)"
@@ -54,10 +75,95 @@ export GOARCH=arm64
 unset GOMIPS
 go build -ldflags="-s -w" -o spotfi-bridge-arm64
 if [ "$HAS_UPX" = true ]; then
-    upx --best --lzma spotfi-bridge-arm64
+    $UPX_CMD --best --lzma spotfi-bridge-arm64
     echo "✓ Built and compressed: spotfi-bridge-arm64"
 else
     echo "✓ Built: spotfi-bridge-arm64 (not compressed)"
+fi
+echo ""
+
+# Build AMD64 (x86_64)
+echo "Building for AMD64 (x86_64)..."
+export GOOS=linux
+export GOARCH=amd64
+unset GOMIPS
+go build -ldflags="-s -w" -o spotfi-bridge-amd64
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-amd64
+    echo "✓ Built and compressed: spotfi-bridge-amd64"
+else
+    echo "✓ Built: spotfi-bridge-amd64 (not compressed)"
+fi
+echo ""
+
+# Build 386 (32-bit x86)
+echo "Building for 386 (i386/i686)..."
+export GOOS=linux
+export GOARCH=386
+unset GOMIPS
+go build -ldflags="-s -w" -o spotfi-bridge-386
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-386
+    echo "✓ Built and compressed: spotfi-bridge-386"
+else
+    echo "✓ Built: spotfi-bridge-386 (not compressed)"
+fi
+echo ""
+
+# Build ARM (32-bit ARM)
+echo "Building for ARM (32-bit, cortex-a5/a7/a8/a9/a15)..."
+export GOOS=linux
+export GOARCH=arm
+export GOARM=7
+unset GOMIPS
+go build -ldflags="-s -w" -o spotfi-bridge-arm
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-arm
+    echo "✓ Built and compressed: spotfi-bridge-arm"
+else
+    echo "✓ Built: spotfi-bridge-arm (not compressed)"
+fi
+echo ""
+
+# Build MIPS64 (64-bit MIPS)
+echo "Building for MIPS64 (64-bit MIPS big-endian)..."
+export GOOS=linux
+export GOARCH=mips64
+export GOMIPS=softfloat
+go build -ldflags="-s -w" -o spotfi-bridge-mips64
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-mips64
+    echo "✓ Built and compressed: spotfi-bridge-mips64"
+else
+    echo "✓ Built: spotfi-bridge-mips64 (not compressed)"
+fi
+echo ""
+
+# Build MIPS64LE (64-bit MIPS little-endian)
+echo "Building for MIPS64LE (64-bit MIPS little-endian)..."
+export GOOS=linux
+export GOARCH=mips64le
+export GOMIPS=softfloat
+go build -ldflags="-s -w" -o spotfi-bridge-mips64le
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-mips64le
+    echo "✓ Built and compressed: spotfi-bridge-mips64le"
+else
+    echo "✓ Built: spotfi-bridge-mips64le (not compressed)"
+fi
+echo ""
+
+# Build RISC-V 64
+echo "Building for RISC-V 64..."
+export GOOS=linux
+export GOARCH=riscv64
+unset GOMIPS
+go build -ldflags="-s -w" -o spotfi-bridge-riscv64
+if [ "$HAS_UPX" = true ]; then
+    $UPX_CMD --best --lzma spotfi-bridge-riscv64
+    echo "✓ Built and compressed: spotfi-bridge-riscv64"
+else
+    echo "✓ Built: spotfi-bridge-riscv64 (not compressed)"
 fi
 echo ""
 

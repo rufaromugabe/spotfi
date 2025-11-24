@@ -76,37 +76,102 @@ opkg update
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Detecting router architecture...${NC}"
 
-# Detect architecture
-ARCH_STRING=$(opkg print-architecture | grep -E 'mips_24kc|mipsel_24kc|aarch64_cortex-a53|aarch64_cortex-a72|aarch64_generic' | head -n 1 | awk '{print $2}')
+# Detect architecture - try multiple methods
+ARCH_STRING=""
+BINARY_ARCH=""
 
-if [ -z "$ARCH_STRING" ]; then
+# Method 1: Try opkg print-architecture (most reliable for OpenWrt)
+OPKG_ARCH=$(opkg print-architecture 2>/dev/null | grep -vE '^(arch|arch all|arch noarch)' | awk '{print $2}' | head -n 1)
+
+# Method 2: Fallback to uname -m
+UNAME_ARCH=$(uname -m 2>/dev/null || echo "")
+
+# Determine architecture and map to binary
+if [ -n "$OPKG_ARCH" ]; then
+    ARCH_STRING="$OPKG_ARCH"
+    echo "  - Detected from opkg: $ARCH_STRING"
+    
+    # Map opkg architecture strings to binary names
+    if [ "$ARCH_STRING" = "mips_24kc" ] || echo "$ARCH_STRING" | grep -qE "^mips_[0-9]"; then
+        BINARY_ARCH="mips"
+    elif [ "$ARCH_STRING" = "mipsel_24kc" ] || echo "$ARCH_STRING" | grep -qE "^mipsel_[0-9]"; then
+        BINARY_ARCH="mipsle"
+    elif echo "$ARCH_STRING" | grep -qE "^mips64"; then
+        # 64-bit MIPS - check endianness
+        if echo "$ARCH_STRING" | grep -qE "mips64el|mips64le"; then
+            BINARY_ARCH="mips64le"
+        else
+            BINARY_ARCH="mips64"
+        fi
+    elif echo "$ARCH_STRING" | grep -qE "aarch64|arm64"; then
+        BINARY_ARCH="arm64"
+    elif echo "$ARCH_STRING" | grep -qE "^arm_cortex|^arm_arm"; then
+        # 32-bit ARM (cortex-a5, cortex-a7, cortex-a8, cortex-a9, cortex-a15, etc.)
+        BINARY_ARCH="arm"
+    elif [ "$ARCH_STRING" = "x86_64" ] || [ "$ARCH_STRING" = "amd64" ]; then
+        BINARY_ARCH="amd64"
+    elif echo "$ARCH_STRING" | grep -qE "^i386|^i686|^x86$"; then
+        # 32-bit x86
+        BINARY_ARCH="386"
+    elif echo "$ARCH_STRING" | grep -qE "riscv64"; then
+        BINARY_ARCH="riscv64"
+    fi
+elif [ -n "$UNAME_ARCH" ]; then
+    ARCH_STRING="$UNAME_ARCH"
+    echo "  - Detected from uname: $ARCH_STRING"
+    
+    # Map uname architecture to binary names
+    if echo "$UNAME_ARCH" | grep -qE "^mips64"; then
+        # 64-bit MIPS
+        if echo "$UNAME_ARCH" | grep -qE "mips64el|mips64le"; then
+            BINARY_ARCH="mips64le"
+        else
+            BINARY_ARCH="mips64"
+        fi
+    elif echo "$UNAME_ARCH" | grep -qE "^mips"; then
+        BINARY_ARCH="mips"
+    elif echo "$UNAME_ARCH" | grep -qE "^mipsel|^mipsle"; then
+        BINARY_ARCH="mipsle"
+    elif echo "$UNAME_ARCH" | grep -qE "aarch64|arm64|armv8"; then
+        BINARY_ARCH="arm64"
+    elif echo "$UNAME_ARCH" | grep -qE "^armv[0-9]|^arm$"; then
+        # 32-bit ARM (armv5, armv6, armv7, etc.)
+        BINARY_ARCH="arm"
+    elif echo "$UNAME_ARCH" | grep -qE "x86_64|amd64"; then
+        BINARY_ARCH="amd64"
+    elif echo "$UNAME_ARCH" | grep -qE "^i386|^i686|^x86$"; then
+        # 32-bit x86
+        BINARY_ARCH="386"
+    elif echo "$UNAME_ARCH" | grep -qE "riscv64"; then
+        BINARY_ARCH="riscv64"
+    fi
+fi
+
+# Check if we successfully detected architecture
+if [ -z "$BINARY_ARCH" ]; then
     echo -e "${RED}Error: Could not detect router architecture${NC}"
-    echo "Please run 'opkg print-architecture' and report the architecture"
+    echo ""
+    echo "Detected values:"
+    if [ -n "$OPKG_ARCH" ]; then
+        echo "  opkg: $OPKG_ARCH"
+    fi
+    if [ -n "$UNAME_ARCH" ]; then
+        echo "  uname: $UNAME_ARCH"
+    fi
+    echo ""
+    echo "Please run these commands and report the output:"
+    echo "  opkg print-architecture"
+    echo "  uname -m"
     exit 1
 fi
 
-echo "  - Detected architecture: $ARCH_STRING"
+echo "  - Mapped to binary: spotfi-bridge-$BINARY_ARCH"
 
-# Map architecture to binary name
-DOWNLOAD_URL=""
-BINARY_NAME=""
+# Set download URL and binary name
+DOWNLOAD_URL="https://your-server.com/bin/spotfi-bridge-$BINARY_ARCH"
+BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
-if [ "$ARCH_STRING" = "mips_24kc" ]; then
-    DOWNLOAD_URL="https://your-server.com/bin/spotfi-bridge-mips"
-    BINARY_NAME="spotfi-bridge-mips"
-elif [ "$ARCH_STRING" = "mipsel_24kc" ]; then
-    DOWNLOAD_URL="https://your-server.com/bin/spotfi-bridge-mipsle"
-    BINARY_NAME="spotfi-bridge-mipsle"
-elif echo "$ARCH_STRING" | grep -q "aarch64"; then
-    DOWNLOAD_URL="https://your-server.com/bin/spotfi-bridge-arm64"
-    BINARY_NAME="spotfi-bridge-arm64"
-else
-    echo -e "${RED}Error: Unsupported architecture: $ARCH_STRING${NC}"
-    echo "Supported architectures: mips_24kc, mipsel_24kc, aarch64_*"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Architecture detected${NC}"
+echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
 
 # Step 3: Install WebSocket bridge (Go binary)
 STEP_NUM=$((STEP_NUM + 1))

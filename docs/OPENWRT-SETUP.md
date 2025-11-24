@@ -37,37 +37,84 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 
 ## 🚀 Quick Setup (15 Minutes)
 
-### Step 1: Create Router in SpotFi
+### Step 1: Get Router Information from SpotFi
 
-**Via API:**
+**Option A: Create New Router via API:**
 ```bash
-curl -X POST http://192.168.42.181:8080/api/routers \
+curl -X POST http://192.168.56.1:8080/api/routers \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Office Router",
+    "name": "Main Office Router",
     "hostId": "HOST_USER_ID",
-    "macAddress": "AA:BB:CC:DD:EE:FF",
+    "macAddress": "00:11:22:33:44:55",
     "location": "Main Office - Floor 1"
   }'
 ```
 
-**Response (Save these!):**
+**Option B: Get Existing Router via API:**
+```bash
+curl -X GET http://192.168.56.1:8080/api/routers \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Example Response:**
 ```json
 {
-  "router": {
-    "id": "cmhujj1f6000112soujpo0noz",
-    "token": "e26b8c19afa977503f6cf26f39f431e891e7398b0022a43347066b2270fcbf92",
-    "radiusSecret": "5d62856936faa4919a8ab07671b04103"
+  "routers": [
+    {
+      "id": "cmichrwmz0003zijqm53zfpdr",
+      "name": "Main Office Router",
+      "hostId": "cmichrwmh0001zijqnyac16rj",
+      "token": "test-router-token-123",
+      "radiusSecret": "4e314bb12afc2d2be771429a6d14d6d7",
+      "status": "OFFLINE",
+      "lastSeen": "2025-11-24T18:55:32.701Z",
+      "totalUsage": 0,
+      "nasipaddress": "172.18.0.1",
+      "macAddress": "00:11:22:33:44:55",
+      "location": "Main Office - Floor 1",
+      "createdAt": "2025-11-24T01:52:21.751Z",
+      "updatedAt": "2025-11-24T18:56:05.985Z",
+      "host": {
+        "id": "cmichrwmh0001zijqnyac16rj",
+        "email": "host@spotfi.com"
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 1,
+    "totalPages": 1,
+    "hasMore": false
   }
 }
 ```
+
+**Extract the following values from the response:**
+- `id` → **ROUTER_ID**: `cmichrwmz0003zijqm53zfpdr`
+- `token` → **TOKEN**: `test-router-token-123`
+- `macAddress` → **MAC_ADDRESS**: `00:11:22:33:44:55`
+
+**Construct WebSocket URL:**
+The WebSocket URL format is: `ws://SERVER_IP:PORT/ws?id=ROUTER_ID&token=TOKEN`
+
+**Example:**
+- Server IP: `192.168.56.1`
+- Server Port: `8080`
+- Router ID: `cmichrwmz0003zijqm53zfpdr`
+- Token: `test-router-token-123`
+
+**WebSocket URL:** `ws://192.168.56.1:8080/ws?id=cmichrwmz0003zijqm53zfpdr&token=test-router-token-123`
+
+**Note:** For production with HTTPS, use `wss://` instead of `ws://`
 
 ---
 
 ### Step 2: Download and Run Setup Scripts
 
-x into your OpenWRT router:
+SSH into your OpenWRT router:
 
 ```bash
 ssh root@192.168.56.10
@@ -79,29 +126,51 @@ ssh root@192.168.56.10
 
 For routers that only need real-time monitoring and remote control (no captive portal):
 
+**Using the example values from Step 1:**
+
 ```bash
-# Download and run the cloud setup script (replace with your actual values)
-# Server domain is optional - defaults to wss://api.spotfi.com/ws
+# Download and run the cloud setup script
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
 sh /tmp/openwrt-setup-cloud.sh \
-  cmhujj1f6000112soujpo0noz \
-  e26b8c19afa977503f6cf26f39f431e891e7398b0022a43347066b2270fcbf92 \
-  08:00:27:BA:FE:8D \
-  wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
+  cmichrwmz0003zijqm53zfpdr \
+  test-router-token-123 \
+  00:11:22:33:44:55 \
+  ws://192.168.56.1:8080/ws
 ```
+
+**Or with WSS (HTTPS) for production:**
 ```bash
+sh /tmp/openwrt-setup-cloud.sh \
+  cmichrwmz0003zijqm53zfpdr \
+  test-router-token-123 \
+  00:11:22:33:44:55 \
+  wss://api.spotfi.com/ws
 ```
+
 **Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.
 
 **Parameters:**
-- `ROUTER_ID` - Router ID from Step 1
-- `TOKEN` - Router token from Step 1
-- `MAC_ADDRESS` - Router MAC address
-- `SERVER_DOMAIN` - (Optional) SpotFi server WebSocket URL (defaults to `wss://api.spotfi.com/ws`)
+- `ROUTER_ID` - Router ID from Step 1 (e.g., `cmichrwmz0003zijqm53zfpdr`)
+- `TOKEN` - Router token from Step 1 (e.g., `test-router-token-123`)
+- `MAC_ADDRESS` - Router MAC address from Step 1 (e.g., `00:11:22:33:44:55`)
+- `SERVER_DOMAIN` - (Optional) SpotFi server WebSocket URL
+  - For local development: `ws://192.168.56.1:8080/ws`
+  - For production: `wss://api.spotfi.com/ws` (default if omitted)
+
+**Environment Variables Created:**
+
+The script creates `/etc/spotfi.env` with:
+```bash
+SPOTFI_ROUTER_ID="cmichrwmz0003zijqm53zfpdr"
+SPOTFI_TOKEN="test-router-token-123"
+SPOTFI_MAC="00:11:22:33:44:55"
+SPOTFI_WS_URL="ws://192.168.56.1:8080/ws"
+SPOTFI_ROUTER_NAME="Main Office Router"
+```
 
 **Note:** The server domain is optional and will default to `wss://api.spotfi.com/ws`. If you're self-hosting SpotFi, specify your server WebSocket URL:
 ```bash
-/tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS wss://your-server.com/ws
+sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS ws://your-server-ip:8080/ws
 ```
 
 **Troubleshooting "not found" error:**

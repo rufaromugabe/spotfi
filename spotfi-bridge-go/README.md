@@ -21,6 +21,16 @@ A high-performance WebSocket bridge for OpenWrt routers, written in Go. This rep
 
 ### Quick Build (All Architectures)
 
+The build script now builds binaries for **all supported architectures**:
+- MIPS (mips_24kc)
+- MIPSLE (mipsel_24kc)
+- MIPS64 / MIPS64LE (64-bit MIPS)
+- ARM64 (aarch64)
+- ARM (32-bit ARM, cortex-a5/a7/a8/a9/a15)
+- AMD64 (x86_64)
+- 386 (32-bit x86, i386/i686)
+- RISC-V 64
+
 **Linux/Mac/Git Bash (Windows):**
 ```bash
 ./build.sh
@@ -113,11 +123,103 @@ go build -ldflags="-s -w" -o spotfi-bridge-arm64
 upx --best --lzma spotfi-bridge-arm64
 ```
 
+#### For AMD64/x86_64 (x86_64 routers, VMs, or development)
+
+**Linux/Mac:**
+```bash
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o spotfi-bridge-amd64
+upx --best --lzma spotfi-bridge-amd64
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:GOOS="linux"; $env:GOARCH="amd64"
+go build -ldflags="-s -w" -o spotfi-bridge-amd64
+upx --best --lzma spotfi-bridge-amd64
+```
+
+**Windows (CMD):**
+```cmd
+set GOOS=linux
+set GOARCH=amd64
+go build -ldflags="-s -w" -o spotfi-bridge-amd64
+upx --best --lzma spotfi-bridge-amd64
+```
+
+#### For 386/i386 (32-bit x86 routers)
+
+**Linux/Mac:**
+```bash
+GOOS=linux GOARCH=386 go build -ldflags="-s -w" -o spotfi-bridge-386
+upx --best --lzma spotfi-bridge-386
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:GOOS="linux"; $env:GOARCH="386"
+go build -ldflags="-s -w" -o spotfi-bridge-386
+upx --best --lzma spotfi-bridge-386
+```
+
+**Windows (CMD):**
+```cmd
+set GOOS=linux
+set GOARCH=386
+go build -ldflags="-s -w" -o spotfi-bridge-386
+upx --best --lzma spotfi-bridge-386
+```
+
+#### For ARM (32-bit ARM routers, e.g., Cortex-A5/A7/A8/A9/A15)
+
+**Linux/Mac:**
+```bash
+GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o spotfi-bridge-arm
+upx --best --lzma spotfi-bridge-arm
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:GOOS="linux"; $env:GOARCH="arm"; $env:GOARM="7"
+go build -ldflags="-s -w" -o spotfi-bridge-arm
+upx --best --lzma spotfi-bridge-arm
+```
+
+**Windows (CMD):**
+```cmd
+set GOOS=linux
+set GOARCH=arm
+set GOARM=7
+go build -ldflags="-s -w" -o spotfi-bridge-arm
+upx --best --lzma spotfi-bridge-arm
+```
+
+#### For MIPS64 (64-bit MIPS routers)
+
+**Linux/Mac:**
+```bash
+GOOS=linux GOARCH=mips64 GOMIPS=softfloat go build -ldflags="-s -w" -o spotfi-bridge-mips64
+upx --best --lzma spotfi-bridge-mips64
+```
+
+**For MIPS64LE (64-bit MIPS little-endian):**
+```bash
+GOOS=linux GOARCH=mips64le GOMIPS=softfloat go build -ldflags="-s -w" -o spotfi-bridge-mips64le
+upx --best --lzma spotfi-bridge-mips64le
+```
+
+#### For RISC-V 64 (RISC-V routers)
+
+**Linux/Mac:**
+```bash
+GOOS=linux GOARCH=riscv64 go build -ldflags="-s -w" -o spotfi-bridge-riscv64
+upx --best --lzma spotfi-bridge-riscv64
+```
+
 ### Build Flags Explained
 
 - `-ldflags="-s -w"`: Strips debugging information, reduces binary size by ~30%
 - `GOMIPS=softfloat`: Uses software floating point (safest for router compatibility)
-- `upx --best --lzma`: Compresses binary from ~5MB to ~1.5MB
+- Compression: Automatic via UPX (if available) - reduces binary from ~5MB to ~1.5MB
 
 ### Windows Notes
 
@@ -127,6 +229,22 @@ upx --best --lzma spotfi-bridge-arm64
 - Go automatically handles cross-compilation - no special tools needed
 - After building, you'll have Linux binaries ready to upload to your server
 - If you see `.exe` extensions, the build scripts will rename them automatically
+
+## Compression
+
+**Compression is automatic!** The `build.sh` script automatically compresses all binaries with UPX after building.
+
+**UPX Setup:**
+- **Windows**: Place UPX in `./upx/upx.exe` or `./upx/upx-4.2.1-win64/upx.exe` (or add to PATH)
+- **Linux**: `sudo apt install upx` or `sudo yum install upx`
+- **Mac**: `brew install upx`
+
+The build script will automatically detect and use UPX if available. If UPX is not found, binaries will be built without compression.
+
+**Expected compression results:**
+- Original: ~5-6MB per binary
+- Compressed: ~1.5-2MB per binary
+- Reduction: ~70% smaller
 
 ## Deployment
 
@@ -138,9 +256,16 @@ upx --best --lzma spotfi-bridge-arm64
    ```
    
    Look for:
-   - `mips_24kc` → Use `spotfi-bridge-mips`
-   - `mipsel_24kc` → Use `spotfi-bridge-mipsle`
-   - `aarch64_*` → Use `spotfi-bridge-arm64`
+   - `mips_24kc` or `mips_*` → Use `spotfi-bridge-mips`
+   - `mipsel_24kc` or `mipsel_*` → Use `spotfi-bridge-mipsle`
+   - `mips64_octeon` or `mips64_*` → Use `spotfi-bridge-mips64` or `spotfi-bridge-mips64le`
+   - `aarch64_*` or `arm64` → Use `spotfi-bridge-arm64`
+   - `arm_cortex-*` or `arm_arm*` → Use `spotfi-bridge-arm` (32-bit ARM)
+   - `x86_64` or `amd64` → Use `spotfi-bridge-amd64`
+   - `i386` or `i686` → Use `spotfi-bridge-386` (32-bit x86)
+   - `riscv64` → Use `spotfi-bridge-riscv64`
+   
+   **Note:** The setup script now automatically detects your architecture and downloads the correct binary!
 
 2. **Upload Binaries**
 
@@ -166,13 +291,47 @@ upx --best --lzma spotfi-bridge-arm64
 
 The bridge reads configuration from `/etc/spotfi.env`:
 
+**Example Configuration:**
+```bash
+SPOTFI_ROUTER_ID="cmichrwmz0003zijqm53zfpdr"
+SPOTFI_TOKEN="test-router-token-123"
+SPOTFI_MAC="00:11:22:33:44:55"
+SPOTFI_WS_URL="ws://192.168.56.1:8080/ws"
+SPOTFI_ROUTER_NAME="Main Office Router"
 ```
-SPOTFI_ROUTER_ID=your_router_id
-SPOTFI_TOKEN=your_token
-SPOTFI_MAC=your_mac_address
-SPOTFI_WS_URL=wss://api.spotfi.com/ws
-SPOTFI_ROUTER_NAME=Your Router Name
+
+**Getting Router Information:**
+
+Get router details from the SpotFi API:
+```bash
+curl -X GET http://192.168.56.1:8080/api/routers \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
+
+**Example API Response:**
+```json
+{
+  "routers": [
+    {
+      "id": "cmichrwmz0003zijqm53zfpdr",
+      "token": "test-router-token-123",
+      "macAddress": "00:11:22:33:44:55",
+      "name": "Main Office Router"
+    }
+  ]
+}
+```
+
+**WebSocket URL Format:**
+- Local development: `ws://SERVER_IP:PORT/ws?id=ROUTER_ID&token=TOKEN`
+- Production: `wss://api.spotfi.com/ws?id=ROUTER_ID&token=TOKEN`
+
+**Example WebSocket URL:**
+```
+ws://192.168.56.1:8080/ws?id=cmichrwmz0003zijqm53zfpdr&token=test-router-token-123
+```
+
+**Note:** The `id` and `token` query parameters in the WebSocket URL are used for authentication. The bridge will automatically include them when connecting.
 
 ## Features
 
@@ -193,8 +352,8 @@ SPOTFI_ROUTER_NAME=Your Router Name
 ## Troubleshooting
 
 ### Binary too large
-- Use `upx` compression: `upx --best --lzma spotfi-bridge-mipsle`
 - Ensure `-ldflags="-s -w"` is used during build
+- Compression is automatic if UPX is available (check `./upx/` directory or PATH)
 
 ### Binary won't run on router
 - Verify architecture match: `opkg print-architecture`
