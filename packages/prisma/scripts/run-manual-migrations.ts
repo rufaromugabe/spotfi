@@ -40,7 +40,7 @@ const MANUAL_MIGRATIONS = [
 ];
 
 async function runSingleMigration(migrationFile: string, force: boolean = false) {
-  const migrationsDir = join(__dirname, '..', 'migrations');
+  const migrationsDir = join(__dirname, '..', 'manual-migrations');
   const filePath = join(migrationsDir, migrationFile);
   
   if (!existsSync(filePath)) {
@@ -80,7 +80,7 @@ async function runSingleMigration(migrationFile: string, force: boolean = false)
 }
 
 async function runManualMigrations(specificMigration?: string, force: boolean = false) {
-  const migrationsDir = join(__dirname, '..', 'migrations');
+  const migrationsDir = join(__dirname, '..', 'manual-migrations');
   
   console.log('🔧 Running manual SQL migrations...\n');
   console.log('📌 Using pg Client directly (bypassing Prisma for multi-statement SQL)\n');

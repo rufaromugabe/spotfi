@@ -32,8 +32,11 @@ FROM base AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
-# Install tsx for running TypeScript migration scripts
-RUN npm install -g tsx
+# Install curl for health checks and tsx for running TypeScript migration scripts
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g tsx
 
 # Copy package metadata and node_modules from build stage
 COPY package.json package-lock.json ./
