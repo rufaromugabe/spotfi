@@ -180,79 +180,32 @@ STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...${NC}"
 
 echo "  - Downloading binary for $ARCH_STRING..."
-echo "  - URL: $DOWNLOAD_URL"
 
-# Download binary from GitHub Releases (show progress and errors)
-if ! wget -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>&1; then
-    echo -e "${RED}Error: Failed to download binary from GitHub Releases${NC}"
-    echo ""
-    echo "URL: $DOWNLOAD_URL"
-    echo ""
-    echo "Please ensure:"
-    echo "  1. A GitHub release exists with binaries attached"
-    echo "  2. The binary for your architecture ($BINARY_ARCH) is included in the release"
-    echo "  3. Your router has internet connectivity"
-    echo "  4. The release is not a draft or pre-release (use latest release)"
-    echo ""
-    echo "To create a release:"
-    echo "  1. Go to: https://github.com/${GITHUB_REPO}/actions"
-    echo "  2. Run the 'Build and Release Binaries' workflow"
-    echo "  3. Or push a version tag: git tag v1.0.0 && git push origin v1.0.0"
+# Download binary from GitHub Releases
+if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
+    echo -e "${RED}Error: Failed to download binary${NC}"
+    echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
     exit 1
 fi
 
-# Verify download was successful
-if [ ! -f /tmp/spotfi-bridge ]; then
-    echo -e "${RED}Error: Download file not found${NC}"
+# Verify and install binary
+if [ ! -f /tmp/spotfi-bridge ] || [ ! -s /tmp/spotfi-bridge ]; then
+    echo -e "${RED}Error: Binary download failed${NC}"
     exit 1
 fi
 
-# Check file size (should be > 0)
-FILE_SIZE=$(stat -c%s /tmp/spotfi-bridge 2>/dev/null || wc -c < /tmp/spotfi-bridge 2>/dev/null || echo "0")
-if [ "$FILE_SIZE" -eq 0 ]; then
-    echo -e "${RED}Error: Downloaded file is empty${NC}"
-    echo "This usually means the release asset doesn't exist or the URL is incorrect"
-    rm -f /tmp/spotfi-bridge
+mv /tmp/spotfi-bridge /usr/bin/spotfi-bridge || {
+    echo -e "${RED}Error: Failed to install binary${NC}"
     exit 1
-fi
+}
 
-# Move to final location
-mv /tmp/spotfi-bridge /usr/bin/spotfi-bridge
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to install binary to /usr/bin/spotfi-bridge${NC}"
-    exit 1
-fi
-
-# Make executable and verify
+# Make executable
 chmod +x /usr/bin/spotfi-bridge
 
-# Verify the file is actually there and executable
-if [ ! -f /usr/bin/spotfi-bridge ]; then
-    echo -e "${RED}Error: Binary file not found after installation${NC}"
-    exit 1
-fi
-
-# Check if it's actually executable
-if [ ! -x /usr/bin/spotfi-bridge ]; then
-    echo -e "${YELLOW}Warning: Binary is not executable, attempting to fix...${NC}"
-    chmod 755 /usr/bin/spotfi-bridge
-fi
-
-# Verify file permissions
-echo "  - File permissions: $(ls -l /usr/bin/spotfi-bridge | awk '{print $1, $3, $4}')"
-
 # Verify binary
-if [ ! -f /usr/bin/spotfi-bridge ]; then
-    echo -e "${RED}Error: Binary not found at /usr/bin/spotfi-bridge${NC}"
+if [ ! -f /usr/bin/spotfi-bridge ] || [ ! -x /usr/bin/spotfi-bridge ]; then
+    echo -e "${RED}Error: Binary installation failed${NC}"
     exit 1
-fi
-
-# Verify binary is actually executable for this architecture
-if command -v file >/dev/null 2>&1; then
-    BINARY_TYPE=$(file /usr/bin/spotfi-bridge 2>/dev/null || echo "unknown")
-    echo "  - Binary type: $BINARY_TYPE"
-else
-    echo "  - Binary type: ELF executable (file command not available)"
 fi
 
 echo -e "${GREEN}✓ SpotFi Bridge binary installed${NC}"
@@ -268,82 +221,10 @@ EOF
 
 chmod 600 /etc/spotfi.env
 
-# Test binary with --test flag (tests configuration without connecting)
-echo "  - Testing binary and configuration..."
-
-# First, verify binary details
-echo "  - Binary info:"
-if command -v file >/dev/null 2>&1; then
-    file /usr/bin/spotfi-bridge 2>/dev/null || echo "    ⚠ Could not determine file type"
-else
-    echo "    ⚠ file command not available (normal on minimal OpenWRT)"
-fi
-ls -lh /usr/bin/spotfi-bridge 2>/dev/null | awk '{print "    Size: " $5}' || echo "    Size: $(stat -c%s /usr/bin/spotfi-bridge 2>/dev/null || echo 'unknown')"
-
-# Try to run with explicit error capture
-echo "  - Running binary test..."
-
-# Verify file exists and is readable
-if [ ! -f /usr/bin/spotfi-bridge ]; then
-    echo -e "${RED}✗ Binary not found at /usr/bin/spotfi-bridge${NC}"
+# Test binary configuration
+if ! /usr/bin/spotfi-bridge --test >/dev/null 2>&1; then
+    echo -e "${RED}Error: Binary test failed - check /etc/spotfi.env configuration${NC}"
     exit 1
-fi
-
-# Check if we can read the file
-if [ ! -r /usr/bin/spotfi-bridge ]; then
-    echo -e "${RED}✗ Binary is not readable${NC}"
-    exit 1
-fi
-
-# Try to check ELF header for architecture (if hexdump/od available)
-if command -v hexdump >/dev/null 2>&1; then
-    ELF_MAGIC=$(hexdump -n 4 -e '4/1 "%02x"' /usr/bin/spotfi-bridge 2>/dev/null)
-    if [ "$ELF_MAGIC" = "7f454c46" ]; then
-        echo "  - ELF binary detected (magic: $ELF_MAGIC)"
-        # Check architecture byte (offset 18)
-        ARCH_BYTE=$(hexdump -n 1 -s 18 -e '1/1 "%02x"' /usr/bin/spotfi-bridge 2>/dev/null)
-        case "$ARCH_BYTE" in
-            3e) echo "    Architecture: x86-64 (amd64)" ;;
-            03) echo "    Architecture: i386 (32-bit)" ;;
-            *) echo "    Architecture byte: $ARCH_BYTE (unknown)" ;;
-        esac
-    fi
-fi
-
-# Try to execute the binary
-TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1)
-EXIT_CODE=$?
-if [ $EXIT_CODE -eq 0 ] && [ -n "$TEST_OUTPUT" ]; then
-    echo "$TEST_OUTPUT"
-    echo -e "${GREEN}✓ Binary test passed - configuration is valid${NC}"
-elif [ -n "$TEST_OUTPUT" ]; then
-    echo -e "${RED}✗ Binary test failed:${NC}"
-    echo "$TEST_OUTPUT"
-    echo ""
-    echo "Please check /etc/spotfi.env configuration"
-    exit 1
-else
-    # Binary exits with no output - likely architecture or UPX issue
-    echo -e "${RED}✗ Binary exits silently - possible issues:${NC}"
-    echo "    1. Architecture mismatch (binary for wrong CPU)"
-    echo "    2. UPX compression issue"
-    echo "    3. Missing system libraries"
-    echo "    4. Binary corruption"
-    echo ""
-    echo "  - Attempting to diagnose..."
-    
-    # Check if it's a UPX-compressed binary
-    if strings /usr/bin/spotfi-bridge 2>/dev/null | head -n 1 | grep -q "UPX"; then
-        echo "    ⚠ Binary is UPX-compressed - may not work on this system"
-        echo "    Try downloading uncompressed binary or rebuild without UPX"
-    fi
-    
-    # Try to see if binary can at least be executed
-    if ! /usr/bin/spotfi-bridge 2>&1 >/dev/null; then
-        echo "    ⚠ Binary cannot execute - check architecture compatibility"
-    fi
-    
-    echo -e "${YELLOW}⚠ Continuing anyway - service may not start${NC}"
 fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
@@ -362,35 +243,16 @@ USE_PROCD=1
 PROG=/usr/bin/spotfi-bridge
 
 start_service() {
-    if [ ! -f /etc/spotfi.env ]; then
-        logger -t spotfi-bridge "Error: /etc/spotfi.env not found"
-        echo "Error: /etc/spotfi.env not found"
+    [ ! -f /etc/spotfi.env ] || [ ! -r /etc/spotfi.env ] || [ ! -x "$PROG" ] && {
+        logger -t spotfi-bridge "Error: Missing configuration or binary"
         exit 1
-    fi
-    
-    if [ ! -x "$PROG" ]; then
-        logger -t spotfi-bridge "Error: $PROG not found or not executable"
-        echo "Error: $PROG not found or not executable"
-        exit 1
-    fi
-    
-    # Verify env file is readable
-    if [ ! -r /etc/spotfi.env ]; then
-        logger -t spotfi-bridge "Error: /etc/spotfi.env is not readable"
-        echo "Error: /etc/spotfi.env is not readable"
-        exit 1
-    fi
-    
-    # Create log directory if it doesn't exist
-    mkdir -p /var/log
+    }
     
     procd_open_instance
     procd_set_param command $PROG
     procd_set_param respawn 3600 5 5
-    # Redirect stdout and stderr to syslog with tag
     procd_set_param stdout 1
     procd_set_param stderr 1
-    procd_set_param env "SPOTFI_LOG=1"
     procd_close_instance
 }
 INITEOF

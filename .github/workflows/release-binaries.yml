@@ -33,11 +33,8 @@ jobs:
       
       - name: Build all architectures
         working-directory: ./spotfi-bridge-go
-        env:
-          SKIP_UPX_COMPRESSION: "true"
         run: |
           chmod +x build.sh
-          # Build without UPX compression to avoid compatibility issues
           ./build.sh
       
       - name: Get version from tag or input

@@ -8,8 +8,6 @@ set -e
 SKIP_UPX=false
 if [ "$1" = "--no-upx" ] || [ "$SKIP_UPX_COMPRESSION" = "true" ] || [ "$SKIP_UPX_COMPRESSION" = "1" ]; then
     SKIP_UPX=true
-    echo "⚠ UPX compression disabled (--no-upx flag or SKIP_UPX_COMPRESSION=true)"
-    echo "  Environment check: SKIP_UPX_COMPRESSION='$SKIP_UPX_COMPRESSION'"
 fi
 
 echo "Building SpotFi Bridge for all architectures..."
