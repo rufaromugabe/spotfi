@@ -210,10 +210,10 @@ if [ ! -f /usr/bin/spotfi-bridge ]; then
     exit 1
 fi
 
-# Test binary (should show help or version, or just exit gracefully)
-if ! /usr/bin/spotfi-bridge 2>&1 | head -n 1 > /dev/null; then
+# Verify binary is actually executable for this architecture
+if ! file /usr/bin/spotfi-bridge | grep -q "executable"; then
     echo -e "${YELLOW}Warning: Binary may not be compatible with this architecture${NC}"
-    echo "Continuing anyway..."
+    echo "File type: $(file /usr/bin/spotfi-bridge)"
 fi
 
 echo -e "${GREEN}✓ SpotFi Bridge binary installed${NC}"
@@ -246,12 +246,21 @@ PROG=/usr/bin/spotfi-bridge
 
 start_service() {
     if [ ! -f /etc/spotfi.env ]; then
+        logger -t spotfi-bridge "Error: /etc/spotfi.env not found"
         echo "Error: /etc/spotfi.env not found"
         exit 1
     fi
     
     if [ ! -x "$PROG" ]; then
+        logger -t spotfi-bridge "Error: $PROG not found or not executable"
         echo "Error: $PROG not found or not executable"
+        exit 1
+    fi
+    
+    # Verify env file is readable
+    if [ ! -r /etc/spotfi.env ]; then
+        logger -t spotfi-bridge "Error: /etc/spotfi.env is not readable"
+        echo "Error: /etc/spotfi.env is not readable"
         exit 1
     fi
     
@@ -292,9 +301,17 @@ if [ -n "$ROUTER_NAME" ]; then
 fi
 echo ""
 echo "Verification:"
-echo "  1. Check WebSocket: ps | grep spotfi-bridge"
-echo "  2. View logs: logread -f"
-echo "  3. Check SpotFi dashboard - router should show ONLINE"
+echo "  1. Check process: ps | grep spotfi-bridge"
+echo "  2. Check service: /etc/init.d/spotfi-bridge status"
+echo "  3. View logs: logread | grep spotfi-bridge"
+echo "  4. Test binary manually: /usr/bin/spotfi-bridge"
+echo "  5. Check SpotFi dashboard - router should show ONLINE"
+echo ""
+echo "Troubleshooting:"
+echo "  - If service crashes, check: cat /etc/spotfi.env"
+echo "  - View detailed logs: logread -f | grep spotfi"
+echo "  - Test binary: /usr/bin/spotfi-bridge (should try to connect)"
+echo "  - Restart service: /etc/init.d/spotfi-bridge restart"
 echo ""
 echo -e "${YELLOW}Note: It may take 30-60 seconds for the router to appear as ONLINE${NC}"
 echo ""
