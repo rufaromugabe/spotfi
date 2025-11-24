@@ -168,17 +168,9 @@ fi
 echo "  - Mapped to binary: spotfi-bridge-$BINARY_ARCH"
 
 # Set download URL and binary name
-# Use GitHub releases (latest) or raw from main branch
-# Priority: 1) GitHub Releases (latest), 2) Raw GitHub (main branch)
-# To use a different branch, set GITHUB_BRANCH environment variable
+# Use GitHub Releases only (latest release)
 GITHUB_REPO="rufaromugabe/spotfi"
-GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
-
-# Try GitHub Releases first (recommended for production)
 DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/spotfi-bridge-${BINARY_ARCH}"
-# Fallback to raw GitHub (for development/main branch)
-FALLBACK_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/spotfi-bridge-go/spotfi-bridge-${BINARY_ARCH}"
-
 BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
 echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
@@ -188,23 +180,25 @@ STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...${NC}"
 
 echo "  - Downloading binary for $ARCH_STRING..."
-echo "  - Trying GitHub Releases: $DOWNLOAD_URL"
+echo "  - URL: $DOWNLOAD_URL"
 
-# Download binary - try GitHub Releases first, fallback to raw
+# Download binary from GitHub Releases
 if ! wget -O /usr/bin/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
-    echo "  - Releases not found, trying raw GitHub: $FALLBACK_URL"
-    if ! wget -O /usr/bin/spotfi-bridge "$FALLBACK_URL" 2>/dev/null; then
-        echo -e "${RED}Error: Failed to download binary${NC}"
-        echo "Tried:"
-        echo "  1. GitHub Releases: $DOWNLOAD_URL"
-        echo "  2. Raw GitHub: $FALLBACK_URL"
-        echo ""
-        echo "Please ensure:"
-        echo "  1. The binary exists in the repository"
-        echo "  2. Your router has internet connectivity"
-        echo "  3. The binary has been compiled and committed/published"
-        exit 1
-    fi
+    echo -e "${RED}Error: Failed to download binary from GitHub Releases${NC}"
+    echo ""
+    echo "URL: $DOWNLOAD_URL"
+    echo ""
+    echo "Please ensure:"
+    echo "  1. A GitHub release exists with binaries attached"
+    echo "  2. The binary for your architecture ($BINARY_ARCH) is included in the release"
+    echo "  3. Your router has internet connectivity"
+    echo "  4. The release is not a draft or pre-release (use latest release)"
+    echo ""
+    echo "To create a release:"
+    echo "  1. Go to: https://github.com/${GITHUB_REPO}/actions"
+    echo "  2. Run the 'Build and Release Binaries' workflow"
+    echo "  3. Or push a version tag: git tag v1.0.0 && git push origin v1.0.0"
+    exit 1
 fi
 
 # Make executable
