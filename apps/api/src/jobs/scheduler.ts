@@ -16,6 +16,7 @@ export function startScheduler() {
   console.log('⏰ Starting production scheduler');
 
   // Invoice generation - 1st of month at 2 AM
+  // Note: generateInvoices() already processes routers in batches (10 at a time) for scalability
   cron.schedule('0 2 1 * *', async () => {
     console.log('💰 Generating monthly invoices');
     try {

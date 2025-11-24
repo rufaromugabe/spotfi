@@ -5,6 +5,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../lib/prisma.js';
+import { routerRpcService } from '../services/router-rpc.service.js';
 
 export async function sessionRoutes(fastify: FastifyInstance) {
   // List active sessions
@@ -128,40 +129,59 @@ export async function sessionRoutes(fastify: FastifyInstance) {
         acctSessionId: sessionId,
         acctStopTime: null
       },
-      include: {
-        router: {
-          select: {
-            id: true,
-            nasipaddress: true
-          }
-        }
+      select: { 
+        radAcctId: true,
+        acctSessionId: true,
+        routerId: true, 
+        userName: true,
+        framedIpAddress: true,
+        callingStationId: true // MAC address
       }
     });
 
-    if (!session) {
+    if (!session || !session.routerId) {
       return reply.code(404).send({ error: 'Active session not found' });
     }
 
-    // Mark session as stopped
-    await prisma.radAcct.update({
-      where: { radAcctId: session.radAcctId },
-      data: {
-        acctStopTime: new Date(),
-        acctTerminateCause: 'Admin-Reset'
+    try {
+      // 1. Send command to Router via WebSocket Bridge
+      // This utilizes "what's already on uspot" (ubus call uspot client_remove)
+      // We use the RouterRpcService you already built
+      
+      const mac = session.callingStationId;
+      if (mac) {
+        await routerRpcService.kickClient(session.routerId, mac);
+        fastify.log.info(`Sent kick command to router ${session.routerId} for MAC ${mac}`);
+      } else {
+        fastify.log.warn(`Session ${sessionId} missing MAC address (callingStationId), skipping router command`);
       }
-    });
 
-    fastify.log.info(`Session ${sessionId} disconnected by admin ${user.userId}`);
+      // 2. Update DB (Accounting stop)
+      // Actually, uspot should send an Accounting-Stop packet when it kicks the user.
+      // But we can force close it here just in case the router is offline.
+      await prisma.radAcct.updateMany({
+        where: { acctSessionId: sessionId },
+        data: { 
+          acctStopTime: new Date(), 
+          acctTerminateCause: 'Admin-Reset' 
+        }
+      });
 
-    return {
-      success: true,
-      message: 'Session disconnected',
-      session: {
-        sessionId: session.acctSessionId,
-        username: session.userName,
-        routerId: session.routerId
-      }
-    };
+      fastify.log.info(`Session ${sessionId} disconnected by admin ${user.userId}`);
+
+      return {
+        success: true,
+        message: 'Disconnect command sent to router',
+        session: {
+          sessionId: session.acctSessionId,
+          username: session.userName,
+          routerId: session.routerId
+        }
+      };
+    } catch (error: any) {
+      fastify.log.error(`Failed to disconnect session ${sessionId}:`, error);
+      return reply.code(503).send({ error: 'Failed to communicate with router: ' + error.message });
+    }
   });
 
   // Disconnect user from all routers
@@ -193,6 +213,11 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       where: {
         userName: username,
         acctStopTime: null
+      },
+      select: {
+        acctSessionId: true,
+        routerId: true,
+        callingStationId: true // MAC address
       }
     });
 
@@ -200,7 +225,33 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'No active sessions found for user' });
     }
 
-    // Disconnect all sessions
+    // Group sessions by router and kick each unique MAC
+    const routerMacMap = new Map<string, Set<string>>();
+    for (const session of sessions) {
+      if (session.routerId && session.callingStationId) {
+        if (!routerMacMap.has(session.routerId)) {
+          routerMacMap.set(session.routerId, new Set());
+        }
+        routerMacMap.get(session.routerId)!.add(session.callingStationId);
+      }
+    }
+
+    // Send kick commands to routers
+    let successCount = 0;
+    let errorCount = 0;
+    for (const [routerId, macSet] of routerMacMap.entries()) {
+      for (const mac of macSet) {
+        try {
+          await routerRpcService.kickClient(routerId, mac);
+          successCount++;
+        } catch (error: any) {
+          fastify.log.error(`Failed to kick MAC ${mac} from router ${routerId}:`, error);
+          errorCount++;
+        }
+      }
+    }
+
+    // Update DB (Accounting stop)
     await prisma.radAcct.updateMany({
       where: {
         userName: username,
@@ -212,13 +263,15 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       }
     });
 
-    fastify.log.info(`User ${username} disconnected from ${sessions.length} session(s) by admin ${user.userId}`);
+    fastify.log.info(`User ${username} disconnected from ${sessions.length} session(s) by admin ${user.userId} (${successCount} successful, ${errorCount} failed)`);
 
     return {
       success: true,
       message: `Disconnected ${sessions.length} session(s)`,
       username,
-      sessionsDisconnected: sessions.length
+      sessionsDisconnected: sessions.length,
+      routerCommandsSent: successCount,
+      routerCommandErrors: errorCount
     };
   });
 }

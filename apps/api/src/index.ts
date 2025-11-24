@@ -19,7 +19,6 @@ import { userPlanRoutes } from './routes/user-plans.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
-import { RadiusDaeServer } from './services/radius-dae.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -155,17 +154,8 @@ const start = async () => {
     
     console.log(`🚀 Server listening on ${host}:${port}`);
     
-// Start production scheduler
-startScheduler();
-
-    // Start RFC5176 DAE server for remote disconnect/CoA
-    const daeSecret = process.env.RADIUS_DAE_SECRET || process.env.RADIUS_SECRET || 'change-me-dae-secret';
-    const daeServer = new RadiusDaeServer({
-      port: parseInt(process.env.RADIUS_DAE_PORT || '3799', 10),
-      secret: daeSecret,
-      logger: fastify.log
-    });
-    daeServer.start();
+    // Start production scheduler
+    startScheduler();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

@@ -1,10 +1,12 @@
 # Uspot Portal Authentication Flow
 
-This document explains how portal authentication works with uspot after removing CoovaChilli support.
+This document explains how portal authentication works with uspot.
 
 ## Overview
 
-The portal authentication flow uses uspot (OpenWRT captive portal) with external RADIUS authentication. The portal acts as a web interface that authenticates users via RADIUS and redirects them back to their destination.
+The portal authentication flow uses **standard UAM (Universal Access Method)** where:
+- **Cloud Portal** serves only the UI (login form)
+- **Router (uspot)** handles RADIUS authentication and firewall management
 
 ## Complete Flow
 
@@ -18,74 +20,66 @@ When a user connects to the WiFi network:
 
 Uspot redirects the user to:
 ```
-https://api.spotfi.com/portal?nasid=ROUTER_ID&ip=CLIENT_IP&userurl=http://www.google.com
+https://api.spotfi.com/portal?nasid=ROUTER_ID&uamip=192.168.56.10&uamport=80&userurl=http://www.google.com
 ```
 
 **Parameters sent by uspot:**
-- `nasid` - Router ID (from `nas_id` in uspot config) - **REQUIRED**
-- `ip` - Client's IP address on the hotspot network (e.g., 10.1.0.50) - **RECOMMENDED** (more accurate than request IP)
+- `nasid` - Router ID (from `nas_id` in uspot config) - **OPTIONAL** (for display purposes)
+- `uamip` - Router's UAM IP address (gateway IP on hotspot network, e.g., 192.168.56.10) - **REQUIRED**
+  - This is the **local IP address** of the router on the hotspot network
+  - The form must submit to this local IP so the router can receive credentials directly
+- `uamport` - Router's UAM port (default: 80) - **OPTIONAL** (defaults to 80)
 - `userurl` - Original destination URL the user was trying to access - **OPTIONAL** (defaults to `http://www.google.com`)
 
 ### 3. Portal Displays Login Page
 
 The portal (`GET /portal`) receives the request and:
-1. Extracts query parameters: `nasid`, `ip`, `userurl`
-2. Displays a login form with hidden fields containing these parameters
-3. User enters username and password
+1. Extracts query parameters: `nasid`, `uamip`, `uamport`, `userurl`
+2. **Validates that `uamip` is present** - if missing, shows error (user accessed portal directly)
+3. Constructs form action URL: `http://<uamip>:<uamport>/login`
+   - **Important**: This is the router's **local IP address** on the hotspot network (e.g., `192.168.56.10`)
+   - The form submits directly to the router, not to the cloud API
+   - This allows the router to receive credentials and perform RADIUS authentication locally
+4. Displays a login form with hidden fields containing these parameters
+5. User enters username and password
 
 ### 4. User Submits Credentials
 
-When the user submits the form (`POST /portal/login`):
-1. Portal receives: `username`, `password`, `nasid`, `ip`, `userurl`
-2. Portal identifies the router by **router ID only**:
-   - **Required**: `nasid` parameter must match `router.id`
-   - If `nasid` is missing, authentication fails with error
-   - If router not found by `nasid`, authentication fails with error
+When the user submits the form:
+- **Form submits directly to Router's local IP**: `POST http://<uamip>:<uamport>/login`
+  - Example: `POST http://192.168.56.10:80/login` (router's gateway IP on hotspot network)
+  - **Why local IP?** The user is on the hotspot network, and the router's uspot service listens on this local IP
+  - The router must receive credentials directly to perform RADIUS auth and control the firewall
+- **Router (uspot) receives**: `username`, `password`, `uamip`, `uamport`, `userurl`
+- **Router performs RADIUS authentication** against FreeRADIUS server
+- **Router opens firewall** if authentication succeeds
+- **Router redirects user** to `userurl` (success) or back to portal with error
 
-### 5. RADIUS Authentication
-
-Once the router is identified:
-1. Portal retrieves `router.radiusSecret` from database
-2. Portal sends RADIUS Access-Request to FreeRADIUS server:
-   - Uses `RADIUS_HOST` env var (or router's IP as fallback)
-   - Uses router's unique `radiusSecret`
-   - Includes attributes:
-     - `NAS-IP-Address`: Client IP (from router/uspot, more accurate than request IP)
-     - `NAS-Identifier`: Router ID (nasid)
-     - `Called-Station-Id`: Empty (not provided)
-     - `Calling-Station-Id`: Empty (not provided)
-     - `User-Name`: Username
-
-### 6. Authentication Result
+### 5. Authentication Result
 
 **If authentication succeeds:**
-- Portal redirects user directly to `userurl` (their original destination)
-- Uspot handles session management internally
+- Router opens firewall for the user
+- Router redirects user to `userurl` (their original destination)
 - User can now browse the internet
 
 **If authentication fails:**
+- Router redirects user back to portal with error parameter
 - Portal displays error message
 - User can retry login
 
-## Key Differences from CoovaChilli
+## Standard UAM Flow
 
-| Aspect | CoovaChilli (Removed) | Uspot (Current) |
-|--------|---------------------|-----------------|
-| Redirect after auth | Redirects to UAM server `/logon` endpoint | Direct redirect to `userurl` |
-| Parameters | `uamip`, `uamport`, `challenge`, `called` | `nasid`, `ip`, `mac`, `userurl` |
-| Session management | Portal redirects to UAM server | Uspot handles internally |
-| Authentication | Portal authenticates, then redirects to UAM | Portal authenticates, then redirects to destination |
+The new architecture follows the **standard UAM (Universal Access Method) flow**:
 
-## Router Identification
+```
+Browser (Cloud UI) 
+  → POST http://<uamip>:<uamport>/login 
+  → Router sends RADIUS Request 
+  → Router opens Firewall 
+  → Router redirects to Success URL
+```
 
-The portal uses **router ID only** to identify the router:
-
-1. **NAS ID (Required)**: `nasid` parameter must match `router.id`
-   - If `nasid` is missing, authentication fails immediately
-   - Router must be registered in database with matching `id`
-   - Router must have a valid `radiusSecret`
-
-**Important**: The `nasid` parameter is mandatory. Uspot must be configured with `nas_id=$ROUTER_ID` to send the correct router ID.
+This is the industry-standard approach used by all major captive portal solutions.
 
 ## Configuration Requirements
 
@@ -105,12 +99,7 @@ Router must have:
 - `id` - Router ID (used as NAS ID) - **REQUIRED**
 - `radiusSecret` - Unique RADIUS secret for this router - **REQUIRED**
 
-### Environment Variables
-
-```bash
-RADIUS_HOST=192.168.1.100  # FreeRADIUS server IP
-RADIUS_PORT=1812           # RADIUS auth port (default: 1812)
-```
+**Note:** The Cloud API does not need `RADIUS_HOST` or `RADIUS_PORT` environment variables since it does not perform RADIUS authentication.
 
 ## Example Flow
 
@@ -118,76 +107,83 @@ RADIUS_PORT=1812           # RADIUS auth port (default: 1812)
 1. User connects to WiFi
    ↓
 2. Uspot intercepts → Redirects to:
-   https://api.spotfi.com/portal?nasid=abc123&ip=10.1.0.50&userurl=http://www.google.com
+   https://api.spotfi.com/portal?nasid=abc123&uamip=192.168.56.10&uamport=80&userurl=http://www.google.com
    ↓
 3. Portal displays login page
+   Form action: http://192.168.56.10:80/login
    ↓
-4. User enters credentials → POST /portal/login
+4. User enters credentials → POST http://192.168.56.10:80/login
    ↓
-5. Portal finds router by nasid="abc123"
+5. Router (uspot) receives credentials
    ↓
-6. Portal authenticates via RADIUS using router's radiusSecret
+6. Router sends RADIUS Access-Request to FreeRADIUS
    ↓
-7. If success → Redirect to http://www.google.com
+7. If RADIUS accepts → Router opens firewall
    ↓
-8. User can browse internet (uspot manages session)
+8. Router redirects to http://www.google.com
+   ↓
+9. User can browse internet (firewall is open)
 ```
 
 ## Troubleshooting
 
-### "Router not found" Error
+### "Invalid access method" Error
 
 **Possible causes:**
-1. Router not registered in database
-2. `nasid` parameter doesn't match `router.id`
-3. `nasid` parameter is missing from request
+1. User accessed portal directly without being redirected by router
+2. `uamip` parameter is missing from request
 
 **Solutions:**
-- Verify router exists: `GET /api/routers/:id`
-- Check that uspot config has `nas_id` set to the router's ID
-- Verify uspot is sending `nasid` parameter in portal redirect URL
-- Check portal logs for the exact `nasid` value received
-
-### "Missing router identifier" Error
-
-**Possible causes:**
-1. Uspot not configured with `nas_id`
-2. Uspot not sending `nasid` parameter in redirect
-
-**Solutions:**
-- Verify uspot config: `uci show uspot | grep nas_id`
-- Check uspot config has `nas_id` set to router's ID
-- Restart uspot: `/etc/init.d/uspot restart`
-- Check uspot logs: `logread | grep uspot`
-
-### "Invalid router configuration" Error
-
-**Possible causes:**
-1. Router exists but missing `radiusSecret`
-
-**Solutions:**
-- Check router record in database
-- Verify `radiusSecret` is not null
-- Recreate router if `radiusSecret` is missing
+- Verify user is connected to WiFi network
+- Check that uspot is configured correctly
+- Verify uspot is sending `uamip` parameter in redirect URL
 
 ### Authentication Fails
 
 **Possible causes:**
-1. Wrong RADIUS server IP
-2. Wrong RADIUS secret
+1. Wrong RADIUS server IP in router config
+2. Wrong RADIUS secret in router config
 3. User credentials invalid
-4. RADIUS server unreachable
+4. RADIUS server unreachable from router
 
 **Solutions:**
-- Verify `RADIUS_HOST` env var is correct
-- Check router's `radiusSecret` matches RADIUS config
+- Verify router's RADIUS configuration: `uci show uspot`
+- Check router's RADIUS secret matches FreeRADIUS config
 - Verify user exists in RADIUS database
-- Test RADIUS connectivity from portal server
+- Test RADIUS connectivity from router: `radtest username password radius-server:1812 secret nas-ip`
+
+### "Portal Loop" (User keeps getting redirected back)
+
+**Possible causes:**
+1. Form is submitting to Cloud API instead of router
+2. Router's UAM endpoint is not responding
+3. Router firewall not opening after auth
+
+**Solutions:**
+- Verify form action points to `http://<uamip>:<uamport>/login`
+- Check router's uspot service is running: `/etc/init.d/uspot status`
+- Check router logs: `logread | grep uspot`
+- Verify router can reach RADIUS server
 
 ## Security Considerations
 
 1. **HTTPS Required**: Portal should be accessed via HTTPS in production
-2. **Secret Storage**: RADIUS secrets stored in database (keep secure)
-3. **Router Validation**: Always validate router exists before using secret
-4. **Logging**: Log authentication attempts but never log passwords or full secrets
+2. **Router Security**: Router's RADIUS secret must be kept secure
+3. **Cloud Portal is UI Only**: Cloud API serves only the login form UI; all authentication is handled by the router
+4. **Logging**: Log authentication attempts but never log passwords
 
+## Remote Disconnect
+
+To remotely disconnect a user session:
+
+1. **Via API**: `POST /api/sessions/:sessionId/disconnect` (Admin only)
+   - Sends WebSocket command to router: `ubus call uspot client_remove {address: MAC}`
+   - Router kicks the user and closes firewall
+   - Database is updated with session stop time
+
+2. **Via Router**: Direct ubus call on router
+   ```bash
+   ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
+   ```
+
+**Note:** Remote disconnect uses WebSocket RPC, which is more reliable than UDP CoA over the internet (especially with NAT).

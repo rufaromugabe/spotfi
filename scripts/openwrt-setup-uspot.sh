@@ -212,6 +212,12 @@ uci -q set uhttpd.main.listen_https='443'
 uci -q set uhttpd.main.cert='/etc/uhttpd.crt'
 uci -q set uhttpd.main.key='/etc/uhttpd.key'
 uci -q set uhttpd.main.redirect_https='0'  # Don't force redirect (uspot handles portal)
+
+# Ensure uhttpd doesn't conflict on port 80 if uspot needs it
+# Ensure 'uspot' uhttpd instance binds ONLY to the hotspot interface IP to prevent conflicts
+# Add this optimization:
+uci -q set uhttpd.main.listen_http="192.168.56.10:80"  # Bind strictly to gateway IP
+
 uci commit uhttpd
 echo -e "${GREEN}✓ HTTPS portal configured${NC}"
 

@@ -250,7 +250,7 @@ These endpoints require the router to be online and connected via WebSocket:
 
 ### OpenWRT Router Setup
 
-SpotFi uses **OpenWRT** routers with **CoovaChilli** (captive portal) and a Python WebSocket bridge for real-time monitoring.
+SpotFi uses **OpenWRT** routers with **uspot** (captive portal) and a WebSocket bridge for real-time monitoring.
 
 **📖 See [OpenWRT Setup Guide](docs/OPENWRT-SETUP.md) for detailed instructions**
 

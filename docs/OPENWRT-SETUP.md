@@ -90,15 +90,6 @@ sh /tmp/openwrt-setup-cloud.sh \
   wss://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 ```
 ```bash
-wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
-chmod +x /tmp/openwrt-setup-chilli.sh
-sh /tmp/openwrt-setup-chilli.sh \
-  cmhujj1f6000112soujpo0noz \
-  5d62856936faa4919a8ab07671b04103 \
-  08:00:27:BA:FE:8D \
-  62.72.19.27 \
-  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
-
 ```
 **Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.
 
@@ -207,9 +198,9 @@ After running the script(s), verify everything is working:
 ps | grep bridge.py
 /etc/init.d/spotfi-bridge status
 
-# Check CoovaChilli (if installed)
-/etc/init.d/chilli status
-chilli_query list
+# Check uspot (if installed)
+/etc/init.d/uspot status
+ubus call uspot client_list
 
 # View logs
 logread | tail -n 50
@@ -244,28 +235,22 @@ For manual configuration details, see the script source code on GitHub or refer 
 
 ### Custom Captive Portal Page
 
-You can customize the login page by modifying CoovaChilli's web interface:
+You can customize the login page by configuring uspot to use your own portal URL:
 
 ```bash
-# Install web files
-opkg install coova-chilli-www
-
-# Edit portal page
-vi /etc/chilli/www/index.html
+# Configure uspot to use custom portal
+uci set uspot.@instance[0].portal_url="https://your-portal.com/portal"
+uci commit uspot
+/etc/init.d/uspot restart
 ```
 
-Or redirect to your own portal server:
-
-```bash
-# In /etc/chilli/config
-HS_UAMSERVER=http://your-portal.com/login
-```
+The portal form must submit to the router's UAM endpoint: `http://<uamip>:<uamport>/login`
 
 ---
 
 ### Bandwidth Limits via RADIUS
 
-SpotFi can send bandwidth limits through RADIUS attributes. CoovaChilli automatically applies them:
+SpotFi can send bandwidth limits through RADIUS attributes. Uspot automatically applies them:
 
 - **WISPr-Bandwidth-Max-Down**: Download speed limit (bps)
 - **WISPr-Bandwidth-Max-Up**: Upload speed limit (bps)
@@ -280,19 +265,19 @@ Control session duration via RADIUS:
 
 ```bash
 # RADIUS sends Session-Timeout attribute
-# CoovaChilli automatically disconnects user after timeout
+# Uspot automatically disconnects user after timeout
 ```
 
 View active sessions:
 
 ```bash
-chilli_query list
+ubus call uspot client_list
 ```
 
 Disconnect a user:
 
 ```bash
-chilli_query logout <MAC_ADDRESS>
+ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
 ```
 
 ---
@@ -401,14 +386,14 @@ logread | grep -i x
 
 **Check:**
 ```bash
-# Check CoovaChilli status
-/etc/init.d/chilli status
+# Check uspot status
+/etc/init.d/uspot status
 
-# Check RADIUS connectivity
-chilli_query list
+# Check active clients
+ubus call uspot client_list
 
 # Check logs
-logread | grep -E "chilli|radius"
+logread | grep -E "uspot|radius"
 
 # Test RADIUS manually
 echo "User-Name=testuser,User-Password=testpass" | radclient 192.168.42.181:1812 auth YOUR_RADIUS_SECRET
@@ -416,11 +401,11 @@ echo "User-Name=testuser,User-Password=testpass" | radclient 192.168.42.181:1812
 
 **Fix:**
 ```bash
-# Verify RADIUS settings in /etc/chilli/config
-cat /etc/chilli/config | grep RADIUS
+# Verify RADIUS settings in uspot config
+uci show uspot | grep radius
 
-# Restart CoovaChilli
-/etc/init.d/chilli restart
+# Restart uspot
+/etc/init.d/uspot restart
 ```
 
 ---
@@ -447,8 +432,8 @@ ip route show
 # Restart firewall
 /etc/init.d/firewall restart
 
-# Restart CoovaChilli
-/etc/init.d/chilli restart
+# Restart uspot
+/etc/init.d/uspot restart
 ```
 
 ---
@@ -463,19 +448,17 @@ top
 # Check memory
 free
 
-# Check CoovaChilli connections
-chilli_query list
+# Check uspot connections
+ubus call uspot client_list
 ```
 
 **Fix:**
 ```bash
 # Reduce logging
-# In /etc/chilli/config, set:
-HS_DEBUG=0
-
-# Limit sessions if needed
-# Add to /etc/chilli/config:
-HS_MAXCLIENTS=50
+# In uspot config, adjust debug level:
+uci set uspot.@instance[0].debug='0'
+uci commit uspot
+/etc/init.d/uspot restart
 ```
 
 ---
@@ -484,7 +467,7 @@ HS_MAXCLIENTS=50
 
 ```bash
 # View active hotspot users
-chilli_query list
+ubus call uspot client_list
 
 # View system resources
 top
@@ -581,11 +564,11 @@ sysupgrade -b /tmp/backup.tar.gz
 - [ ] Downloaded setup script(s) from GitHub
 - [ ] Ran setup script(s) with correct parameters
 - [ ] WebSocket bridge running (if using cloud script)
-- [ ] CoovaChilli running (if using chilli script)
+- [ ] Uspot running (if using uspot script)
 - [ ] Router shows ONLINE in SpotFi dashboard
-- [ ] Test authentication successful (if using chilli)
-- [ ] Test user can connect and browse internet (if using chilli)
-- [ ] Sessions appear in SpotFi dashboard (if using chilli)
+- [ ] Test authentication successful (if using uspot)
+- [ ] Test user can connect and browse internet (if using uspot)
+- [ ] Sessions appear in SpotFi dashboard (if using uspot)
 
 ---
 
@@ -721,35 +704,35 @@ passwd
    - Router should appear as ONLINE
    - Metrics should be updating
 
-### Step 6: Test Chilli Script (Optional)
+### Step 6: Test Uspot Script (Optional)
 
-**Note:** In a VM, there's no WiFi, but CoovaChilli will use the LAN bridge.
+**Note:** In a VM, there's no WiFi, but uspot will use the LAN bridge.
 
-1. **Download and run chilli script:**
+1. **Download and run uspot script:**
    ```bash
    # Download script
-   wget -O /tmp/openwrt-setup-chilli.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-chilli.sh
-   chmod +x /tmp/openwrt-setup-chilli.sh
+   wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh
+   chmod +x /tmp/openwrt-setup-uspot.sh
    
    # Run script (replace with your actual values)
-   /tmp/openwrt-setup-chilli.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP
+   sh /tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP PORTAL_URL
    ```
 
 2. **Expected behavior in VM:**
    - WiFi configuration will be skipped (normal for VMs)
-   - CoovaChilli will use LAN bridge (`br-lan`)
-   - Script will show: "No WiFi detected (VM detected), using LAN bridge"
+   - Uspot will use LAN bridge (`br-lan`)
+   - Script will configure hotspot interface on LAN bridge
 
 3. **Test captive portal:**
    ```bash
-   # Check CoovaChilli status
-   /etc/init.d/chilli status
+   # Check uspot status
+   /etc/init.d/uspot status
    
    # Check active sessions
-   chilli_query list
+   ubus call uspot client_list
    
    # View logs
-   logread | grep chilli
+   logread | grep uspot
    ```
 
 4. **Connect test client:**
@@ -769,7 +752,7 @@ ip addr show
 # Expected output:
 # eth0: WAN (bridged) - has IP from your router
 # eth1: LAN (internal) - no IP yet
-# br-lan: LAN bridge - used by CoovaChilli in VM
+# br-lan: LAN bridge - used by uspot in VM
 ```
 
 ### Common Issues and Solutions
@@ -786,7 +769,7 @@ ip addr show
 
 **Issue: WiFi configuration skipped**
 - **Solution:** This is normal! VMs don't have WiFi hardware
-- CoovaChilli will use LAN bridge instead
+- Uspot will use LAN bridge instead
 - Check: `ip addr show br-lan`
 
 **Issue: Can't reach SpotFi server**
@@ -839,7 +822,7 @@ Host Machine
 ## 📚 Additional Resources
 
 - [OpenWRT Documentation](https://openwrt.org/docs/start)
-- [CoovaChilli Documentation](http://coova.github.io/CoovaChilli/)
+- [Uspot Documentation](https://openwrt.org/docs/guide-user/services/captive-portal/coova-chilli)
 - [SpotFi API Documentation](../README.md)
 - [Setup Scripts on GitHub](https://github.com/rufaromugabe/spotfi/tree/main/scripts)
 
