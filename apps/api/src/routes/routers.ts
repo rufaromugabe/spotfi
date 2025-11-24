@@ -293,94 +293,6 @@ export async function routerRoutes(fastify: FastifyInstance) {
     return { message: 'Router deleted' };
   });
 
-  // Send command to router
-  fastify.post('/:id/command', {
-    preHandler: [fastify.authenticate],
-    schema: {
-      tags: ['routers'],
-      summary: 'Send command to router',
-      security: [{ bearerAuth: [] }],
-      body: {
-        type: 'object',
-        required: ['command'],
-        properties: {
-          command: {
-            type: 'string',
-            enum: ['reboot', 'fetch-logs', 'get-status', 'update-config', 'setup-chilli']
-          },
-          params: {
-            type: 'object',
-            description: 'Command parameters (required for setup-chilli)',
-            properties: {
-              radiusIp: { type: 'string', description: 'RADIUS server IP address' },
-              portalUrl: { type: 'string', description: 'Portal URL (optional, defaults to API URL)' }
-            }
-          }
-        }
-      }
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
-    const { id } = request.params as { id: string };
-    const { command, params } = request.body as { command: string; params?: any };
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
-
-    const router = await prisma.router.findFirst({ 
-      where,
-      select: {
-        id: true,
-        macAddress: true,
-        radiusSecret: true,
-        hostId: true
-      }
-    });
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
-
-    // For setup-chilli, require admin and validate params
-    if (command === 'setup-chilli') {
-      if (user.role !== 'ADMIN') {
-        return reply.code(403).send({ error: 'Admin access required for chilli setup' });
-      }
-      if (!params?.radiusIp) {
-        return reply.code(400).send({ error: 'radiusIp parameter is required for setup-chilli' });
-      }
-      if (!router.radiusSecret) {
-        return reply.code(400).send({ error: 'Router missing RADIUS secret' });
-      }
-      if (!router.macAddress) {
-        return reply.code(400).send({ error: 'Router missing MAC address' });
-      }
-    }
-
-    const socket = activeConnections.get(id);
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return reply.code(503).send({ error: 'Router offline' });
-    }
-
-    const commandPayload: any = {
-      type: 'command',
-      command,
-      timestamp: new Date().toISOString()
-    };
-
-    // Add parameters for setup-chilli command
-    if (command === 'setup-chilli') {
-      commandPayload.params = {
-        routerId: router.id,
-        radiusSecret: router.radiusSecret,
-        macAddress: router.macAddress,
-        radiusIp: params.radiusIp,
-        portalUrl: params.portalUrl || process.env.API_URL || 'https://api.spotfi.com'
-      };
-    }
-
-    socket.send(JSON.stringify(commandPayload));
-
-    return { message: 'Command sent', command, ...(command === 'setup-chilli' && { params: { radiusIp: params.radiusIp } }) };
-  });
-
   // Get router statistics
   fastify.get('/:id/stats', {
     preHandler: [fastify.authenticate],
@@ -546,21 +458,26 @@ export async function routerRoutes(fastify: FastifyInstance) {
 
     try {
       if (groupBy === 'none') {
-        // Simple total calculation
+        // Use materialized counters table (router_daily_usage) instead of scanning radacct
+        // This queries hundreds of rows instead of millions - 1000x faster
         const stats = await prisma.$queryRaw<[{
           total_bytes_in: bigint;
           total_bytes_out: bigint;
           total_sessions: bigint;
         }]>`
           SELECT 
-            COALESCE(SUM(acctinputoctets), 0)::bigint as total_bytes_in,
-            COALESCE(SUM(acctoutputoctets), 0)::bigint as total_bytes_out,
-            COUNT(*)::bigint as total_sessions
-          FROM radacct
-          WHERE "routerId" = ${id}
-            AND acctstarttime >= ${startDate}
-            AND acctstarttime < ${endDate}
-            AND acctstoptime IS NOT NULL
+            COALESCE(SUM(bytes_in), 0)::bigint as total_bytes_in,
+            COALESCE(SUM(bytes_out), 0)::bigint as total_bytes_out,
+            -- Session count still needs radacct, but this is much faster with date filter
+            (SELECT COUNT(*)::bigint FROM radacct 
+             WHERE "routerId" = ${id}
+               AND acctstarttime >= ${startDate}
+               AND acctstarttime < ${endDate}
+               AND acctstoptime IS NOT NULL) as total_sessions
+          FROM router_daily_usage
+          WHERE router_id = ${id}
+            AND usage_date >= DATE(${startDate})
+            AND usage_date < DATE(${endDate})
         `;
 
         const result = stats[0] || {
@@ -606,6 +523,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
             dateTrunc = 'day';
         }
 
+        // Use materialized counters table for grouped queries (much faster)
         const stats = await prisma.$queryRaw<Array<{
           period: Date;
           total_bytes_in: bigint;
@@ -613,16 +531,21 @@ export async function routerRoutes(fastify: FastifyInstance) {
           total_sessions: bigint;
         }>>`
           SELECT 
-            DATE_TRUNC(${dateTrunc}, acctstarttime) as period,
-            COALESCE(SUM(acctinputoctets), 0)::bigint as total_bytes_in,
-            COALESCE(SUM(acctoutputoctets), 0)::bigint as total_bytes_out,
-            COUNT(*)::bigint as total_sessions
-          FROM radacct
-          WHERE "routerId" = ${id}
-            AND acctstarttime >= ${startDate}
-            AND acctstarttime < ${endDate}
-            AND acctstoptime IS NOT NULL
-          GROUP BY DATE_TRUNC(${dateTrunc}, acctstarttime)
+            DATE_TRUNC(${dateTrunc}, usage_date) as period,
+            COALESCE(SUM(bytes_in), 0)::bigint as total_bytes_in,
+            COALESCE(SUM(bytes_out), 0)::bigint as total_bytes_out,
+            -- Session count still needs radacct, but this is much faster with date filter
+            (SELECT COUNT(*)::bigint FROM radacct 
+             WHERE "routerId" = ${id}
+               AND DATE_TRUNC(${dateTrunc}, acctstarttime) = DATE_TRUNC(${dateTrunc}, usage_date)
+               AND acctstarttime >= ${startDate}
+               AND acctstarttime < ${endDate}
+               AND acctstoptime IS NOT NULL) as total_sessions
+          FROM router_daily_usage
+          WHERE router_id = ${id}
+            AND usage_date >= DATE(${startDate})
+            AND usage_date < DATE(${endDate})
+          GROUP BY DATE_TRUNC(${dateTrunc}, usage_date)
           ORDER BY period ASC
         `;
 

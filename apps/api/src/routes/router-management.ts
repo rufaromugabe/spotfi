@@ -31,11 +31,12 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     return socket;
   }
 
-  // Execute command on router via WebSocket
-  async function executeCommand(
+  // Execute ubus RPC call on router via WebSocket
+  async function executeUbusRpc(
     routerId: string,
-    command: string,
-    params: any = {},
+    path: string,
+    method: string,
+    args: any = {},
     timeout: number = 30000
   ): Promise<any> {
     const socket = checkRouterOnline(routerId);
@@ -43,7 +44,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       throw new Error('Router is offline');
     }
 
-    return commandManager.sendCommand(routerId, socket, command, params, timeout);
+    return commandManager.sendCommand(routerId, socket, 'ubus_call', {
+      path,
+      method,
+      args
+    }, timeout);
   }
 
   // Get router system info via ubus
@@ -66,7 +71,7 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
 
     try {
       const result = await routerRpcService.getSystemInfo(id);
-      return { routerId: id, systemInfo: result.data || result };
+      return { routerId: id, systemInfo: result.result || result };
     } catch (error: any) {
       fastify.log.error(`Error getting system info for router ${id}: ${error.message}`);
       return reply.code(503).send({ error: error.message });
@@ -92,7 +97,7 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
 
     try {
       const result = await routerRpcService.getBoardInfo(id);
-      return { routerId: id, boardInfo: result.data || result };
+      return { routerId: id, boardInfo: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -124,7 +129,7 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
 
     try {
       const result = await routerRpcService.getNetworkInterfaces(id, body.interface);
-      return { routerId: id, interface: body.interface, interfaces: result.data || result };
+      return { routerId: id, interface: body.interface, interfaces: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -157,7 +162,7 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     try {
       const interfaceName = body.interface || 'wlan0';
       const result = await routerRpcService.getWirelessStatus(id, interfaceName);
-      return { routerId: id, interface: interfaceName, status: result.data || result };
+      return { routerId: id, interface: interfaceName, status: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -181,23 +186,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'ubus-call', {
-        namespace: 'dhcp',
-        method: 'ipv4leases'
-      });
-
-      return { routerId: id, leases: result.data || result };
+      const result = await executeUbusRpc(id, 'dhcp', 'ipv4leases', {});
+      return { routerId: id, leases: result.result || result };
     } catch (error: any) {
-      // Fallback to reading /tmp/dhcp.leases file
-      try {
-        const result = await executeCommand(id, 'read-file', {
-          path: '/tmp/dhcp.leases'
-        });
-
-        return { routerId: id, leases: result.data || result };
-      } catch (fallbackError: any) {
-        return reply.code(503).send({ error: fallbackError.message });
-      }
+      return reply.code(503).send({ error: error.message });
     }
   });
 
@@ -252,11 +244,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'get-session-stats', {
-        macAddress: macAddress
-      }, 10000); // 10-second timeout
-
-      return { routerId: id, session: result.data || result };
+      // Use uspot's native client_get via ubus
+      const result = await routerRpcService.getClientInfo(id, macAddress);
+      return { routerId: id, session: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -289,13 +279,13 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'uci-command', {
-        command: 'show',
-        config: body.config,
-        section: body.section
-      });
-
-      return { routerId: id, config: body.config, data: result.data || result };
+      // Use ubus uci call
+      const args: any = { config: body.config };
+      if (body.section) {
+        args.section = body.section;
+      }
+      const result = await executeUbusRpc(id, 'uci', 'get', args);
+      return { routerId: id, config: body.config, data: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -332,8 +322,8 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'uci-command', {
-        command: 'set',
+      // Use ubus uci call
+      const result = await executeUbusRpc(id, 'uci', 'set', {
         config: body.config,
         section: body.section,
         option: body.option,
@@ -341,13 +331,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       });
 
       if (body.commit) {
-        await executeCommand(id, 'uci-command', {
-          command: 'commit',
-          config: body.config
-        });
+        await executeUbusRpc(id, 'uci', 'commit', { config: body.config });
       }
 
-      return { routerId: id, success: true, result: result.data || result };
+      return { routerId: id, success: true, result: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -379,12 +366,8 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'uci-command', {
-        command: 'commit',
-        config: body.config
-      });
-
-      return { routerId: id, success: true, result: result.data || result };
+      const result = await executeUbusRpc(id, 'uci', 'commit', { config: body.config });
+      return { routerId: id, success: true, result: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -418,11 +401,12 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'shell-command', {
+      // Execute shell command via ubus system.exec
+      const result = await executeUbusRpc(id, 'system', 'exec', {
         command: body.command
       }, body.timeout || 10000);
 
-      return { routerId: id, command: body.command, result: result.data || result };
+      return { routerId: id, command: body.command, result: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -447,7 +431,8 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      await executeCommand(id, 'reboot');
+      // Use ubus system.reboot
+      await routerRpcService.reboot(id);
       return { routerId: id, message: 'Reboot command sent', success: true };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
@@ -479,11 +464,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'fetch-logs', {
+      // Use ubus log.read
+      const result = await executeUbusRpc(id, 'log', 'read', {
         lines: body.lines || 50
       });
-
-      return { routerId: id, logs: result.data || result };
+      return { routerId: id, logs: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -515,11 +500,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'read-file', {
+      // Use ubus file.read
+      const result = await executeUbusRpc(id, 'file', 'read', {
         path: body.path
       });
-
-      return { routerId: id, path: body.path, content: result.data || result };
+      return { routerId: id, path: body.path, content: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -558,12 +543,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'service-command', {
-        service: body.service,
-        action: action
+      // Use ubus service.* methods
+      const result = await executeUbusRpc(id, 'service', action, {
+        name: body.service
       });
-
-      return { routerId: id, service: body.service, action, result: result.data || result };
+      return { routerId: id, service: body.service, action, result: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -598,13 +582,8 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'ubus-call', {
-        namespace: body.namespace,
-        method: body.method,
-        args: body.args || {}
-      });
-
-      return { routerId: id, namespace: body.namespace, method: body.method, result: result.data || result };
+      const result = await executeUbusRpc(id, body.namespace, body.method, body.args || {});
+      return { routerId: id, namespace: body.namespace, method: body.method, result: result.result || result };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -636,11 +615,22 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'network-statistics', {
-        interface: body.interface
-      });
-
-      return { routerId: id, statistics: result.data || result };
+      // Use ubus network.device.status for network statistics
+      const result = await routerRpcService.getNetworkStats(id);
+      const stats = result.result || result;
+      
+      // Filter by interface if specified
+      if (body.interface && stats) {
+        const filtered = Object.keys(stats).reduce((acc: any, key: string) => {
+          if (key === body.interface || stats[key]?.name === body.interface) {
+            acc[key] = stats[key];
+          }
+          return acc;
+        }, {});
+        return { routerId: id, statistics: Object.keys(filtered).length > 0 ? filtered : stats };
+      }
+      
+      return { routerId: id, statistics: stats };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -673,12 +663,32 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await executeCommand(id, 'network-speed', {
+      // Network speed requires two measurements - use network.device.status
+      // Note: Real-time speed measurement may need custom implementation
+      // For now, return current interface statistics
+      if (!body.interface) {
+        return reply.code(400).send({ error: 'Interface parameter required for speed measurement' });
+      }
+      
+      const result = await routerRpcService.getNetworkStats(id);
+      const stats = result.result || result;
+      
+      // Find the interface
+      const ifaceStats = stats?.[body.interface];
+      if (!ifaceStats) {
+        return reply.code(404).send({ error: `Interface ${body.interface} not found` });
+      }
+      
+      // Return current statistics (speed calculation would require two measurements)
+      return { 
+        routerId: id, 
         interface: body.interface,
-        interval: body.interval || 2
-      }, 10000); // 10 second timeout for speed measurement
-
-      return { routerId: id, speed: result.data || result };
+        speed: {
+          rx_bytes: ifaceStats.rx_bytes || 0,
+          tx_bytes: ifaceStats.tx_bytes || 0,
+          note: 'For real-time speed, two measurements with interval are required. This returns current statistics.'
+        }
+      };
     } catch (error: any) {
       return reply.code(503).send({ error: error.message });
     }
@@ -707,14 +717,14 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       const [systemInfo, interfaces, statistics] = await Promise.all([
         routerRpcService.getSystemInfo(id).catch(() => null),
         routerRpcService.getNetworkInterfaces(id).catch(() => null),
-        executeCommand(id, 'network-statistics', {}).catch(() => null)
+        routerRpcService.getNetworkStats(id).catch(() => null)
       ]);
 
       return {
         routerId: id,
-        systemInfo: systemInfo?.data || systemInfo,
-        interfaces: interfaces?.data || interfaces,
-        statistics: statistics?.data || statistics,
+        systemInfo: systemInfo?.result || systemInfo,
+        interfaces: interfaces?.result || interfaces,
+        statistics: statistics?.result || statistics,
         timestamp: new Date().toISOString()
       };
     } catch (error: any) {
@@ -742,7 +752,7 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
 
     try {
       const systemInfo = await routerRpcService.getSystemInfo(id);
-      const sysData = systemInfo.data || systemInfo;
+      const sysData = systemInfo.result || systemInfo;
       const uptimeSeconds = parseInt(sysData.uptime || sysData.uptime_seconds || 0);
 
       // Calculate human-readable uptime

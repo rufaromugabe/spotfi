@@ -130,31 +130,10 @@ export class RouterConnectionHandler {
             this.logger.error(`[Router ${this.routerId}] x error for session ${message.sessionId}: ${message.error}`);
             break;
 
-          case 'command-result':
-            // Handle command response
-            if (message.commandId) {
-              commandManager.handleResponse(message.commandId, message);
-            }
-            break;
-
-          case 'command-progress':
-            // Handle command progress
-            if (message.commandId) {
-              commandManager.handleCommandProgress(message.commandId, message);
-            }
-            break;
-
-          case 'ubus-result':
-            // Handle ubus call result (generic ubus response)
+          case 'rpc-result':
+            // Handle RPC call result (generic ubus response)
             if (message.id) {
               commandManager.handleResponse(message.id, message);
-            }
-            break;
-
-          case 'logs':
-            // Handle logs response
-            if (message.commandId) {
-              commandManager.handleResponse(message.commandId, message);
             }
             break;
 

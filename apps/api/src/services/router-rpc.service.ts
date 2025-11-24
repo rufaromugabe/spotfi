@@ -4,15 +4,15 @@ import { activeConnections } from '../websocket/server.js';
 
 /**
  * Router RPC Service
- * Generic UBUS proxy service that leverages OpenWrt's native ubus system
- * This replaces hardcoded commands with generic ubus calls
+ * Generic UBUS proxy service - The ONLY method you need!
+ * All wrapper methods are one-liners that call rpcCall()
  */
 export class RouterRpcService {
   /**
-   * Generic UBUS Call
-   * This replaces 90% of hardcoded commands (reboot, info, network stats, etc)
+   * Generic RPC Call - The ONLY method you effectively need
+   * All other methods are just convenience wrappers
    */
-  async callUbus(
+  private async rpcCall(
     routerId: string,
     path: string,
     method: string,
@@ -24,77 +24,58 @@ export class RouterRpcService {
       throw new Error('Router is offline');
     }
 
-    // Send as ubus_call command type with path, method, args in params
-    return commandManager.sendCommand(routerId, socket, 'ubus_call', {
+    // Send as 'rpc' type (bridge.py handles this generically)
+    const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
       path,
       method,
       args
     }, timeout);
+
+    // Extract result from response (bridge.py sends 'result' field)
+    return response.result || response;
   }
 
-  /**
-   * Get native uspot client list directly from the router kernel/bpf maps
-   */
-  async getLiveClients(routerId: string): Promise<any> {
-    // uspot exposes 'client_list' via ubus
-    return this.callUbus(routerId, 'uspot', 'client_list', {});
-  }
+  // Wrapper methods become one-liners - leveraging ubus native capabilities
 
-  /**
-   * Get specific client info from uspot
-   */
-  async getClientInfo(routerId: string, mac: string): Promise<any> {
-    return this.callUbus(routerId, 'uspot', 'client_get', { address: mac });
-  }
-
-  /**
-   * Kick a user directly via uspot (bypassing RADIUS CoM if needed, or for sync)
-   */
-  async kickClient(routerId: string, mac: string): Promise<any> {
-    return this.callUbus(routerId, 'uspot', 'client_remove', { address: mac });
-  }
-
-  /**
-   * Get detailed interface stats directly from netifd
-   */
-  async getNetworkStats(routerId: string): Promise<any> {
-    return this.callUbus(routerId, 'network.device', 'status', {});
-  }
-
-  /**
-   * Get system information (uptime, memory, load)
-   */
   async getSystemInfo(routerId: string): Promise<any> {
-    return this.callUbus(routerId, 'system', 'info', {});
+    return this.rpcCall(routerId, 'system', 'info');
   }
 
-  /**
-   * Get board information
-   */
   async getBoardInfo(routerId: string): Promise<any> {
-    return this.callUbus(routerId, 'system', 'board', {});
+    return this.rpcCall(routerId, 'system', 'board');
   }
 
-  /**
-   * Get network interface status
-   */
+  async reboot(routerId: string): Promise<any> {
+    return this.rpcCall(routerId, 'system', 'reboot');
+  }
+
   async getNetworkInterfaces(routerId: string, interfaceName?: string): Promise<any> {
     if (interfaceName) {
-      return this.callUbus(routerId, 'network.interface', 'status', { interface: interfaceName });
+      return this.rpcCall(routerId, 'network.interface', 'status', { interface: interfaceName });
     }
-    return this.callUbus(routerId, 'network.interface', 'dump', {});
+    return this.rpcCall(routerId, 'network.interface', 'dump');
   }
 
-  /**
-   * Get wireless status via hostapd
-   */
+  async getNetworkStats(routerId: string): Promise<any> {
+    return this.rpcCall(routerId, 'network.device', 'status');
+  }
+
   async getWirelessStatus(routerId: string, interfaceName: string = 'wlan0'): Promise<any> {
-    try {
-      return await this.callUbus(routerId, 'hostapd', `${interfaceName}/get_status`, {});
-    } catch (error) {
-      // Fallback to iwinfo if hostapd ubus not available
-      throw new Error(`Wireless status not available: ${error}`);
-    }
+    return this.rpcCall(routerId, 'hostapd', `${interfaceName}/get_status`);
+  }
+
+  // Utilizing uspot's native client list (leveraging existing C-binary capabilities)
+  async getLiveClients(routerId: string): Promise<any> {
+    return this.rpcCall(routerId, 'uspot', 'client_list');
+  }
+
+  async getClientInfo(routerId: string, mac: string): Promise<any> {
+    return this.rpcCall(routerId, 'uspot', 'client_get', { address: mac });
+  }
+
+  // Leveraging uspot's native kick functionality
+  async kickClient(routerId: string, mac: string): Promise<any> {
+    return this.rpcCall(routerId, 'uspot', 'client_remove', { address: mac });
   }
 }
 

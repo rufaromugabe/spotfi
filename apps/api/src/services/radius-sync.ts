@@ -129,6 +129,7 @@ async function disableUserInRadius(username: string, logger?: FastifyBaseLogger)
 
 /**
  * Sync radcheck table (authentication checks)
+ * Uses transactional state reconciliation: delete all (except password), then insert new (atomic)
  */
 async function syncRadCheck(
   username: string,
@@ -145,55 +146,48 @@ async function syncRadCheck(
     return;
   }
 
-  // Remove Auth-Type = Reject if exists
-  await prisma.radCheck.deleteMany({
-    where: {
-      userName: username,
-      attribute: 'Auth-Type',
-      value: 'Reject'
-    }
-  });
+  // Build attributes array (only non-zero/unlimited values)
+  const attributes: Array<{ attribute: string; op: string; value: string }> = [];
 
-  // Set Simultaneous-Use if maxSessions is set (valid FreeRADIUS attribute for concurrent session limits)
-  if (maxSessions !== null && maxSessions !== undefined) {
-    const existing = await prisma.radCheck.findFirst({
-      where: {
-        userName: username,
-        attribute: 'Simultaneous-Use'
-      }
-    });
-
-    if (existing) {
-      await prisma.radCheck.update({
-        where: { id: existing.id },
-        data: {
-          op: ':=',
-          value: maxSessions.toString()
-        }
-      });
-    } else {
-      await prisma.radCheck.create({
-        data: {
-          userName: username,
-          attribute: 'Simultaneous-Use',
-          op: ':=',
-          value: maxSessions.toString()
-        }
-      });
-    }
-  } else {
-    // Remove Simultaneous-Use if unlimited
-    await prisma.radCheck.deleteMany({
-      where: {
-        userName: username,
-        attribute: 'Simultaneous-Use'
-      }
-    });
+  // Simultaneous-Use (max concurrent sessions)
+  if (maxSessions !== null && maxSessions !== undefined && maxSessions > 0) {
+    attributes.push({ attribute: 'Simultaneous-Use', op: ':=', value: maxSessions.toString() });
   }
+
+  // Transactional: Delete all existing (except User-Password), then insert new (atomic state enforcement)
+  await prisma.$transaction([
+    // Delete all existing radcheck entries except User-Password (preserve password)
+    prisma.radCheck.deleteMany({
+      where: {
+        userName: username,
+        attribute: { not: 'User-Password' }
+      }
+    }),
+    // Remove Auth-Type = Reject if exists (user is enabled)
+    prisma.radCheck.deleteMany({
+      where: {
+        userName: username,
+        attribute: 'Auth-Type',
+        value: 'Reject'
+      }
+    }),
+    // Bulk insert new attributes
+    ...(attributes.length > 0 ? [
+      prisma.radCheck.createMany({
+        data: attributes.map(attr => ({
+          userName: username,
+          attribute: attr.attribute,
+          op: attr.op,
+          value: attr.value
+        }))
+      })
+    ] : [])
+  ]);
 }
 
 /**
  * Sync radreply table (reply attributes - limits)
+ * Uses transactional state reconciliation: delete all, then insert new (atomic)
  */
 async function syncRadReply(
   username: string,
@@ -219,89 +213,51 @@ async function syncRadReply(
     logger
   } = options;
 
-  // Session-Timeout (27)
-  if (sessionTimeout !== null && sessionTimeout !== undefined) {
-    await upsertRadReply(username, 'Session-Timeout', sessionTimeout.toString());
-  } else {
-    await deleteRadReply(username, 'Session-Timeout');
+  // Build attributes array (only non-zero/unlimited values)
+  const attributes: Array<{ attribute: string; op: string; value: string }> = [];
+
+  // Session-Timeout
+  if (sessionTimeout !== null && sessionTimeout !== undefined && sessionTimeout > 0) {
+    attributes.push({ attribute: 'Session-Timeout', op: '=', value: sessionTimeout.toString() });
   }
 
-  // Idle-Timeout (28)
-  if (idleTimeout !== null && idleTimeout !== undefined) {
-    await upsertRadReply(username, 'Idle-Timeout', idleTimeout.toString());
-  } else {
-    await deleteRadReply(username, 'Idle-Timeout');
+  // Idle-Timeout
+  if (idleTimeout !== null && idleTimeout !== undefined && idleTimeout > 0) {
+    attributes.push({ attribute: 'Idle-Timeout', op: '=', value: idleTimeout.toString() });
   }
 
-  // Bandwidth Limits (Enforced by uspot + ratelimit/tc)
-  // uspot supports WISPr attributes natively
-  if (maxDownloadSpeed !== null && maxDownloadSpeed !== undefined) {
-    // WISPr is in bits per second
+  // Bandwidth Limits (WISPr - in bits per second)
+  if (maxDownloadSpeed !== null && maxDownloadSpeed !== undefined && maxDownloadSpeed > 0n) {
     const bitsPerSec = maxDownloadSpeed * 8n;
-    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', bitsPerSec.toString());
-  } else {
-    await deleteRadReply(username, 'WISPr-Bandwidth-Max-Down');
+    attributes.push({ attribute: 'WISPr-Bandwidth-Max-Down', op: '=', value: bitsPerSec.toString() });
   }
 
-  if (maxUploadSpeed !== null && maxUploadSpeed !== undefined) {
+  if (maxUploadSpeed !== null && maxUploadSpeed !== undefined && maxUploadSpeed > 0n) {
     const bitsPerSec = maxUploadSpeed * 8n;
-    await upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', bitsPerSec.toString());
-  } else {
-    await deleteRadReply(username, 'WISPr-Bandwidth-Max-Up');
+    attributes.push({ attribute: 'WISPr-Bandwidth-Max-Up', op: '=', value: bitsPerSec.toString() });
   }
 
-  // Data Quota (Enforced by uspot BPF accounting)
-  // ChilliSpot-Max-Total-Octets is supported by uspot
+  // Data Quota (ChilliSpot-Max-Total-Octets)
   if (remainingQuota !== null && remainingQuota !== undefined && remainingQuota > 0n) {
-    await upsertRadReply(username, 'ChilliSpot-Max-Total-Octets', remainingQuota.toString());
-  } else {
-    // Remove quota limit if exhausted or not set
-    await deleteRadReply(username, 'ChilliSpot-Max-Total-Octets');
+    attributes.push({ attribute: 'ChilliSpot-Max-Total-Octets', op: '=', value: remainingQuota.toString() });
   }
-}
 
-/**
- * Upsert a radreply entry
- */
-async function upsertRadReply(
-  username: string,
-  attribute: string,
-  value: string
-): Promise<void> {
-  const existing = await prisma.radReply.findFirst({
-    where: {
-      userName: username,
-      attribute
-    }
-  });
-
-  if (existing) {
-    await prisma.radReply.update({
-      where: { id: existing.id },
-      data: { value }
-    });
-  } else {
-    await prisma.radReply.create({
-      data: {
-        userName: username,
-        attribute,
-        op: '=',
-        value
-      }
-    });
-  }
-}
-
-/**
- * Delete a radreply entry
- */
-async function deleteRadReply(username: string, attribute: string): Promise<void> {
-  await prisma.radReply.deleteMany({
-    where: {
-      userName: username,
-      attribute
-    }
-  });
+  // Transactional: Delete all existing, then insert new (atomic state enforcement)
+  await prisma.$transaction([
+    // Delete all existing radreply entries for this user
+    prisma.radReply.deleteMany({ where: { userName: username } }),
+    // Bulk insert new attributes
+    ...(attributes.length > 0 ? [
+      prisma.radReply.createMany({
+        data: attributes.map(attr => ({
+          userName: username,
+          attribute: attr.attribute,
+          op: attr.op,
+          value: attr.value
+        }))
+      })
+    ] : [])
+  ]);
 }
 
 /**

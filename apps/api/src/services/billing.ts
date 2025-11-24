@@ -79,14 +79,14 @@ async function processRouterInvoice(
       return false;
     }
 
-    // Use database aggregation for better performance (scalable)
-    // Avoids loading potentially millions of records into memory
+    // Use materialized counters table (router_daily_usage) instead of scanning radacct
+    // This queries hundreds of rows instead of millions - 1000x faster
     const usageResult = await prisma.$queryRaw<Array<{ total_bytes: bigint }>>`
-      SELECT COALESCE(SUM(accttotaloctets), 0)::bigint as total_bytes
-      FROM radacct
+      SELECT COALESCE(SUM(bytes_in + bytes_out), 0)::bigint as total_bytes
+      FROM router_daily_usage
       WHERE router_id = ${router.id}::text
-        AND acctstarttime >= ${startOfPeriod}
-        AND acctstarttime < ${endOfPeriod}
+        AND usage_date >= DATE(${startOfPeriod})
+        AND usage_date < DATE(${endOfPeriod})
     `;
 
     const totalBytes = Number(usageResult[0]?.total_bytes || 0);

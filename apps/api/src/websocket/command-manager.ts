@@ -46,32 +46,27 @@ class CommandManager {
         commandId
       });
 
-      // Handle generic ubus_call message type
-      let message: any;
-      if (command === 'ubus_call') {
-        // Generic ubus call - params contains path, method, args
-        message = {
-          type: 'ubus_call',
-          id: commandId,
-          path: params.path,
-          method: params.method,
-          args: params.args || {}
-        };
-      } else {
-        // Legacy command format
-        message = {
-          type: 'command',
-          commandId,
-          command,
-          params,
-          timestamp: new Date().toISOString()
-        };
+      // Only support ubus RPC calls (rpc message type)
+      if (command !== 'ubus_call') {
+        clearTimeout(timeoutId);
+        this.pendingCommands.delete(commandId);
+        reject(new Error(`Invalid command type: ${command}. Only 'ubus_call' is supported.`));
+        return;
       }
+
+      // Generic ubus RPC call - params contains path, method, args
+      const message = {
+        type: 'rpc',
+        id: commandId,
+        path: params.path,
+        method: params.method,
+        args: params.args || {}
+      };
 
       try {
         socket.send(JSON.stringify(message));
         if (this.logger) {
-          this.logger.debug(`[Router ${routerId}] Sent ${command === 'ubus_call' ? 'ubus_call' : `command: ${command}`} (id: ${commandId})`);
+          this.logger.debug(`[Router ${routerId}] Sent rpc call: ${params.path}.${params.method} (id: ${commandId})`);
         }
       } catch (error: any) {
         clearTimeout(timeoutId);
@@ -102,14 +97,6 @@ class CommandManager {
 
     // Resolve with response data
     pending.resolve(response);
-  }
-
-  handleCommandProgress(commandId: string, progress: any): void {
-    // For now, we don't handle progress - commands are fire-and-forget or wait for completion
-    // This could be extended to support progress callbacks
-    if (this.logger) {
-      this.logger.debug(`Command ${commandId} progress: ${JSON.stringify(progress)}`);
-    }
   }
 
   clearAll(routerId?: string): void {

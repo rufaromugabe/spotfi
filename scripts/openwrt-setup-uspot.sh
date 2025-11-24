@@ -93,41 +93,45 @@ if [ -f /etc/config/uspot ]; then
   cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
 fi
 
-# Global settings
-uci -q set uspot.main=uspot
-uci -q set uspot.main.enabled='1'
-uci -q set uspot.main.setname='spotfi'
-uci -q set uspot.main.interface="$HOTSPOT_NET_IF"
-uci -q set uspot.main.auth_mode='radius'
-uci -q set uspot.main.auth_server="$RADIUS_IP"
-uci -q set uspot.main.auth_secret="$RADIUS_SECRET"
-uci -q set uspot.main.nasid="$ROUTER_ID"
-uci -q set uspot.main.nasmac="$MAC_ADDRESS"
+# Use UCI batch import for atomic, clean configuration
+# This replaces line-by-line uci set commands with a single import
+cat > /tmp/uspot.config << EOT
+package uspot
 
-# Instance configuration
-if ! uci show uspot 2>/dev/null | grep -q "=instance"; then
-  uci -q add uspot instance >/dev/null
-fi
-uci -q set uspot.@instance[0].setname='spotfi'
-uci -q set uspot.@instance[0].name='spotfi'
-uci -q set uspot.@instance[0].enabled='1'
-uci -q set uspot.@instance[0].interface="$HOTSPOT_NET_IF"
-uci -q set uspot.@instance[0].ifname="$LAN_BRIDGE"
-uci -q set uspot.@instance[0].auth_mode='radius'
-uci -q set uspot.@instance[0].auth='radius'
-uci -q set uspot.@instance[0].radius_auth_server="$RADIUS_IP"
-uci -q set uspot.@instance[0].radius_acct_server="$RADIUS_IP"
-uci -q set uspot.@instance[0].radius_secret="$RADIUS_SECRET"
-uci -q set uspot.@instance[0].nas_id="$ROUTER_ID"
-uci -q set uspot.@instance[0].mac_address="$MAC_ADDRESS"
-uci -q set uspot.@instance[0].portal_url="https://$PORTAL_DOMAIN/portal"
-uci -q set uspot.@instance[0].lan_if="$LAN_BRIDGE"
-uci -q set uspot.@instance[0].interim_update='300'
-# Session and idle timeouts (handled by RADIUS Session-Timeout attribute)
-# These are defaults if RADIUS doesn't provide them
-uci -q set uspot.@instance[0].session_timeout='7200'  # 2 hours default
-uci -q set uspot.@instance[0].idle_timeout='600'       # 10 minutes idle timeout
+config uspot 'main'
+    option enabled '1'
+    option setname 'spotfi'
+    option interface '$HOTSPOT_NET_IF'
+    option auth_mode 'radius'
+    option auth_server '$RADIUS_IP'
+    option auth_secret '$RADIUS_SECRET'
+    option nasid '$ROUTER_ID'
+    option nasmac '$MAC_ADDRESS'
+
+config instance 'spotfi'
+    option setname 'spotfi'
+    option name 'spotfi'
+    option enabled '1'
+    option interface '$HOTSPOT_NET_IF'
+    option ifname '$LAN_BRIDGE'
+    option auth_mode 'radius'
+    option auth 'radius'
+    option radius_auth_server '$RADIUS_IP'
+    option radius_acct_server '$RADIUS_IP'
+    option radius_secret '$RADIUS_SECRET'
+    option nas_id '$ROUTER_ID'
+    option mac_address '$MAC_ADDRESS'
+    option portal_url 'https://$PORTAL_DOMAIN/portal'
+    option lan_if '$LAN_BRIDGE'
+    option interim_update '300'
+    option session_timeout '7200'
+    option idle_timeout '600'
+EOT
+
+# Import configuration (wipes previous config, clean state)
+uci import uspot < /tmp/uspot.config
 uci commit uspot
+rm -f /tmp/uspot.config
 echo -e "${GREEN}✓ Uspot configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))

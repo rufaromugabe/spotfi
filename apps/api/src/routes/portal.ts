@@ -227,7 +227,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
     };
   });
 
-  // Keep the /api endpoint for backward compatibility (RFC8908)
+  // RFC8908 Captive Portal API endpoint (standard requirement)
   fastify.get('/api', {
     schema: {
       tags: ['portal'],
