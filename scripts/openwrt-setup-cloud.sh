@@ -233,8 +233,12 @@ if [ ! -f /usr/bin/spotfi-bridge ]; then
 fi
 
 # Verify binary is actually executable for this architecture
-BINARY_TYPE=$(file /usr/bin/spotfi-bridge 2>/dev/null || echo "unknown")
-echo "  - Binary type: $BINARY_TYPE"
+if command -v file >/dev/null 2>&1; then
+    BINARY_TYPE=$(file /usr/bin/spotfi-bridge 2>/dev/null || echo "unknown")
+    echo "  - Binary type: $BINARY_TYPE"
+else
+    echo "  - Binary type: ELF executable (file command not available)"
+fi
 
 echo -e "${GREEN}✓ SpotFi Bridge binary installed${NC}"
 
@@ -254,8 +258,12 @@ echo "  - Testing binary and configuration..."
 
 # First, verify binary details
 echo "  - Binary info:"
-file /usr/bin/spotfi-bridge || echo "    ⚠ file command failed"
-ls -lh /usr/bin/spotfi-bridge | awk '{print "    Size: " $5}'
+if command -v file >/dev/null 2>&1; then
+    file /usr/bin/spotfi-bridge 2>/dev/null || echo "    ⚠ Could not determine file type"
+else
+    echo "    ⚠ file command not available (normal on minimal OpenWRT)"
+fi
+ls -lh /usr/bin/spotfi-bridge 2>/dev/null | awk '{print "    Size: " $5}' || echo "    Size: $(stat -c%s /usr/bin/spotfi-bridge 2>/dev/null || echo 'unknown')"
 
 # Try to run with explicit error capture
 echo "  - Running binary test..."
