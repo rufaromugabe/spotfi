@@ -3,10 +3,10 @@ import { prisma } from '../lib/prisma.js';
 const RATE_MB = parseFloat(process.env.PAYMENT_RATE_PER_MB || '0.02');
 
 export async function generateInvoices(billingPeriod?: Date) {
-  const period = billingPeriod || new Date();
+    const period = billingPeriod || new Date();
   period.setDate(1);
-  period.setHours(0, 0, 0, 0);
-  
+    period.setHours(0, 0, 0, 0);
+
   const nextMonth = new Date(period);
   nextMonth.setMonth(nextMonth.getMonth() + 1);
 
@@ -43,8 +43,8 @@ export async function generateInvoices(billingPeriod?: Date) {
       hostId: stat.hostId,
       routerId: stat.routerId,
       amount,
-      period,
-      usage: Math.round(usageMB * 100) / 100,
+          period,
+          usage: Math.round(usageMB * 100) / 100,
       status: 'PENDING' as const // Cast for TS
     };
   });
@@ -58,7 +58,7 @@ export async function generateInvoices(billingPeriod?: Date) {
       skipDuplicates: true
     });
     count = result.count;
-  }
+    }
 
   console.log(`✨ Generated ${count} invoices via batch processing.`);
   return count;

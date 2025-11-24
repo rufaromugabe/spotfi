@@ -429,7 +429,6 @@ async function assignPlanToUser(
   // Sync to RADIUS
   await syncUserToRadius({
     username: endUser.username,
-    planId,
     logger,
   });
 

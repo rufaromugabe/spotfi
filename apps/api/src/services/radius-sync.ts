@@ -19,7 +19,7 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
   try {
     // 1. Fetch end user first, then user plan
     const endUser = await prisma.endUser.findUnique({ where: { username } });
-    
+
     if (!endUser) {
       await disableUserInRadius(username, logger);
       return;
@@ -97,24 +97,24 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
 // Helper for DRY Upserts
 function upsertRadCheck(userName: string, attribute: string, op: string, value: string) {
   return prisma.radCheck.upsert({
-    where: { 
+    where: {
       userName_attribute: { 
         userName, 
         attribute 
-      } 
+    }
     },
     update: { value, op },
     create: { userName, attribute, op, value }
-  });
-}
+    });
+  }
 
 function upsertRadReply(userName: string, attribute: string, op: string, value: string) {
   return prisma.radReply.upsert({
-    where: { 
+      where: {
       userName_attribute: { 
         userName, 
         attribute 
-      } 
+      }
     },
     update: { value, op },
     create: { userName, attribute, op, value }

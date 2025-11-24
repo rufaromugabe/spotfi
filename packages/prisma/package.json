@@ -7,11 +7,13 @@
     "migrate": "prisma migrate dev --schema=./schema.prisma",
     "migrate:deploy": "prisma migrate deploy --schema=./schema.prisma",
     "migrate:manual": "tsx scripts/run-manual-migrations.ts",
+    "migrate:manual:force": "tsx scripts/run-manual-migrations.ts --force",
     "migrate:all": "prisma migrate deploy --schema=./schema.prisma && tsx scripts/run-manual-migrations.ts",
     "seed": "tsx seed.ts"
   },
   "dependencies": {
-    "@prisma/client": "^5.9.1"
+    "@prisma/client": "^5.9.1",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "bcryptjs": "^3.0.2",

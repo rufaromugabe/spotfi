@@ -53,8 +53,9 @@ Dockerfile
 docker-compose*.yml
 .dockerignore
 
-# Scripts
-scripts
+# Scripts (but keep docker-entrypoint.sh)
+scripts/*
+!scripts/docker-entrypoint.sh
 
 # Radius server (separate service)
 raduis-server
