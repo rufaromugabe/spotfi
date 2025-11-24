@@ -65,6 +65,9 @@ export async function terminalRoutes(fastify: FastifyInstance) {
     const statusEl = document.getElementById('status');
 
     let ws = null;
+    let lastKeyTime = 0;
+    let lastKeyData = null;
+    const KEY_DEBOUNCE_MS = 50; // Debounce rapid key repeats
 
     function setStatus(text, color = '#e2e8f0') {
       statusEl.textContent = text;
@@ -89,9 +92,17 @@ export async function terminalRoutes(fastify: FastifyInstance) {
         setStatus('Connected', '#22c55e');
         connectBtn.disabled = true;
         disconnectBtn.disabled = false;
-        term.focus();
+        // Only focus terminal if page is visible and user is interacting
+        if (document.visibilityState === 'visible') {
+          // Use setTimeout to ensure focus happens after connection is established
+          setTimeout(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              term.focus();
+            }
+          }, 100);
+        }
         // Send an initial newline to encourage a prompt if needed
-        ws.send(new TextEncoder().encode('\\n'));
+        ws.send(new TextEncoder().encode('\n'));
       };
 
       ws.onclose = (evt) => {
@@ -123,10 +134,22 @@ export async function terminalRoutes(fastify: FastifyInstance) {
       };
 
       // Send user keystrokes as raw bytes
+      // Only send data if page is visible to prevent unwanted input
+      // Add debouncing to prevent key repeat issues
       term.onData((data) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(data));
+        if (!ws || ws.readyState !== WebSocket.OPEN || document.visibilityState !== 'visible') {
+          return;
         }
+        
+        const now = Date.now();
+        // Debounce: ignore if same data sent within debounce window (prevents OS key repeat)
+        if (data === lastKeyData && (now - lastKeyTime) < KEY_DEBOUNCE_MS) {
+          return;
+        }
+        
+        lastKeyTime = now;
+        lastKeyData = data;
+        ws.send(new TextEncoder().encode(data));
       });
     }
 
@@ -142,6 +165,21 @@ export async function terminalRoutes(fastify: FastifyInstance) {
 
     connectBtn.addEventListener('click', connect);
     disconnectBtn.addEventListener('click', disconnect);
+
+    // Focus terminal when user clicks on it (prevents unwanted auto-focus)
+    document.getElementById('terminal').addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        term.focus();
+      }
+    });
+
+    // Handle visibility changes - don't send data when page is hidden
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && ws && ws.readyState === WebSocket.OPEN) {
+        // Blur terminal when page becomes hidden to prevent unwanted input
+        term.blur();
+      }
+    });
 
     // Auto-fill with example if none provided
     if (!wsInput.value) {
