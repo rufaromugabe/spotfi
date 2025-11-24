@@ -11,31 +11,51 @@ echo ""
 HAS_UPX=false
 UPX_CMD=""
 
-# Find UPX - check local directory first, then PATH
-if [ -f "./upx/upx-4.2.1-win64/upx.exe" ]; then
-    UPX_CMD="./upx/upx-4.2.1-win64/upx.exe"
-    HAS_UPX=true
-    echo "✓ UPX found (local: ./upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
-elif [ -f "./upx/upx.exe" ]; then
-    UPX_CMD="./upx/upx.exe"
-    HAS_UPX=true
-    echo "✓ UPX found (local: ./upx/upx.exe) - binaries will be compressed"
-elif [ -f "upx/upx-4.2.1-win64/upx.exe" ]; then
-    UPX_CMD="upx/upx-4.2.1-win64/upx.exe"
-    HAS_UPX=true
-    echo "✓ UPX found (local: upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
-elif [ -f "upx/upx.exe" ]; then
-    UPX_CMD="upx/upx.exe"
-    HAS_UPX=true
-    echo "✓ UPX found (local: upx/upx.exe) - binaries will be compressed"
-elif command -v upx &> /dev/null 2>&1; then
+# Find UPX - check PATH first (for CI/Linux), then local directory (for Windows)
+# On Linux/CI, system UPX takes priority; on Windows, local UPX is used
+if command -v upx &> /dev/null 2>&1; then
     UPX_CMD="upx"
     HAS_UPX=true
     echo "✓ UPX found (PATH) - binaries will be compressed"
 else
-    echo "⚠ UPX not found - binaries will not be compressed"
-    echo "  Install from: https://upx.github.io/"
-    echo "  Or place UPX in ./upx/upx.exe or ./upx/upx-4.2.1-win64/upx.exe"
+    # Check for local Windows UPX only if PATH didn't work
+    # Detect Windows environment
+    IS_WINDOWS=false
+    if [ -n "$WINDIR" ] || [ "$(uname -s)" = "MINGW"* ] || [ "$(uname -s)" = "MSYS"* ] || [ "$(uname -o)" = "Msys" ]; then
+        IS_WINDOWS=true
+    fi
+    
+    if [ "$IS_WINDOWS" = true ]; then
+        # On Windows, check for local UPX executables
+        if [ -f "./upx/upx-4.2.1-win64/upx.exe" ]; then
+            UPX_CMD="./upx/upx-4.2.1-win64/upx.exe"
+            HAS_UPX=true
+            echo "✓ UPX found (local: ./upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
+        elif [ -f "./upx/upx.exe" ]; then
+            UPX_CMD="./upx/upx.exe"
+            HAS_UPX=true
+            echo "✓ UPX found (local: ./upx/upx.exe) - binaries will be compressed"
+        elif [ -f "upx/upx-4.2.1-win64/upx.exe" ]; then
+            UPX_CMD="upx/upx-4.2.1-win64/upx.exe"
+            HAS_UPX=true
+            echo "✓ UPX found (local: upx/upx-4.2.1-win64/upx.exe) - binaries will be compressed"
+        elif [ -f "upx/upx.exe" ]; then
+            UPX_CMD="upx/upx.exe"
+            HAS_UPX=true
+            echo "✓ UPX found (local: upx/upx.exe) - binaries will be compressed"
+        fi
+    fi
+    
+    if [ "$HAS_UPX" = false ]; then
+        echo "⚠ UPX not found - binaries will not be compressed"
+        echo "  Install from: https://upx.github.io/"
+        if [ "$IS_WINDOWS" = true ]; then
+            echo "  Windows: Place UPX in ./upx/upx.exe or ./upx/upx-4.2.1-win64/upx.exe"
+        else
+            echo "  Linux: sudo apt install upx-ucl or sudo yum install upx"
+            echo "  Mac: brew install upx"
+        fi
+    fi
 fi
 
 echo ""
