@@ -229,21 +229,46 @@ chmod 600 /etc/spotfi.env
 
 # Test binary with --test flag (tests configuration without connecting)
 echo "  - Testing binary and configuration..."
-if /usr/bin/spotfi-bridge --test 2>&1; then
+
+# First, verify binary details
+echo "  - Binary info:"
+file /usr/bin/spotfi-bridge || echo "    ⚠ file command failed"
+ls -lh /usr/bin/spotfi-bridge | awk '{print "    Size: " $5}'
+
+# Try to run with explicit error capture
+echo "  - Running binary test..."
+TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1; EXIT_CODE=$?)
+if [ $? -eq 0 ] && [ -n "$TEST_OUTPUT" ]; then
+    echo "$TEST_OUTPUT"
     echo -e "${GREEN}✓ Binary test passed - configuration is valid${NC}"
+elif [ -n "$TEST_OUTPUT" ]; then
+    echo -e "${RED}✗ Binary test failed:${NC}"
+    echo "$TEST_OUTPUT"
+    echo ""
+    echo "Please check /etc/spotfi.env configuration"
+    exit 1
 else
-    TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1 || true)
-    if [ -n "$TEST_OUTPUT" ]; then
-        echo -e "${RED}✗ Binary test failed:${NC}"
-        echo "$TEST_OUTPUT"
-        echo ""
-        echo "Please check /etc/spotfi.env configuration"
-        exit 1
-    else
-        echo -e "${YELLOW}⚠ Binary does not support --test flag (older version?)${NC}"
-        # Fallback: try to run it briefly
-        timeout 3 /usr/bin/spotfi-bridge 2>&1 | head -n 3 || true
+    # Binary exits with no output - likely architecture or UPX issue
+    echo -e "${RED}✗ Binary exits silently - possible issues:${NC}"
+    echo "    1. Architecture mismatch (binary for wrong CPU)"
+    echo "    2. UPX compression issue"
+    echo "    3. Missing system libraries"
+    echo "    4. Binary corruption"
+    echo ""
+    echo "  - Attempting to diagnose..."
+    
+    # Check if it's a UPX-compressed binary
+    if strings /usr/bin/spotfi-bridge 2>/dev/null | head -n 1 | grep -q "UPX"; then
+        echo "    ⚠ Binary is UPX-compressed - may not work on this system"
+        echo "    Try downloading uncompressed binary or rebuild without UPX"
     fi
+    
+    # Try to see if binary can at least be executed
+    if ! /usr/bin/spotfi-bridge 2>&1 >/dev/null; then
+        echo "    ⚠ Binary cannot execute - check architecture compatibility"
+    fi
+    
+    echo -e "${YELLOW}⚠ Continuing anyway - service may not start${NC}"
 fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
