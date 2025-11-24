@@ -15,6 +15,9 @@ fi
 echo "Building SpotFi Bridge for all architectures..."
 echo ""
 
+# Disable CGO for static binaries (required for OpenWRT)
+export CGO_ENABLED=0
+
 # Check if UPX is available - check local directory first, then PATH
 HAS_UPX=false
 UPX_CMD=""

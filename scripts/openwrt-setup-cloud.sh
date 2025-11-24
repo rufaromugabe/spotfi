@@ -223,8 +223,23 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Make executable
+# Make executable and verify
 chmod +x /usr/bin/spotfi-bridge
+
+# Verify the file is actually there and executable
+if [ ! -f /usr/bin/spotfi-bridge ]; then
+    echo -e "${RED}Error: Binary file not found after installation${NC}"
+    exit 1
+fi
+
+# Check if it's actually executable
+if [ ! -x /usr/bin/spotfi-bridge ]; then
+    echo -e "${YELLOW}Warning: Binary is not executable, attempting to fix...${NC}"
+    chmod 755 /usr/bin/spotfi-bridge
+fi
+
+# Verify file permissions
+echo "  - File permissions: $(ls -l /usr/bin/spotfi-bridge | awk '{print $1, $3, $4}')"
 
 # Verify binary
 if [ ! -f /usr/bin/spotfi-bridge ]; then
@@ -267,11 +282,35 @@ ls -lh /usr/bin/spotfi-bridge 2>/dev/null | awk '{print "    Size: " $5}' || ech
 
 # Try to run with explicit error capture
 echo "  - Running binary test..."
+
+# Verify file exists and is readable
 if [ ! -f /usr/bin/spotfi-bridge ]; then
     echo -e "${RED}✗ Binary not found at /usr/bin/spotfi-bridge${NC}"
     exit 1
 fi
 
+# Check if we can read the file
+if [ ! -r /usr/bin/spotfi-bridge ]; then
+    echo -e "${RED}✗ Binary is not readable${NC}"
+    exit 1
+fi
+
+# Try to check ELF header for architecture (if hexdump/od available)
+if command -v hexdump >/dev/null 2>&1; then
+    ELF_MAGIC=$(hexdump -n 4 -e '4/1 "%02x"' /usr/bin/spotfi-bridge 2>/dev/null)
+    if [ "$ELF_MAGIC" = "7f454c46" ]; then
+        echo "  - ELF binary detected (magic: $ELF_MAGIC)"
+        # Check architecture byte (offset 18)
+        ARCH_BYTE=$(hexdump -n 1 -s 18 -e '1/1 "%02x"' /usr/bin/spotfi-bridge 2>/dev/null)
+        case "$ARCH_BYTE" in
+            3e) echo "    Architecture: x86-64 (amd64)" ;;
+            03) echo "    Architecture: i386 (32-bit)" ;;
+            *) echo "    Architecture byte: $ARCH_BYTE (unknown)" ;;
+        esac
+    fi
+fi
+
+# Try to execute the binary
 TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1)
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ] && [ -n "$TEST_OUTPUT" ]; then
