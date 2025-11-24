@@ -56,12 +56,42 @@ jobs:
           cd ..
           ls -lh spotfi-bridge-* release/ || true
       
-      - name: Move binaries to root for upload
+      - name: Prepare binaries for release
         run: |
           mkdir -p release-binaries
-          cp spotfi-bridge-go/spotfi-bridge-* release-binaries/ 2>/dev/null || true
-          cp spotfi-bridge-go/spotfi-bridge-binaries.tar.gz release-binaries/ 2>/dev/null || true
+          # Copy all binaries (exclude non-binary files)
+          cd spotfi-bridge-go
+          for file in spotfi-bridge-*; do
+            if [ -f "$file" ] && [[ ! "$file" =~ \.(sh|md|go|mod|bat|ps1)$ ]]; then
+              cp "$file" ../release-binaries/
+              echo "Copied: $file"
+            fi
+          done
+          cd ..
+          # Create archive with all binaries
+          cd release-binaries
+          tar -czf spotfi-bridge-binaries.tar.gz spotfi-bridge-* 2>/dev/null || true
+          cd ..
+          echo ""
+          echo "Files ready for release:"
           ls -lh release-binaries/
+          echo ""
+          echo "File count: $(ls -1 release-binaries/ | wc -l)"
+          echo ""
+          echo "Verifying required files exist:"
+          REQUIRED_FILES=("spotfi-bridge-mips" "spotfi-bridge-mipsle" "spotfi-bridge-mips64" "spotfi-bridge-mips64le" "spotfi-bridge-arm64" "spotfi-bridge-arm" "spotfi-bridge-amd64" "spotfi-bridge-386" "spotfi-bridge-riscv64")
+          MISSING=0
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "release-binaries/$file" ]; then
+              echo "  ✓ $file"
+            else
+              echo "  ✗ $file (MISSING)"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+          if [ $MISSING -gt 0 ]; then
+            echo "Warning: $MISSING file(s) missing!"
+          fi
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -101,10 +131,38 @@ jobs:
             - Original: ~5-6MB per binary
             - Reduction: ~70% smaller
           files: |
-            release-binaries/spotfi-bridge-*
+            release-binaries/spotfi-bridge-mips
+            release-binaries/spotfi-bridge-mipsle
+            release-binaries/spotfi-bridge-mips64
+            release-binaries/spotfi-bridge-mips64le
+            release-binaries/spotfi-bridge-arm64
+            release-binaries/spotfi-bridge-arm
+            release-binaries/spotfi-bridge-amd64
+            release-binaries/spotfi-bridge-386
+            release-binaries/spotfi-bridge-riscv64
             release-binaries/spotfi-bridge-binaries.tar.gz
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Verify release assets
+        if: always()
+        run: |
+          echo "Checking release assets..."
+          RELEASE_TAG="${{ steps.get_version.outputs.version }}"
+          ASSETS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/rufaromugabe/spotfi/releases/tags/${RELEASE_TAG}" | \
+            jq -r '.assets[].name' 2>/dev/null || echo "")
+          
+          if [ -z "$ASSETS" ]; then
+            echo "⚠ No assets found in release. Files may not have been uploaded."
+            echo "Files that should be uploaded:"
+            ls -1 release-binaries/ || true
+          else
+            echo "✓ Release assets found:"
+            echo "$ASSETS"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
