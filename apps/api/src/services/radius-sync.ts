@@ -8,333 +8,125 @@ import { FastifyBaseLogger } from 'fastify';
 
 interface SyncOptions {
   username: string;
-  planId?: string;
   logger?: FastifyBaseLogger;
 }
 
 /**
- * Sync user's active plan to RADIUS tables
- * This ensures RADIUS authentication uses the correct limits
+ * Optimized RADIUS Sync
+ * Uses Upsert to prevent authentication race conditions during updates.
  */
-export async function syncUserToRadius(options: SyncOptions): Promise<void> {
-  const { username, planId, logger } = options;
-
+export async function syncUserToRadius({ username, logger }: SyncOptions): Promise<void> {
   try {
-    // Get end user by username
-    const endUser = await prisma.endUser.findUnique({
-      where: { username },
-    });
-
+    // 1. Fetch end user first, then user plan
+    const endUser = await prisma.endUser.findUnique({ where: { username } });
+    
     if (!endUser) {
-      logger?.warn(`[RADIUS Sync] End user not found: ${username}`);
       await disableUserInRadius(username, logger);
       return;
     }
 
-    // Get user's active plan
     const userPlan = await prisma.userPlan.findFirst({
       where: {
         userId: endUser.id,
         status: 'ACTIVE',
-        OR: [
-          { expiresAt: null },
-          { expiresAt: { gt: new Date() } }
-        ]
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
       },
-      include: {
-        plan: true
-      },
-      orderBy: {
-        activatedAt: 'desc'
-      }
+      include: { plan: true },
+      orderBy: { activatedAt: 'desc' }
     });
 
+    // 2. Handle "Access Denied" Case
     if (!userPlan) {
-      // No active plan - disable user in RADIUS
       await disableUserInRadius(username, logger);
       return;
     }
 
     const plan = userPlan.plan;
-
-    // Calculate remaining quota
-    const quotaUsed = userPlan.dataUsed;
     const quotaLimit = userPlan.dataQuota || plan.dataQuota;
-    const remainingQuota = quotaLimit ? quotaLimit - quotaUsed : null;
+    const quotaUsed = userPlan.dataUsed;
+    
+    // Calculate remaining (ensure non-negative)
+    const remaining = quotaLimit ? (quotaLimit - quotaUsed > 0n ? quotaLimit - quotaUsed : 0n) : null;
 
-    // Sync to radcheck (authentication checks)
-    await syncRadCheck(username, {
-      enabled: true,
-      maxSessions: plan.maxSessions,
-      logger
-    });
+    // 3. Prepare Operations (Batch Transaction)
+    const ops = [];
 
-    // Sync to radreply (reply attributes - limits)
-    await syncRadReply(username, {
-      dataQuota: quotaLimit,
-      remainingQuota,
-      maxUploadSpeed: plan.maxUploadSpeed,
-      maxDownloadSpeed: plan.maxDownloadSpeed,
-      sessionTimeout: plan.sessionTimeout,
-      idleTimeout: plan.idleTimeout,
-      validityDays: plan.validityDays,
-      logger
-    });
+    // --- Auth Check (radcheck) ---
+    // Ensure user is enabled (Remove Reject)
+    ops.push(prisma.radCheck.deleteMany({
+      where: { userName: username, attribute: 'Auth-Type', value: 'Reject' }
+    }));
 
-    // Update quota tracking
-    if (quotaLimit) {
-      await updateQuotaTracking(username, quotaLimit, quotaUsed, plan.quotaType, logger);
+    // Simultaneous-Use
+    if (plan.maxSessions) {
+      ops.push(upsertRadCheck(username, 'Simultaneous-Use', ':=', plan.maxSessions.toString()));
     }
 
-    logger?.info(`[RADIUS Sync] Synced user ${username} with plan ${plan.name}`);
+    // --- Attributes (radreply) ---
+    // Clean up attributes we are about to set to ensure no duplicates if logic changed
+    // (Optional: only if you strictly need to switch attribute types, otherwise upsert handles it)
+
+    // Time Limits
+    if (plan.sessionTimeout) ops.push(upsertRadReply(username, 'Session-Timeout', '=', plan.sessionTimeout.toString()));
+    if (plan.idleTimeout) ops.push(upsertRadReply(username, 'Idle-Timeout', '=', plan.idleTimeout.toString()));
+
+    // Bandwidth (WISPr) - Convert Bytes/s to Bits/s
+    if (plan.maxDownloadSpeed) {
+      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', '=', (plan.maxDownloadSpeed * 8n).toString()));
+    }
+    if (plan.maxUploadSpeed) {
+      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', '=', (plan.maxUploadSpeed * 8n).toString()));
+    }
+
+    // Data Quota (Native Uspot/Coova Support)
+    // If quota is 0, uspot kicks immediately.
+    if (remaining !== null) {
+      ops.push(upsertRadReply(username, 'ChilliSpot-Max-Total-Octets', '=', remaining.toString()));
+    }
+
+    // Execute all
+    await prisma.$transaction(ops);
+    logger?.info(`[RADIUS Sync] Synced ${username} (Plan: ${plan.name}, Rem: ${remaining})`);
+
   } catch (error) {
-    logger?.error(`[RADIUS Sync] Error syncing user ${username}: ${error}`);
+    logger?.error(`[RADIUS Sync] Failed: ${error}`);
     throw error;
   }
 }
 
-/**
- * Disable user in RADIUS (no active plan)
- */
-async function disableUserInRadius(username: string, logger?: FastifyBaseLogger): Promise<void> {
-  // Set Auth-Type = Reject in radcheck
-  const existing = await prisma.radCheck.findFirst({
-    where: {
-      userName: username,
-      attribute: 'Auth-Type'
-    }
+// Helper for DRY Upserts
+function upsertRadCheck(userName: string, attribute: string, op: string, value: string) {
+  return prisma.radCheck.upsert({
+    where: { 
+      userName_attribute: { 
+        userName, 
+        attribute 
+      } 
+    },
+    update: { value, op },
+    create: { userName, attribute, op, value }
   });
-
-  if (existing) {
-    await prisma.radCheck.update({
-      where: { id: existing.id },
-      data: {
-        op: ':=',
-        value: 'Reject'
-      }
-    });
-  } else {
-    await prisma.radCheck.create({
-      data: {
-        userName: username,
-        attribute: 'Auth-Type',
-        op: ':=',
-        value: 'Reject'
-      }
-    });
-  }
-
-  logger?.info(`[RADIUS Sync] Disabled user ${username} in RADIUS`);
 }
 
-/**
- * Sync radcheck table (authentication checks)
- * Uses transactional state reconciliation: delete all (except password), then insert new (atomic)
- */
-async function syncRadCheck(
-  username: string,
-  options: {
-    enabled: boolean;
-    maxSessions?: number | null;
-    logger?: FastifyBaseLogger;
-  }
-): Promise<void> {
-  const { enabled, maxSessions, logger } = options;
-
-  if (!enabled) {
-    await disableUserInRadius(username, logger);
-    return;
-  }
-
-  // Build attributes array (only non-zero/unlimited values)
-  const attributes: Array<{ attribute: string; op: string; value: string }> = [];
-
-  // Simultaneous-Use (max concurrent sessions)
-  if (maxSessions !== null && maxSessions !== undefined && maxSessions > 0) {
-    attributes.push({ attribute: 'Simultaneous-Use', op: ':=', value: maxSessions.toString() });
-  }
-
-  // Transactional: Delete all existing (except User-Password), then insert new (atomic state enforcement)
-  await prisma.$transaction([
-    // Delete all existing radcheck entries except User-Password (preserve password)
-    prisma.radCheck.deleteMany({
-      where: {
-        userName: username,
-        attribute: { not: 'User-Password' }
-      }
-    }),
-    // Remove Auth-Type = Reject if exists (user is enabled)
-    prisma.radCheck.deleteMany({
-      where: {
-        userName: username,
-        attribute: 'Auth-Type',
-        value: 'Reject'
-      }
-    }),
-    // Bulk insert new attributes
-    ...(attributes.length > 0 ? [
-      prisma.radCheck.createMany({
-        data: attributes.map(attr => ({
-          userName: username,
-          attribute: attr.attribute,
-          op: attr.op,
-          value: attr.value
-        }))
-      })
-    ] : [])
-  ]);
-}
-
-/**
- * Sync radreply table (reply attributes - limits)
- * Uses transactional state reconciliation: delete all, then insert new (atomic)
- */
-async function syncRadReply(
-  username: string,
-  options: {
-    dataQuota?: bigint | null;
-    remainingQuota?: bigint | null;
-    maxUploadSpeed?: bigint | null;
-    maxDownloadSpeed?: bigint | null;
-    sessionTimeout?: number | null;
-    idleTimeout?: number | null;
-    validityDays?: number | null;
-    logger?: FastifyBaseLogger;
-  }
-): Promise<void> {
-  const {
-    dataQuota,
-    remainingQuota,
-    maxUploadSpeed,
-    maxDownloadSpeed,
-    sessionTimeout,
-    idleTimeout,
-    validityDays,
-    logger
-  } = options;
-
-  // Build attributes array (only non-zero/unlimited values)
-  const attributes: Array<{ attribute: string; op: string; value: string }> = [];
-
-  // Session-Timeout
-  if (sessionTimeout !== null && sessionTimeout !== undefined && sessionTimeout > 0) {
-    attributes.push({ attribute: 'Session-Timeout', op: '=', value: sessionTimeout.toString() });
-  }
-
-  // Idle-Timeout
-  if (idleTimeout !== null && idleTimeout !== undefined && idleTimeout > 0) {
-    attributes.push({ attribute: 'Idle-Timeout', op: '=', value: idleTimeout.toString() });
-  }
-
-  // Bandwidth Limits (WISPr - in bits per second)
-  if (maxDownloadSpeed !== null && maxDownloadSpeed !== undefined && maxDownloadSpeed > 0n) {
-    const bitsPerSec = maxDownloadSpeed * 8n;
-    attributes.push({ attribute: 'WISPr-Bandwidth-Max-Down', op: '=', value: bitsPerSec.toString() });
-  }
-
-  if (maxUploadSpeed !== null && maxUploadSpeed !== undefined && maxUploadSpeed > 0n) {
-    const bitsPerSec = maxUploadSpeed * 8n;
-    attributes.push({ attribute: 'WISPr-Bandwidth-Max-Up', op: '=', value: bitsPerSec.toString() });
-  }
-
-  // Data Quota (ChilliSpot-Max-Total-Octets)
-  if (remainingQuota !== null && remainingQuota !== undefined && remainingQuota > 0n) {
-    attributes.push({ attribute: 'ChilliSpot-Max-Total-Octets', op: '=', value: remainingQuota.toString() });
-  }
-
-  // Transactional: Delete all existing, then insert new (atomic state enforcement)
-  await prisma.$transaction([
-    // Delete all existing radreply entries for this user
-    prisma.radReply.deleteMany({ where: { userName: username } }),
-    // Bulk insert new attributes
-    ...(attributes.length > 0 ? [
-      prisma.radReply.createMany({
-        data: attributes.map(attr => ({
-          userName: username,
-          attribute: attr.attribute,
-          op: attr.op,
-          value: attr.value
-        }))
-      })
-    ] : [])
-  ]);
-}
-
-/**
- * Update quota tracking in radquota table
- */
-async function updateQuotaTracking(
-  username: string,
-  maxOctets: bigint,
-  usedOctets: bigint,
-  quotaType: string,
-  logger?: FastifyBaseLogger
-): Promise<void> {
-  const now = new Date();
-  let periodStart: Date;
-  let periodEnd: Date;
-
-  // Calculate period based on quota type
-  switch (quotaType) {
-    case 'DAILY':
-      periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      periodEnd = new Date(periodStart);
-      periodEnd.setDate(periodEnd.getDate() + 1);
-      break;
-    case 'WEEKLY':
-      const dayOfWeek = now.getDay();
-      periodStart = new Date(now);
-      periodStart.setDate(now.getDate() - dayOfWeek);
-      periodStart.setHours(0, 0, 0, 0);
-      periodEnd = new Date(periodStart);
-      periodEnd.setDate(periodEnd.getDate() + 7);
-      break;
-    case 'MONTHLY':
-      periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      break;
-    case 'ONE_TIME':
-      periodStart = now;
-      periodEnd = new Date('2099-12-31'); // Far future
-      break;
-    default:
-      periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  }
-
-  // Find existing quota for this period (exact match on periodStart)
-  const existing = await prisma.radQuota.findFirst({
-    where: {
-      username,
-      quotaType,
-      periodStart
-    }
+function upsertRadReply(userName: string, attribute: string, op: string, value: string) {
+  return prisma.radReply.upsert({
+    where: { 
+      userName_attribute: { 
+        userName, 
+        attribute 
+      } 
+    },
+    update: { value, op },
+    create: { userName, attribute, op, value }
   });
+}
 
-  if (existing) {
-    await prisma.radQuota.update({
-      where: { id: existing.id },
-      data: {
-        maxOctets,
-        usedOctets,
-        periodEnd,
-        updatedAt: now
-      }
-    });
-  } else {
-    await prisma.radQuota.create({
-      data: {
-        username,
-        quotaType,
-        maxOctets,
-        usedOctets,
-        periodStart,
-        periodEnd
-      }
-    });
-  }
-
-  logger?.debug(`[RADIUS Sync] Updated quota tracking for ${username}: ${quotaType}`);
+async function disableUserInRadius(username: string, logger?: FastifyBaseLogger) {
+  // Atomic disable: Upsert Auth-Type := Reject
+  await upsertRadCheck(username, 'Auth-Type', ':=', 'Reject');
+  // Clear session limits to prevent confusion if re-enabled later
+  await prisma.radReply.deleteMany({ where: { userName: username } });
+  logger?.info(`[RADIUS Sync] Disabled user ${username}`);
 }
 
 /**
@@ -349,4 +141,3 @@ export async function removeUserFromRadius(username: string, logger?: FastifyBas
 
   logger?.info(`[RADIUS Sync] Removed user ${username} from RADIUS`);
 }
-

@@ -32,6 +32,9 @@ FROM base AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Install tsx for running TypeScript migration scripts
+RUN npm install -g tsx
+
 # Copy package metadata and node_modules from build stage
 COPY package.json package-lock.json ./
 COPY --from=deps /app/node_modules ./node_modules
@@ -43,8 +46,13 @@ COPY --from=deps /app/packages/shared/package.json ./packages/shared/package.jso
 COPY --from=deps /app/packages/shared/dist ./packages/shared/dist
 COPY --from=deps /app/packages/prisma ./packages/prisma
 COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=deps /app/scripts ./scripts
 
 EXPOSE 8080
 
-CMD ["npm", "run", "start"]
+# Make entrypoint script executable
+RUN chmod +x /app/scripts/docker-entrypoint.sh
+
+# Use entrypoint script to run migrations before starting
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 

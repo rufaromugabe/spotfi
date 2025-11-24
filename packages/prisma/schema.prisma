@@ -100,14 +100,22 @@ model RadAcct {
   class               String?   @map("class")
   
   // Relations to your app models
+  // Note: routerId is NOT a standard FreeRADIUS column. It is automatically populated via:
+  // - Database trigger: link_router_to_session() (see migrations/000_production_triggers.sql)
+  // - Trigger matches by: NAS-Identifier > Class > nasIpAddress > MAC address
+  // - Applied on INSERT and UPDATE (for late-arriving nasIpAddress)
   routerId            String?
   router              Router?   @relation(fields: [routerId], references: [id])
 
+  // Indexes for performance
   @@index([acctUniqueId], map: "radacct_active_session_idx")
+  // Note: radacct_active_session_idx is optimized as a partial index (WHERE acctstoptime IS NULL)
+  // See migrations/004_partial_index_and_stoptime.sql for the actual partial index implementation
   @@index([nasIpAddress, acctStartTime], map: "radacct_bulk_close")
   @@index([acctStartTime, userName], map: "radacct_start_user_idx")
+  @@index([acctStopTime], map: "radacct_stoptime_idx") // Index for querying completed sessions
   @@index([class], map: "radacct_calss_idx")
-  @@index([routerId])
+  @@index([routerId]) // Index for router-based queries
   @@map("radacct")
 }
 

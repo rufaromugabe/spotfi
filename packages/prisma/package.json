@@ -6,6 +6,8 @@
     "generate": "prisma generate --schema=./schema.prisma",
     "migrate": "prisma migrate dev --schema=./schema.prisma",
     "migrate:deploy": "prisma migrate deploy --schema=./schema.prisma",
+    "migrate:manual": "tsx scripts/run-manual-migrations.ts",
+    "migrate:all": "prisma migrate deploy --schema=./schema.prisma && tsx scripts/run-manual-migrations.ts",
     "seed": "tsx seed.ts"
   },
   "dependencies": {

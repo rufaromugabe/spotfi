@@ -16,6 +16,8 @@
     "prisma:generate": "npm run generate -w @spotfi/prisma",
     "prisma:migrate": "npm run migrate -w @spotfi/prisma",
     "prisma:migrate:deploy": "npm run migrate:deploy -w @spotfi/prisma",
+    "prisma:migrate:manual": "npm run migrate:manual -w @spotfi/prisma",
+    "prisma:migrate:all": "npm run migrate:all -w @spotfi/prisma",
     "prisma:seed": "npm run seed -w @spotfi/prisma",
     "migrate": "npm run prisma:migrate",
     "migrate:deploy": "npm run prisma:migrate:deploy",

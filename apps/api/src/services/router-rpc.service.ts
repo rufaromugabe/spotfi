@@ -74,8 +74,13 @@ export class RouterRpcService {
   }
 
   // Leveraging uspot's native kick functionality
+  // Reference: files/usr/share/uspot/uspot.uc in your dump
   async kickClient(routerId: string, mac: string): Promise<any> {
-    return this.rpcCall(routerId, 'uspot', 'client_remove', { address: mac });
+    // "client_remove" is the native Uspot ubus method
+    return this.rpcCall(routerId, 'uspot', 'client_remove', { 
+      address: mac,
+      interface: 'uspot' // Often required by uspot ubus definitions
+    });
   }
 }
 
