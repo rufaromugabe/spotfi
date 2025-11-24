@@ -6,9 +6,10 @@ set -e
 
 # Check if UPX compression should be skipped
 SKIP_UPX=false
-if [ "$1" = "--no-upx" ] || [ "$SKIP_UPX_COMPRESSION" = "true" ]; then
+if [ "$1" = "--no-upx" ] || [ "$SKIP_UPX_COMPRESSION" = "true" ] || [ "$SKIP_UPX_COMPRESSION" = "1" ]; then
     SKIP_UPX=true
     echo "⚠ UPX compression disabled (--no-upx flag or SKIP_UPX_COMPRESSION=true)"
+    echo "  Environment check: SKIP_UPX_COMPRESSION='$SKIP_UPX_COMPRESSION'"
 fi
 
 echo "Building SpotFi Bridge for all architectures..."
@@ -92,7 +93,9 @@ export GOOS=linux
 export GOARCH=mipsle
 export GOMIPS=softfloat
 go build -ldflags="-s -w" -o spotfi-bridge-mipsle
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-mipsle (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-mipsle 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-mipsle"
     else
@@ -109,7 +112,9 @@ export GOOS=linux
 export GOARCH=arm64
 unset GOMIPS
 go build -ldflags="-s -w" -o spotfi-bridge-arm64
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-arm64 (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-arm64 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-arm64"
     else
@@ -145,7 +150,9 @@ export GOOS=linux
 export GOARCH=386
 unset GOMIPS
 go build -ldflags="-s -w" -o spotfi-bridge-386
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-386 (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-386 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-386"
     else
@@ -163,7 +170,9 @@ export GOARCH=arm
 export GOARM=7
 unset GOMIPS
 go build -ldflags="-s -w" -o spotfi-bridge-arm
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-arm (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-arm 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-arm"
     else
@@ -180,7 +189,9 @@ export GOOS=linux
 export GOARCH=mips64
 export GOMIPS=softfloat
 go build -ldflags="-s -w" -o spotfi-bridge-mips64
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-mips64 (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-mips64 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-mips64"
     else
@@ -197,7 +208,9 @@ export GOOS=linux
 export GOARCH=mips64le
 export GOMIPS=softfloat
 go build -ldflags="-s -w" -o spotfi-bridge-mips64le
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-mips64le (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-mips64le 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-mips64le"
     else
@@ -214,7 +227,9 @@ export GOOS=linux
 export GOARCH=riscv64
 unset GOMIPS
 go build -ldflags="-s -w" -o spotfi-bridge-riscv64
-if [ "$HAS_UPX" = true ]; then
+if [ "$SKIP_UPX" = true ]; then
+    echo "✓ Built: spotfi-bridge-riscv64 (compression skipped)"
+elif [ "$HAS_UPX" = true ]; then
     if $UPX_CMD --best --lzma spotfi-bridge-riscv64 2>/dev/null; then
         echo "✓ Built and compressed: spotfi-bridge-riscv64"
     else
