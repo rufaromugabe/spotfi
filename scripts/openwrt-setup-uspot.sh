@@ -57,11 +57,20 @@ echo "RADIUS Secret: (hidden)"
 echo "Portal: https://$PORTAL_DOMAIN/portal"
 echo ""
 
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 STEP_NUM=1
 
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
 opkg update
+
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring timezone to Harare (CAT, UTC+2)...${NC}"
+uci set system.@system[0].timezone='CAT-2'
+uci commit system
+# Apply timezone immediately
+[ -f /etc/TZ ] && echo 'CAT-2' > /etc/TZ || true
+export TZ='CAT-2'
+echo -e "${GREEN}✓ Timezone configured to Harare (CAT, UTC+2)${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing Uspot and dependencies...${NC}"

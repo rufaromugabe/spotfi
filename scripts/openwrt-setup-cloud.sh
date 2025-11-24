@@ -65,14 +65,42 @@ if [ -n "$ROUTER_NAME" ]; then
 fi
 echo ""
 
-TOTAL_STEPS=5
+TOTAL_STEPS=6
 
 # Step 1: Update package list
 STEP_NUM=1
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
 opkg update
 
-# Step 2: Detect architecture and prepare for binary download
+# Step 2: Configure timezone to Harare (CAT, UTC+2)
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring timezone to Harare (CAT, UTC+2)...${NC}"
+uci set system.@system[0].timezone='CAT-2'
+uci commit system
+# Apply timezone immediately
+[ -f /etc/TZ ] && echo 'CAT-2' > /etc/TZ || true
+export TZ='CAT-2'
+echo -e "${GREEN}✓ Timezone configured to Harare (CAT, UTC+2)${NC}"
+
+# Configure hostname from router name, or use default
+if [ -n "$ROUTER_NAME" ]; then
+    # Sanitize router name for hostname (lowercase, replace spaces/special chars with hyphens, limit length)
+    HOSTNAME=$(echo "$ROUTER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g' | cut -c1-63)
+    # Ensure hostname is not empty after sanitization
+    if [ -z "$HOSTNAME" ]; then
+        HOSTNAME="spotfi-router"
+    fi
+else
+    HOSTNAME="spotfi-router"
+fi
+echo "  - Setting hostname to: $HOSTNAME"
+uci set system.@system[0].hostname="$HOSTNAME"
+uci commit system
+# Apply hostname immediately
+echo "$HOSTNAME" > /proc/sys/kernel/hostname 2>/dev/null || true
+echo -e "${GREEN}✓ Hostname configured to: $HOSTNAME${NC}"
+
+# Step 3: Detect architecture and prepare for binary download
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Detecting router architecture...${NC}"
 
@@ -175,7 +203,7 @@ BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
 echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
 
-# Step 3: Install WebSocket bridge (Go binary)
+# Step 4: Install WebSocket bridge (Go binary)
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...${NC}"
 
@@ -229,7 +257,7 @@ fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
 
-# Step 4: Create init scripts
+# Step 5: Create init scripts
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Creating init scripts...${NC}"
 
@@ -261,7 +289,7 @@ chmod +x /etc/init.d/spotfi-bridge
 
 echo -e "${GREEN}✓ Init scripts created${NC}"
 
-# Step 5: Enable and start services
+# Step 6: Enable and start services
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Starting services...${NC}"
 
