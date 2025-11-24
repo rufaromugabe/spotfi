@@ -182,8 +182,8 @@ echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...$
 echo "  - Downloading binary for $ARCH_STRING..."
 echo "  - URL: $DOWNLOAD_URL"
 
-# Download binary from GitHub Releases
-if ! wget -O /usr/bin/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
+# Download binary from GitHub Releases (show progress and errors)
+if ! wget -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>&1; then
     echo -e "${RED}Error: Failed to download binary from GitHub Releases${NC}"
     echo ""
     echo "URL: $DOWNLOAD_URL"
@@ -198,6 +198,28 @@ if ! wget -O /usr/bin/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
     echo "  1. Go to: https://github.com/${GITHUB_REPO}/actions"
     echo "  2. Run the 'Build and Release Binaries' workflow"
     echo "  3. Or push a version tag: git tag v1.0.0 && git push origin v1.0.0"
+    exit 1
+fi
+
+# Verify download was successful
+if [ ! -f /tmp/spotfi-bridge ]; then
+    echo -e "${RED}Error: Download file not found${NC}"
+    exit 1
+fi
+
+# Check file size (should be > 0)
+FILE_SIZE=$(stat -c%s /tmp/spotfi-bridge 2>/dev/null || wc -c < /tmp/spotfi-bridge 2>/dev/null || echo "0")
+if [ "$FILE_SIZE" -eq 0 ]; then
+    echo -e "${RED}Error: Downloaded file is empty${NC}"
+    echo "This usually means the release asset doesn't exist or the URL is incorrect"
+    rm -f /tmp/spotfi-bridge
+    exit 1
+fi
+
+# Move to final location
+mv /tmp/spotfi-bridge /usr/bin/spotfi-bridge
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Error: Failed to install binary to /usr/bin/spotfi-bridge${NC}"
     exit 1
 fi
 
@@ -237,8 +259,14 @@ ls -lh /usr/bin/spotfi-bridge | awk '{print "    Size: " $5}'
 
 # Try to run with explicit error capture
 echo "  - Running binary test..."
-TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1; EXIT_CODE=$?)
-if [ $? -eq 0 ] && [ -n "$TEST_OUTPUT" ]; then
+if [ ! -f /usr/bin/spotfi-bridge ]; then
+    echo -e "${RED}✗ Binary not found at /usr/bin/spotfi-bridge${NC}"
+    exit 1
+fi
+
+TEST_OUTPUT=$(/usr/bin/spotfi-bridge --test 2>&1)
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ] && [ -n "$TEST_OUTPUT" ]; then
     echo "$TEST_OUTPUT"
     echo -e "${GREEN}✓ Binary test passed - configuration is valid${NC}"
 elif [ -n "$TEST_OUTPUT" ]; then
