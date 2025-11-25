@@ -6,8 +6,12 @@ import formbody from '@fastify/formbody';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { prisma } from './lib/prisma.js';
-import { routerRoutes } from './routes/routers.js';
+import { routerCrudRoutes } from './routes/router-crud.js';
+import { routerStatsRoutes } from './routes/router-stats.js';
 import { routerManagementRoutes } from './routes/router-management.js';
+import { routerSystemRoutes } from './routes/router-system.js';
+import { routerNetworkRoutes } from './routes/router-network.js';
+import { routerConfigRoutes } from './routes/router-config.js';
 import { authRoutes } from './routes/auth.js';
 import { invoiceRoutes } from './routes/invoices.js';
 import { portalRoutes } from './routes/portal.js';
@@ -110,8 +114,12 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
 
 // Register routes
 await fastify.register(authRoutes);
-await fastify.register(routerRoutes, { prefix: '/api/routers' });
+await fastify.register(routerCrudRoutes, { prefix: '/api/routers' });
+await fastify.register(routerStatsRoutes, { prefix: '/api/routers' });
 await fastify.register(routerManagementRoutes);
+await fastify.register(routerSystemRoutes);
+await fastify.register(routerNetworkRoutes);
+await fastify.register(routerConfigRoutes);
 await fastify.register(invoiceRoutes);
 await fastify.register(portalRoutes);
 await fastify.register(quotaRoutes);

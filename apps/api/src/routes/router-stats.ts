@@ -1,298 +1,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { RouterCreateSchema } from '@spotfi/shared';
-import { randomBytes } from 'crypto';
-import { WebSocket } from 'ws';
-import { activeConnections } from '../websocket/server.js';
-import { NasService } from '../services/nas.js';
+import { AuthenticatedUser } from '../types/fastify.js';
 import { prisma } from '../lib/prisma.js';
+import { routerAccessService } from '../services/router-access.service.js';
+import { assertAuthenticated } from '../utils/router-middleware.js';
 
-// Helper function to check actual router connection status
-function checkRouterConnectionStatus(routerId: string): 'ONLINE' | 'OFFLINE' {
-  const socket = activeConnections.get(routerId);
-  const isActuallyOnline = socket && socket.readyState === WebSocket.OPEN;
-  return isActuallyOnline ? 'ONLINE' : 'OFFLINE';
-}
-
-// Helper function to update router status in DB asynchronously (fire-and-forget)
-async function updateRouterStatusIfNeeded(
-  routerId: string,
-  dbStatus: string,
-  actualStatus: 'ONLINE' | 'OFFLINE',
-  logger: any
-): Promise<void> {
-  if (dbStatus !== actualStatus) {
-    // Update DB asynchronously - don't block response
-    prisma.router
-      .update({
-        where: { id: routerId },
-        data: {
-          status: actualStatus,
-          ...(actualStatus === 'ONLINE' && { lastSeen: new Date() })
-        }
-      })
-      .catch((err: unknown) => {
-        logger.error(`Failed to update router status for ${routerId}: ${err}`);
-      });
-  }
-}
-
-function requireAdmin(request: FastifyRequest, reply: FastifyReply, done: Function) {
-  const user = request.user as any;
-  if (user.role !== 'ADMIN') {
-    reply.code(403).send({ error: 'Admin access required' });
-    return;
-  }
-  done();
-}
-
-export async function routerRoutes(fastify: FastifyInstance) {
-  const nasService = new NasService(fastify.log);
-
-  // List routers (with pagination)
-  fastify.get('/', {
-    preHandler: [fastify.authenticate],
-    schema: {
-      tags: ['routers'],
-      summary: 'List routers',
-      security: [{ bearerAuth: [] }],
-      querystring: {
-        type: 'object',
-        properties: {
-          page: { type: 'number', minimum: 1, default: 1 },
-          limit: { type: 'number', minimum: 1, maximum: 100, default: 50 }
-        }
-      }
-    }
-  }, async (request: FastifyRequest) => {
-    const user = request.user as any;
-    const { page = 1, limit = 50 } = request.query as { page?: number; limit?: number };
-    
-    const pageNum = Math.max(1, Number(page));
-    const limitNum = Math.min(100, Math.max(1, Number(limit))); // Max 100 per page
-    const skip = (pageNum - 1) * limitNum;
-    
-    const where = user.role === 'ADMIN' ? {} : { hostId: user.userId };
-
-    const [routers, total] = await Promise.all([
-      prisma.router.findMany({
-        where,
-        include: {
-          host: {
-            select: { id: true, email: true }
-          }
-        },
-        orderBy: { updatedAt: 'desc' },
-        skip,
-        take: limitNum
-      }),
-      prisma.router.count({ where })
-    ]);
-
-    // Check actual WebSocket connection status and update DB if needed
-    const routersWithRealStatus = routers.map((router: typeof routers[0]) => {
-      const actualStatus = checkRouterConnectionStatus(router.id);
-      
-      // Update DB asynchronously if status differs (don't block response)
-      if (router.status !== actualStatus) {
-        updateRouterStatusIfNeeded(router.id, router.status, actualStatus, fastify.log);
-      }
-
-      return {
-        ...router,
-        status: actualStatus
-      };
-    });
-
-    return {
-      routers: routersWithRealStatus,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum),
-        hasMore: skip + routers.length < total
-      }
-    };
-  });
-
-  // Get single router
-  fastify.get('/:id', {
-    preHandler: [fastify.authenticate],
-    schema: {
-      tags: ['routers'],
-      summary: 'Get router details',
-      security: [{ bearerAuth: [] }]
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
-    const { id } = request.params as { id: string };
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
-
-    const router = await prisma.router.findFirst({
-      where,
-      include: {
-        host: {
-          select: { id: true, email: true }
-        }
-      }
-    });
-
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
-
-    // Check actual WebSocket connection status (real-time)
-    const actualStatus = checkRouterConnectionStatus(id);
-
-    // Update DB asynchronously if status differs (don't block response)
-    if (router.status !== actualStatus) {
-      updateRouterStatusIfNeeded(id, router.status, actualStatus, fastify.log);
-    }
-
-    // Return router with corrected status
-    return {
-      router: {
-        ...router,
-        status: actualStatus
-      }
-    };
-  });
-
-  // Create router (Admin only)
-  fastify.post('/', {
-    preHandler: [fastify.authenticate, requireAdmin],
-    schema: {
-      tags: ['routers'],
-      summary: 'Create router',
-      security: [{ bearerAuth: [] }],
-      body: {
-        type: 'object',
-        required: ['name', 'hostId', 'macAddress'],
-        properties: {
-          name: { type: 'string' },
-          hostId: { type: 'string' },
-          macAddress: { 
-            type: 'string',
-            pattern: '^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$|^[0-9A-Fa-f]{12}$'
-          },
-          location: { type: 'string' }
-        }
-      }
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = RouterCreateSchema.parse(request.body);
-
-    // Validate host exists and has HOST role
-    const host = await prisma.user.findUnique({
-      where: { id: body.hostId },
-      select: { id: true, role: true }
-    });
-
-    if (!host) {
-      return reply.code(404).send({ error: 'Host not found' });
-    }
-
-    if (host.role !== 'HOST') {
-      return reply.code(400).send({ error: 'User must have HOST role' });
-    }
-
-    // Format MAC address
-    const normalizedMac = body.macAddress.replace(/[:-]/g, '').toUpperCase();
-    const formattedMac = normalizedMac.match(/.{2}/g)?.join(':');
-
-    if (!formattedMac || !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(formattedMac)) {
-      return reply.code(400).send({ error: 'Invalid MAC address' });
-    }
-
-    // Create router
-    const router = await prisma.router.create({
-      data: {
-        name: body.name,
-        hostId: body.hostId,
-        token: randomBytes(32).toString('hex'),
-        radiusSecret: randomBytes(16).toString('hex'),
-        macAddress: formattedMac,
-        location: body.location,
-        status: 'OFFLINE'
-      },
-      include: {
-        host: {
-          select: { id: true, email: true }
-        }
-      }
-    });
-
-    fastify.log.info(`Router created: ${router.id}`);
-    return { router };
-  });
-
-  // Update router
-  fastify.put('/:id', {
-    preHandler: [fastify.authenticate],
-    schema: {
-      tags: ['routers'],
-      summary: 'Update router',
-      security: [{ bearerAuth: [] }],
-      body: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          location: { type: 'string' }
-        }
-      }
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
-    const { id } = request.params as { id: string };
-    const body = request.body as any;
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
-
-    const existing = await prisma.router.findFirst({ where });
-    if (!existing) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
-
-    const router = await prisma.router.update({
-      where: { id },
-      data: {
-        ...(body.name && { name: body.name }),
-        ...(body.location && { location: body.location })
-      }
-    });
-
-    return { router };
-  });
-
-  // Delete router
-  fastify.delete('/:id', {
-    preHandler: [fastify.authenticate],
-    schema: {
-      tags: ['routers'],
-      summary: 'Delete router',
-      security: [{ bearerAuth: [] }]
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
-    const { id } = request.params as { id: string };
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
-
-    const router = await prisma.router.findFirst({ where });
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
-
-    // Remove NAS entry if router has IP
-    if (router.nasipaddress) {
-      await nasService.removeNasEntry(router.nasipaddress, router.id);
-    }
-
-    // Delete router (cascades to sessions and invoices)
-    await prisma.router.delete({ where: { id } });
-
-    fastify.log.info(`Router deleted: ${id}`);
-    return { message: 'Router deleted' };
-  });
-
+export async function routerStatsRoutes(fastify: FastifyInstance) {
   // Get router statistics
   fastify.get('/:id/stats', {
     preHandler: [fastify.authenticate],
@@ -302,11 +14,11 @@ export async function routerRoutes(fastify: FastifyInstance) {
       security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
+    const user = request.user as AuthenticatedUser;
     const { id } = request.params as { id: string };
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
 
-    const router = await prisma.router.findFirst({ where });
+    const router = await routerAccessService.verifyRouterAccess(id, user);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -429,7 +141,8 @@ export async function routerRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
+    const user = request.user as AuthenticatedUser;
     const { id } = request.params as { id: string };
     const query = request.query as {
       startDate?: string;
@@ -437,9 +150,7 @@ export async function routerRoutes(fastify: FastifyInstance) {
       groupBy?: 'day' | 'week' | 'month' | 'none';
     };
 
-    const where = user.role === 'ADMIN' ? { id } : { id, hostId: user.userId };
-    const router = await prisma.router.findFirst({ where });
-    
+    const router = await routerAccessService.verifyRouterAccess(id, user);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -587,9 +298,11 @@ export async function routerRoutes(fastify: FastifyInstance) {
           grouped
         };
       }
-    } catch (error: any) {
-      fastify.log.error(`Error calculating router usage: ${error}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`Error calculating router usage: ${errorMessage}`);
       return reply.code(500).send({ error: 'Failed to calculate usage statistics' });
     }
   });
 }
+
