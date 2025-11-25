@@ -23,8 +23,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
-    echo "Usage: $0 ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME]"
+if [ "$#" -lt 3 ] || [ "$#" -gt 6 ]; then
+    echo "Usage: $0 ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME] [GITHUB_TOKEN]"
     echo ""
     echo "This script sets up SpotFi WebSocket bridge only (cloud monitoring)."
     echo "For CoovaChilli setup, use: openwrt-setup-chilli.sh"
@@ -35,6 +35,10 @@ if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
     echo "  MAC_ADDRESS   - Router MAC address"
     echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
     echo "  ROUTER_NAME   - (Optional) Router name to set in SpotFi dashboard"
+    echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
+    echo ""
+    echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
+    echo "      or stored in /etc/github_token file"
     echo ""
     exit 1
 fi
@@ -44,6 +48,17 @@ TOKEN="$2"
 MAC_ADDRESS="$3"
 WS_URL="${4:-wss://api.spotfi.com/ws}"
 ROUTER_NAME="${5:-}"
+GITHUB_TOKEN_PARAM="${6:-}"
+
+# Get GitHub token from multiple sources (priority: parameter > env var > file)
+if [ -n "$GITHUB_TOKEN_PARAM" ]; then
+    GITHUB_TOKEN="$GITHUB_TOKEN_PARAM"
+elif [ -n "$GITHUB_TOKEN" ]; then
+    # Already set from environment variable
+    :
+elif [ -f /etc/github_token ]; then
+    GITHUB_TOKEN=$(cat /etc/github_token 2>/dev/null | tr -d '\n\r ')
+fi
 
 # Normalize WebSocket URL: add protocol if missing, ensure /ws path
 if echo "$WS_URL" | grep -qv "://"; then
@@ -196,12 +211,20 @@ fi
 echo "  - Mapped to binary: spotfi-bridge-$BINARY_ARCH"
 
 # Set download URL and binary name
-# Use GitHub Releases only (latest release)
+# Use GitHub Releases (supports both public and private repos with token)
 GITHUB_REPO="rufaromugabe/spotfi"
-DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/spotfi-bridge-${BINARY_ARCH}"
 BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
-echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
+# Build download URL - use token if available for private repos
+if [ -n "$GITHUB_TOKEN" ]; then
+    DOWNLOAD_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+    echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
+    echo "  - Using GitHub token for private repository access"
+else
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/spotfi-bridge-${BINARY_ARCH}"
+    echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
+    echo "  - Using public repository access"
+fi
 
 # Step 4: Install WebSocket bridge (Go binary)
 STEP_NUM=$((STEP_NUM + 1))
@@ -210,10 +233,49 @@ echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...$
 echo "  - Downloading binary for $ARCH_STRING..."
 
 # Download binary from GitHub Releases
-if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
-    echo -e "${RED}Error: Failed to download binary${NC}"
-    echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
-    exit 1
+if [ -n "$GITHUB_TOKEN" ]; then
+    # Private repo: Use GitHub API to get release assets
+    # First, get the latest release info
+    RELEASE_JSON=$(wget --header="Authorization: token ${GITHUB_TOKEN}" \
+                        --header="Accept: application/vnd.github.v3+json" \
+                        -q -O - "$DOWNLOAD_URL" 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
+        echo -e "${RED}Error: Failed to fetch release info (check token permissions)${NC}"
+        exit 1
+    fi
+    
+    # Extract download URL for the specific binary asset
+    # Try multiple patterns to handle different JSON formatting
+    ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    
+    # Fallback: try simpler pattern
+    if [ -z "$ASSET_URL" ]; then
+        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
+    fi
+    
+    if [ -z "$ASSET_URL" ]; then
+        echo -e "${RED}Error: Binary asset 'spotfi-bridge-${BINARY_ARCH}' not found in latest release${NC}"
+        echo "Available assets in release:"
+        echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 5 || echo "Could not parse asset names"
+        exit 1
+    fi
+    
+    # Download the binary asset with authentication
+    if ! wget --header="Authorization: token ${GITHUB_TOKEN}" \
+              --header="Accept: application/octet-stream" \
+              -q -O /tmp/spotfi-bridge "$ASSET_URL" 2>/dev/null; then
+        echo -e "${RED}Error: Failed to download binary (check token permissions)${NC}"
+        exit 1
+    fi
+else
+    # Public repo: Direct download from releases
+    if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
+        echo -e "${RED}Error: Failed to download binary${NC}"
+        echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
+        echo "Or provide a GitHub token for private repository access"
+        exit 1
+    fi
 fi
 
 # Verify and install binary

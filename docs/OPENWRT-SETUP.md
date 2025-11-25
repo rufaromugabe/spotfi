@@ -120,6 +120,48 @@ SSH into your OpenWRT router:
 ssh root@192.168.56.10
 ```
 
+**📦 Downloading Scripts from Private Repository**
+
+If your SpotFi repository is private, you'll need a GitHub Personal Access Token to download scripts and binaries.
+
+**Option 1: Using GitHub Token (Recommended)**
+
+Create a GitHub Personal Access Token:
+1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Generate new token with `repo` scope (full control of private repositories)
+3. Copy the token (starts with `ghp_`)
+
+**Download script with token:**
+```bash
+# Set token as environment variable
+export GITHUB_TOKEN="ghp_your_token_here"
+
+# Download script from private repo using GitHub API
+wget --header="Authorization: token ${GITHUB_TOKEN}" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
+**Or store token securely on router (one-time setup):**
+```bash
+# Store token in secure file
+echo "ghp_your_token_here" > /etc/github_token
+chmod 600 /etc/github_token
+
+# Scripts will automatically use this token if present
+```
+
+**Option 2: Using Public Repository**
+
+If your repository is public, use the standard download method:
+```bash
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
 **Choose your setup option:**
 
 #### Option A: WebSocket Bridge Only (Cloud Monitoring)
@@ -129,13 +171,24 @@ For routers that only need real-time monitoring and remote control (no captive p
 **Using the example values from Step 1:**
 
 ```bash
-# Download and run the cloud setup script
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+# For private repo: Download script with GitHub token (if not already downloaded)
+# Skip this if you already downloaded the script in Step 2
+export GITHUB_TOKEN="ghp_your_token_here"  # Or use /etc/github_token
+wget --header="Authorization: token ${GITHUB_TOKEN}" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
+
+# Run the cloud setup script
+# Pass GitHub token as 6th parameter (optional if using env var or /etc/github_token)
 sh /tmp/openwrt-setup-cloud.sh \
   cmichrwmz0003zijqm53zfpdr \
   test-router-token-123 \
   00:11:22:33:44:55 \
-  ws://192.168.56.1:8080/ws
+  ws://192.168.56.1:8080/ws \
+  "" \
+  "$GITHUB_TOKEN"
 ```
 
 **Or with WSS (HTTPS) for production:**
@@ -156,6 +209,10 @@ sh /tmp/openwrt-setup-cloud.sh \
 - `SERVER_DOMAIN` - (Optional) SpotFi server WebSocket URL
   - For local development: `ws://192.168.56.1:8080/ws`
   - For production: `wss://api.spotfi.com/ws` (default if omitted)
+- `ROUTER_NAME` - (Optional) Router name to set in SpotFi dashboard
+- `GITHUB_TOKEN` - (Optional) GitHub Personal Access Token for private repos
+  - Can also be set via `GITHUB_TOKEN` environment variable
+  - Or stored in `/etc/github_token` file (recommended for security)
 
 **Environment Variables Created:**
 
@@ -206,7 +263,13 @@ For routers that only need captive portal with RADIUS authentication (no WebSock
 ```bash
 # Download and run the Uspot setup script (replace with your actual values)
 # Portal URL is optional - defaults to https://api.spotfi.com
-wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && \
+# For private repo: Download script with GitHub token
+export GITHUB_TOKEN="ghp_your_token_here"  # Or use /etc/github_token
+wget --header="Authorization: token ${GITHUB_TOKEN}" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-uspot.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-uspot.sh" && \
+chmod +x /tmp/openwrt-setup-uspot.sh && \
 sh /tmp/openwrt-setup-uspot.sh \
   cmhujj1f6000112soujpo0noz \
   5d62856936faa4919a8ab07671b04103 \
@@ -215,7 +278,14 @@ sh /tmp/openwrt-setup-uspot.sh \
   https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 ```
 
-wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && chmod +x /tmp/openwrt-setup-uspot.sh &&  sh /tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa4919a8ab07671b04103 08:00:27:BA:FE:8D 62.72.19.27 https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
+# For private repo: Download with token
+export GITHUB_TOKEN="ghp_your_token_here"
+wget --header="Authorization: token ${GITHUB_TOKEN}" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-uspot.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-uspot.sh" && \
+chmod +x /tmp/openwrt-setup-uspot.sh && \
+sh /tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa4919a8ab07671b04103 08:00:27:BA:FE:8D 62.72.19.27 https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
 
 
 
