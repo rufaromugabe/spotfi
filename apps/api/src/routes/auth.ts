@@ -2,6 +2,16 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { LoginSchema, RegisterSchema } from '@spotfi/shared';
 import { hashPassword, verifyPassword } from '../utils/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { AuthenticatedRequest, AuthenticatedUser } from '../types/fastify.js';
+
+/**
+ * Type guard to ensure request.user is set (for use after authentication)
+ */
+function assertAuthenticated(request: FastifyRequest): asserts request is AuthenticatedRequest {
+  if (!request.user) {
+    throw new Error('Request is not authenticated');
+  }
+}
 
 export async function authRoutes(fastify: FastifyInstance) {
   // Register
@@ -184,9 +194,9 @@ export async function authRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const user = request.user as any;
+      assertAuthenticated(request);
       const dbUser = await prisma.user.findUnique({
-        where: { id: user.userId },
+        where: { id: (request.user as AuthenticatedUser).userId },
         select: {
           id: true,
           email: true,

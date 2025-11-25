@@ -11,8 +11,10 @@ export class RouterRpcService {
   /**
    * Generic RPC Call - The ONLY method you effectively need
    * All other methods are just convenience wrappers
+   * 
+   * @public - Exposed for advanced use cases (e.g., cron jobs, background tasks)
    */
-  private async rpcCall(
+  async rpcCall(
     routerId: string,
     path: string,
     method: string,

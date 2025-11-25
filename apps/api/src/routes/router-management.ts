@@ -1,12 +1,18 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { WebSocket } from 'ws';
-import { activeConnections } from '../websocket/server.js';
-import { prisma } from '../lib/prisma.js';
-import { commandManager } from '../websocket/command-manager.js';
+import { AuthenticatedRequest, AuthenticatedUser } from '../types/fastify.js';
 import { routerRpcService } from '../services/router-rpc.service.js';
+import { routerAccessService } from '../services/router-access.service.js';
 
+/**
+ * Require admin role middleware
+ */
 function requireAdmin(request: FastifyRequest, reply: FastifyReply, done: Function) {
-  const user = request.user as any;
+  const user = request.user as AuthenticatedUser | undefined;
+  if (!user) {
+    reply.code(401).send({ error: 'Unauthorized' });
+    return;
+  }
+  
   if (user.role !== 'ADMIN') {
     reply.code(403).send({ error: 'Admin access required' });
     return;
@@ -14,42 +20,16 @@ function requireAdmin(request: FastifyRequest, reply: FastifyReply, done: Functi
   done();
 }
 
+/**
+ * Type guard to ensure request.user is set (for use after authentication)
+ */
+function assertAuthenticated(request: FastifyRequest): asserts request is AuthenticatedRequest {
+  if (!request.user) {
+    throw new Error('Request is not authenticated');
+  }
+}
+
 export async function routerManagementRoutes(fastify: FastifyInstance) {
-  // Helper function to verify router access
-  async function verifyRouterAccess(routerId: string, userId: string, role: string) {
-    const where = role === 'ADMIN' ? { id: routerId } : { id: routerId, hostId: userId };
-    const router = await prisma.router.findFirst({ where });
-    return router;
-  }
-
-  // Helper function to check if router is online
-  function checkRouterOnline(routerId: string): WebSocket | null {
-    const socket = activeConnections.get(routerId);
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return null;
-    }
-    return socket;
-  }
-
-  // Execute ubus RPC call on router via WebSocket
-  async function executeUbusRpc(
-    routerId: string,
-    path: string,
-    method: string,
-    args: any = {},
-    timeout: number = 30000
-  ): Promise<any> {
-    const socket = checkRouterOnline(routerId);
-    if (!socket) {
-      throw new Error('Router is offline');
-    }
-
-    return commandManager.sendCommand(routerId, socket, 'ubus_call', {
-      path,
-      method,
-      args
-    }, timeout);
-  }
 
   // Get router system info via ubus
   fastify.post('/api/routers/:id/system/info', {
@@ -61,10 +41,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       description: 'Get system information (board, uptime, memory, etc.) using ubus'
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -72,9 +52,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     try {
       const result = await routerRpcService.getSystemInfo(id);
       return { routerId: id, systemInfo: result.result || result };
-    } catch (error: any) {
-      fastify.log.error(`Error getting system info for router ${id}: ${error.message}`);
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`Error getting system info for router ${id}: ${errorMessage}`);
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -87,10 +68,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -98,8 +79,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     try {
       const result = await routerRpcService.getBoardInfo(id);
       return { routerId: id, boardInfo: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -118,11 +100,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { interface?: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -130,8 +112,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     try {
       const result = await routerRpcService.getNetworkInterfaces(id, body.interface);
       return { routerId: id, interface: body.interface, interfaces: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -150,11 +133,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { interface?: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -163,8 +146,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       const interfaceName = body.interface || 'wlan0';
       const result = await routerRpcService.getWirelessStatus(id, interfaceName);
       return { routerId: id, interface: interfaceName, status: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -177,19 +161,20 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
-      const result = await executeUbusRpc(id, 'dhcp', 'ipv4leases', {});
+      const result = await routerRpcService.rpcCall(id, 'dhcp', 'ipv4leases', {});
       return { routerId: id, leases: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -234,11 +219,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const { macAddress } = request.body as { macAddress: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -247,8 +232,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       // Use uspot's native client_get via ubus
       const result = await routerRpcService.getClientInfo(id, macAddress);
       return { routerId: id, session: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -269,11 +255,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
     const { id } = request.params as { id: string };
     const body = request.body as { config: string; section?: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -284,10 +269,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       if (body.section) {
         args.section = body.section;
       }
-      const result = await executeUbusRpc(id, 'uci', 'get', args);
+      const result = await routerRpcService.rpcCall(id, 'uci', 'get', args);
       return { routerId: id, config: body.config, data: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -312,18 +298,18 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { config: string; section: string; option: string; value: string; commit?: boolean };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
       // Use ubus uci call
-      const result = await executeUbusRpc(id, 'uci', 'set', {
+      const result = await routerRpcService.rpcCall(id, 'uci', 'set', {
         config: body.config,
         section: body.section,
         option: body.option,
@@ -331,12 +317,13 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       });
 
       if (body.commit) {
-        await executeUbusRpc(id, 'uci', 'commit', { config: body.config });
+        await routerRpcService.rpcCall(id, 'uci', 'commit', { config: body.config });
       }
 
       return { routerId: id, success: true, result: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -356,20 +343,21 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { config?: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
-      const result = await executeUbusRpc(id, 'uci', 'commit', { config: body.config });
+      const result = await routerRpcService.rpcCall(id, 'uci', 'commit', { config: body.config });
       return { routerId: id, success: true, result: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -391,24 +379,25 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { command: string; timeout?: number };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
       // Execute shell command via ubus system.exec
-      const result = await executeUbusRpc(id, 'system', 'exec', {
+      const result = await routerRpcService.rpcCall(id, 'system', 'exec', {
         command: body.command
       }, body.timeout || 10000);
 
       return { routerId: id, command: body.command, result: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -422,10 +411,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       description: 'Admin only - Reboot the router'
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -434,8 +423,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       // Use ubus system.reboot
       await routerRpcService.reboot(id);
       return { routerId: id, message: 'Reboot command sent', success: true };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -454,23 +444,24 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { lines?: number };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
       // Use ubus log.read
-      const result = await executeUbusRpc(id, 'log', 'read', {
+      const result = await routerRpcService.rpcCall(id, 'log', 'read', {
         lines: body.lines || 50
       });
       return { routerId: id, logs: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -490,23 +481,24 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { path: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
       // Use ubus file.read
-      const result = await executeUbusRpc(id, 'file', 'read', {
+      const result = await routerRpcService.rpcCall(id, 'file', 'read', {
         path: body.path
       });
       return { routerId: id, path: body.path, content: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -533,23 +525,24 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id, action } = request.params as { id: string; action: string };
     const body = request.body as { service: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
       // Use ubus service.* methods
-      const result = await executeUbusRpc(id, 'service', action, {
+      const result = await routerRpcService.rpcCall(id, 'service', action, {
         name: body.service
       });
       return { routerId: id, service: body.service, action, result: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -572,20 +565,21 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { namespace: string; method: string; args?: any };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
     try {
-      const result = await executeUbusRpc(id, body.namespace, body.method, body.args || {});
+      const result = await routerRpcService.rpcCall(id, body.namespace, body.method, body.args || {});
       return { routerId: id, namespace: body.namespace, method: body.method, result: result.result || result };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -605,11 +599,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { interface?: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -631,8 +625,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
       
       return { routerId: id, statistics: stats };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -653,11 +648,11 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { interface?: string; interval?: number };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -689,8 +684,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
           note: 'For real-time speed, two measurements with interval are required. This returns current statistics.'
         }
       };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -704,10 +700,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       description: 'Get comprehensive network statistics including interface status, statistics, uptime, and speed information'
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -727,8 +723,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
         statistics: statistics?.result || statistics,
         timestamp: new Date().toISOString()
       };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 
@@ -742,10 +739,10 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       description: 'Get router uptime in seconds and human-readable format'
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
-    const router = await verifyRouterAccess(id, user.userId, user.role);
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
@@ -772,8 +769,9 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
         },
         bootTime: sysData.boottime ? new Date(sysData.boottime * 1000).toISOString() : null
       };
-    } catch (error: any) {
-      return reply.code(503).send({ error: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: errorMessage });
     }
   });
 }

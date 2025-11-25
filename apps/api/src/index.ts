@@ -97,7 +97,7 @@ await fastify.register(websocket);
 // Add authenticate decorator
 fastify.decorate('authenticate', async function (request: FastifyRequest, reply: FastifyReply) {
   try {
-    const decoded = await request.jwtVerify() as any;
+    const decoded = await request.jwtVerify() as { userId: string; email: string; role: 'ADMIN' | 'HOST' };
     request.user = {
       userId: decoded.userId,
       email: decoded.email,
