@@ -59,6 +59,11 @@ CREATE INDEX IF NOT EXISTS idx_disconnect_queue_unprocessed
 CREATE INDEX IF NOT EXISTS idx_disconnect_queue_created 
     ON disconnect_queue(created_at);
 
+-- Optimized index for scheduler queries (finds pending items instantly)
+CREATE INDEX IF NOT EXISTS idx_disconnect_queue_pending 
+    ON disconnect_queue(created_at) 
+    WHERE processed = FALSE;
+
 -- ============================================
 -- 3. TRIGGER: Check Quota on Interim Updates
 -- ============================================

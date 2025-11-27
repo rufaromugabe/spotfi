@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
+import { Decimal } from '@prisma/client/runtime/library';
 
-const RATE_MB = parseFloat(process.env.PAYMENT_RATE_PER_MB || '0.02');
+const RATE_MB = new Decimal(process.env.PAYMENT_RATE_PER_MB || '0.02');
 
 export async function generateInvoices(billingPeriod?: Date) {
     const period = billingPeriod || new Date();
@@ -35,16 +36,19 @@ export async function generateInvoices(billingPeriod?: Date) {
 
   // 2. Batch create invoices
   // Prisma createMany is vastly more efficient than looping
+  // Using Decimal for precise financial calculations
   const invoicesData = usageStats.map(stat => {
-    const usageMB = Number(stat.totalBytes) / (1024 * 1024);
-    const amount = Math.round(usageMB * RATE_MB * 100) / 100;
+    const totalBytes = new Decimal(stat.totalBytes.toString());
+    const bytesPerMB = new Decimal(1024 * 1024);
+    const usageMB = totalBytes.div(bytesPerMB);
+    const amount = usageMB.mul(RATE_MB).toDecimalPlaces(2);
 
     return {
       hostId: stat.hostId,
       routerId: stat.routerId,
       amount,
-          period,
-          usage: Math.round(usageMB * 100) / 100,
+      period,
+      usage: usageMB.toDecimalPlaces(2),
       status: 'PENDING' as const // Cast for TS
     };
   });

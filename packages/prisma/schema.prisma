@@ -32,7 +32,7 @@ model Router {
   radiusSecret String?   @unique  // Unique RADIUS secret for NAS authentication (optional for existing routers)
   status       RouterStatus @default(OFFLINE)
   lastSeen     DateTime?
-  totalUsage   Float     @default(0)
+  totalUsage   Decimal   @default(0) @db.Decimal(12, 2)
   nasipaddress String?
   macAddress   String?   // Router MAC address for robust tracking (doesn't change like IP)
   location     String?
@@ -52,9 +52,9 @@ model Invoice {
   host        User     @relation(fields: [hostId], references: [id], onDelete: Cascade)
   routerId    String
   router      Router   @relation(fields: [routerId], references: [id], onDelete: Cascade)
-  amount      Float
+  amount      Decimal   @db.Decimal(10, 2)
   period      DateTime
-  usage       Float
+  usage       Decimal   @db.Decimal(12, 2)
   status      InvoiceStatus @default(PENDING)
   paidAt      DateTime?
   createdAt   DateTime @default(now())
@@ -287,7 +287,7 @@ model Plan {
   id                String     @id @default(cuid())
   name              String     // e.g., "Basic 10GB", "Premium Unlimited"
   description       String?    // Plan description
-  price             Float      @default(0) // Monthly price
+  price             Decimal    @default(0) @db.Decimal(10, 2) // Monthly price
   currency          String     @default("USD")
   
   // Data Quota (in bytes)

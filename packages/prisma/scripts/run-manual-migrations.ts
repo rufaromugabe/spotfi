@@ -38,6 +38,7 @@ const MANUAL_MIGRATIONS = [
   '003_router_daily_usage_triggers.sql',
   '004_partial_index_and_stoptime.sql',
   '005_realtime_quota.sql',
+  '006_user_quota_counters.sql',
 ];
 
 async function runSingleMigration(migrationFile: string, force: boolean = false) {

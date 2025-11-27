@@ -14,6 +14,7 @@ CREATE OR REPLACE FUNCTION link_router_to_session()
 RETURNS TRIGGER AS $$
 DECLARE
   router_match TEXT;
+  normalized_nas TEXT;
 BEGIN
   -- Skip if already linked
   IF NEW."routerId" IS NOT NULL THEN
@@ -60,15 +61,16 @@ BEGIN
     END IF;
   END IF;
 
-  -- Method 4: Match by MAC address in nasidentifier (reliable)
+  -- Method 4: Match by MAC address (normalized, indexed - no wildcards)
   IF NEW.nasidentifier IS NOT NULL THEN
+    -- Normalize nasidentifier (remove common separators, uppercase)
+    normalized_nas := UPPER(REPLACE(REPLACE(REPLACE(NEW.nasidentifier, ':', ''), '-', ''), '.', ''));
+    
+    -- Try exact match on normalized MAC (uses index, no table scan)
     SELECT id INTO router_match
     FROM routers
     WHERE "macAddress" IS NOT NULL
-      AND (
-        NEW.nasidentifier ILIKE '%' || "macAddress" || '%'
-        OR NEW.nasidentifier ILIKE '%' || REPLACE(REPLACE("macAddress", ':', ''), '-', '') || '%'
-      )
+      AND UPPER(REPLACE(REPLACE(REPLACE("macAddress", ':', ''), '-', ''), '.', '')) = normalized_nas
     LIMIT 1;
     
     IF router_match IS NOT NULL THEN
@@ -143,41 +145,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger on session end (most important)
-DROP TRIGGER IF EXISTS trg_usage_on_stop ON radacct;
-CREATE TRIGGER trg_usage_on_stop
-  AFTER UPDATE OF acctstoptime ON radacct
-  FOR EACH ROW
-  WHEN (NEW.acctstoptime IS NOT NULL AND OLD.acctstoptime IS NULL AND NEW."routerId" IS NOT NULL)
-  EXECUTE FUNCTION update_router_usage();
-
--- Trigger on interim updates (keeps usage current during long sessions)
-DROP TRIGGER IF EXISTS trg_usage_on_update ON radacct;
-CREATE TRIGGER trg_usage_on_update
-  AFTER UPDATE OF acctinputoctets, acctoutputoctets ON radacct
-  FOR EACH ROW
-  WHEN (
-    NEW."routerId" IS NOT NULL
-    AND (OLD.acctinputoctets IS DISTINCT FROM NEW.acctinputoctets
-         OR OLD.acctoutputoctets IS DISTINCT FROM NEW.acctoutputoctets)
-  )
-  EXECUTE FUNCTION update_router_usage();
-
--- Trigger on new session insert (if routerId set immediately)
-DROP TRIGGER IF EXISTS trg_usage_on_insert ON radacct;
-CREATE TRIGGER trg_usage_on_insert
-  AFTER INSERT ON radacct
-  FOR EACH ROW
-  WHEN (NEW."routerId" IS NOT NULL)
-  EXECUTE FUNCTION update_router_usage();
-
--- Trigger on late routerId linking
-DROP TRIGGER IF EXISTS trg_usage_on_link ON radacct;
-CREATE TRIGGER trg_usage_on_link
-  AFTER UPDATE OF "routerId" ON radacct
-  FOR EACH ROW
-  WHEN (OLD."routerId" IS NULL AND NEW."routerId" IS NOT NULL)
-  EXECUTE FUNCTION update_router_usage();
+-- DISABLED: Router usage triggers removed to prevent write contention
+-- Use router_daily_usage table for all reporting instead (see 003_router_daily_usage_triggers.sql)
+-- The update_router_usage() function is kept for backward compatibility but triggers are disabled
+-- 
+-- DROP TRIGGER IF EXISTS trg_usage_on_stop ON radacct;
+-- DROP TRIGGER IF EXISTS trg_usage_on_update ON radacct;
+-- DROP TRIGGER IF EXISTS trg_usage_on_insert ON radacct;
+-- DROP TRIGGER IF EXISTS trg_usage_on_link ON radacct;
 
 -- ============================================
 -- 3. PERFORMANCE INDEXES
