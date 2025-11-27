@@ -68,8 +68,18 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-secret-key}
       # API_URL defaults to localhost for local Docker, override in .env for production
       # For local: http://localhost:8080
-      # For production: http://your-domain.com or http://your-ip:8080
+      # For production: https://api.spotfi.com or http://your-ip:8080
       API_URL: ${API_URL:-http://localhost:8080}
+      # UAM Server Configuration
+      UAM_SECRET: ${UAM_SECRET:-your-secure-uam-secret-min-32-chars}
+      UAM_SERVER_PATH: ${UAM_SERVER_PATH:-/uam/login}
+      # RADIUS Server Configuration
+      # Use 'freeradius' service name for internal Docker network communication
+      # Or set to external RADIUS server IP/hostname in .env
+      RADIUS_SERVER_1: ${RADIUS_SERVER_1:-freeradius}
+      RADIUS_SERVER_2: ${RADIUS_SERVER_2:-}
+      RADIUS_SECRET: ${RADIUS_SECRET:-testing123}
+      RADIUS_PORT: ${RADIUS_PORT:-1812}
     ports:
       - "${API_PORT:-8080}:${PORT:-8080}"
     depends_on:
