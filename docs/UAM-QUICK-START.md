@@ -4,7 +4,7 @@
 
 ```bash
 UAM_SECRET=your-secure-uam-secret-min-32-chars
-UAM_SERVER_PATH=/uam/login
+UAM_SERVER_URL=https://api.spotfi.com/uam/login
 RADIUS_SERVER_1=radius.hotspotsystem.com
 RADIUS_SERVER_2=radius2.hotspotsystem.com
 RADIUS_SECRET=hotsys123
@@ -41,7 +41,7 @@ uci set uspot.@instance[0].portal_url="https://api.spotfi.com/uam/login?uamsecre
 
 ## Endpoints
 
-- `GET/POST {UAM_SERVER_PATH}` - UAM server endpoint (default: `/uam/login`)
+- `GET/POST {UAM_SERVER_URL}` - UAM server endpoint (e.g., `https://api.spotfi.com/uam/login`)
 - `GET /api` - RFC8908 Captive Portal API
 
 ## Features

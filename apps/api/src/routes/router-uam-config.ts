@@ -14,10 +14,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       description: 'Admin only - Configure UAM server URL, UAM secret, and RADIUS server settings',
       body: {
         type: 'object',
-        required: ['apiUrl', 'radiusServer', 'radiusSecret'],
+        required: ['uamServerUrl', 'radiusServer', 'radiusSecret'],
         properties: {
-          apiUrl: { type: 'string', description: 'Full API URL (e.g., https://api.spotfi.com)' },
-          uamServerPath: { type: 'string', default: '/uam/login', description: 'UAM server path' },
+          uamServerUrl: { type: 'string', description: 'Full UAM server URL (e.g., https://api.spotfi.com/uam/login)' },
           uamSecret: { type: 'string', description: 'UAM secret for authentication' },
           radiusServer: { type: 'string', description: 'RADIUS server IP or hostname' },
           radiusSecret: { type: 'string', description: 'RADIUS secret' },
@@ -30,8 +29,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as {
-      apiUrl: string;
-      uamServerPath?: string;
+      uamServerUrl: string;
       uamSecret?: string;
       radiusServer: string;
       radiusSecret: string;
@@ -45,10 +43,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const uamServerPath = body.uamServerPath || '/uam/login';
       const portalUrl = body.uamSecret 
-        ? `${body.apiUrl}${uamServerPath}?uamsecret=${body.uamSecret}`
-        : `${body.apiUrl}${uamServerPath}`;
+        ? `${body.uamServerUrl}?uamsecret=${body.uamSecret}`
+        : body.uamServerUrl;
 
       const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
 
@@ -86,7 +83,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         await routerRpcService.rpcCall(id, 'service', 'restart', { name: 'uspot' });
       }
 
-      const dhcpApiUrl = `${body.apiUrl}/api`;
+      // Extract base URL from UAM server URL for RFC8908 API endpoint
+      const uamUrlObj = new URL(body.uamServerUrl);
+      const dhcpApiUrl = `${uamUrlObj.origin}/api`;
       try {
         const dhcpConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'dhcp', section: 'captive' });
         if (dhcpConfig) {

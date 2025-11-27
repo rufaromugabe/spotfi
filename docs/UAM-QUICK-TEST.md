@@ -66,8 +66,7 @@ curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
-    "apiUrl": "http://localhost:8080",
-    "uamServerPath": "/uam/login",
+    "uamServerUrl": "http://localhost:8080/uam/login",
     "uamSecret": "test-uam-secret-123",
     "radiusServer": "127.0.0.1",
     "radiusSecret": "testing123",
@@ -193,7 +192,7 @@ Make sure your `.env` has:
 
 ```bash
 UAM_SECRET=test-uam-secret-123
-UAM_SERVER_PATH=/uam/login
+UAM_SERVER_URL=http://localhost:8080/uam/login
 RADIUS_SERVER_1=127.0.0.1
 RADIUS_SECRET=testing123
 RADIUS_PORT=1812
