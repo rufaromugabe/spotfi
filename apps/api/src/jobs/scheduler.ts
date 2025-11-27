@@ -106,8 +106,7 @@ export function startScheduler() {
                 acctSessionId: session.acctSessionId,
                 callingStationId: session.callingStationId || undefined,
                 calledStationId: session.calledStationId || undefined,
-                userIp: session.framedIpAddress || undefined,
-                logger: console
+                userIp: session.framedIpAddress || undefined
               });
             });
 
