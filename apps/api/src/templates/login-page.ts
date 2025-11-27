@@ -1,12 +1,10 @@
-// A simple template literal function, or better yet, use EJS/Pug.
-// For now, cleaning up the existing string approach.
-
 export const renderLoginPage = (props: { 
   actionUrl: string; 
   uamip: string; 
   uamport: string; 
   userurl: string; 
-  error?: string 
+  error?: string;
+  uamsecret?: string;
 }) => `
 <!DOCTYPE html>
 <html lang="en">
@@ -15,7 +13,6 @@ export const renderLoginPage = (props: {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotFi Login</title>
     <style>
-      /* ... Keep your CSS here, or better, link to a static file ... */
       :root { --primary: #000; }
       body { font-family: system-ui, sans-serif; display: grid; place-items: center; height: 100vh; background: #f4f4f5; }
       .card { background: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); width: 100%; max-width: 350px; }
@@ -29,11 +26,11 @@ export const renderLoginPage = (props: {
         <h2 style="text-align:center; margin-top:0;">SpotFi</h2>
         ${props.error ? `<div class="error">${props.error}</div>` : ''}
         
-        <!-- Uspot Standard POST -->
         <form method="POST" action="${props.actionUrl}">
             <input type="hidden" name="uamip" value="${props.uamip}">
             <input type="hidden" name="uamport" value="${props.uamport}">
             <input type="hidden" name="userurl" value="${props.userurl}">
+            ${props.uamsecret ? `<input type="hidden" name="uamsecret" value="${props.uamsecret}">` : ''}
             
             <label>Username</label>
             <input type="text" name="username" required autofocus autocomplete="username">

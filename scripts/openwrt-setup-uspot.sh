@@ -1,14 +1,11 @@
 #!/bin/sh
 #
-# SpotFi OpenWRT Uspot Setup Script
+# SpotFi OpenWRT Uspot Installation Script
 # 
-# This script configures Uspot captive portal with RADIUS authentication
-# - Uspot installation and configuration
-# - Hotspot network and WiFi setup
-# - Firewall4 rules for portal and RADIUS
+# Installs packages and sets up basic network infrastructure
+# UAM/RADIUS configuration is done via API after router connects
 #
-# Usage: ./openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP [PORTAL_URL]
-#
+# Usage: ./openwrt-setup-uspot.sh
 
 set -e
 
@@ -22,129 +19,83 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
-    echo "Usage: $0 ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP [PORTAL_URL]"
-    exit 1
-fi
-
-ROUTER_ID="$1"
-RADIUS_SECRET="$2"
-MAC_ADDRESS="$3"
-RADIUS_IP="$4"
-PORTAL_URL="${5:-https://api.spotfi.com}"
-
-if ! echo "$RADIUS_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-    echo -e "${RED}Error: Invalid IP address format: $RADIUS_IP${NC}"
-    exit 1
-fi
-for octet in $(echo "$RADIUS_IP" | tr '.' ' '); do
-    if [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-        echo -e "${RED}Error: Invalid IP address range: $RADIUS_IP${NC}"
-        exit 1
-    fi
-done
-
-PORTAL_DOMAIN=$(echo "$PORTAL_URL" | sed 's|^https\?://||' | sed 's|:.*||' | sed 's|/.*||')
-
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}SpotFi Uspot Setup${NC}"
+echo -e "${GREEN}SpotFi Uspot Installation${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Router ID: $ROUTER_ID"
-echo "RADIUS Server: $RADIUS_IP"
-echo "MAC Address: $MAC_ADDRESS"
-echo "RADIUS Secret: (hidden)"
-echo "Portal: https://$PORTAL_DOMAIN/portal"
+echo "This script installs packages and sets up basic infrastructure."
+echo "UAM/RADIUS configuration will be done via API after router connects."
 echo ""
 
-TOTAL_STEPS=10
+TOTAL_STEPS=7
 STEP_NUM=1
 
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
-opkg update
+opkg update || {
+  echo -e "${YELLOW}Warning: Package update failed, continuing anyway...${NC}"
+}
 
 STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring timezone to Harare (CAT, UTC+2)...${NC}"
-uci set system.@system[0].timezone='CAT-2'
-uci commit system
-# Apply timezone immediately
-[ -f /etc/TZ ] && echo 'CAT-2' > /etc/TZ || true
-export TZ='CAT-2'
-echo -e "${GREEN}✓ Timezone configured to Harare (CAT, UTC+2)${NC}"
-
-STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing Uspot and dependencies...${NC}"
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing packages...${NC}"
 opkg install uspot uhttpd jsonfilter ca-bundle ca-certificates || {
-  echo -e "${RED}Error: Failed to install uspot or deps${NC}"
+  echo -e "${RED}Error: Failed to install packages${NC}"
   exit 1
 }
-command -v openssl >/dev/null 2>&1 || opkg install openssl-util >/dev/null 2>&1
-
-# Use br-lan bridge which includes all LAN interfaces (WiFi + Ethernet)
-LAN_BRIDGE="br-lan"
+command -v openssl >/dev/null 2>&1 || opkg install openssl-util >/dev/null 2>&1 || true
+echo -e "${GREEN}✓ Packages installed${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network interfaces...${NC}"
-HOTSPOT_NET_IF="hotspot"
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring wireless...${NC}"
+if uci show wireless >/dev/null 2>&1; then
+  DEVICE_INDEX=0
+  while uci get "wireless.@wifi-device[$DEVICE_INDEX]" >/dev/null 2>&1; do
+    uci set "wireless.@wifi-device[$DEVICE_INDEX].disabled=0" 2>/dev/null || true
+    DEVICE_INDEX=$((DEVICE_INDEX + 1))
+  done
+
+  IFACE_INDEX=0
+  while uci get "wireless.@wifi-iface[$IFACE_INDEX]" >/dev/null 2>&1; do
+    uci set "wireless.@wifi-iface[$IFACE_INDEX].network=lan" 2>/dev/null || true
+    uci set "wireless.@wifi-iface[$IFACE_INDEX].mode=ap" 2>/dev/null || true
+    IFACE_INDEX=$((IFACE_INDEX + 1))
+  done
+
+  uci commit wireless 2>/dev/null || true
+  echo -e "${GREEN}✓ Wireless configured${NC}"
+else
+  echo -e "${YELLOW}No wireless configuration found (wired-only router)${NC}"
+fi
+
+STEP_NUM=$((STEP_NUM + 1))
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring network...${NC}"
+
+if ! uci show network.lan >/dev/null 2>&1; then
+  uci set network.lan=interface
+fi
+uci set network.lan.proto='static'
+uci -q set network.lan.type='bridge' || true
+uci -q set network.lan.ipaddr='192.168.1.1' || true
+uci -q set network.lan.netmask='255.255.255.0' || true
+
+BRIDGE_NAME=$(uci get network.lan.ifname 2>/dev/null | head -n1 | cut -d' ' -f1 || echo "br-lan")
+if [ -z "$BRIDGE_NAME" ] || [ "$BRIDGE_NAME" = "br-lan" ]; then
+  BRIDGE_NAME="br-lan"
+fi
+
 if ! uci show network.hotspot >/dev/null 2>&1; then
   uci set network.hotspot=interface
-  uci set network.hotspot.proto='static'
-  uci set network.hotspot.ipaddr='192.168.56.10'
-  uci set network.hotspot.netmask='255.255.255.0'
-  uci set network.hotspot.device="$LAN_BRIDGE"
-  uci commit network
 fi
+uci set network.hotspot.proto='static'
+uci set network.hotspot.ipaddr='10.1.30.1'
+uci set network.hotspot.netmask='255.255.255.0'
+uci set network.hotspot.device="$BRIDGE_NAME"
+
+uci commit network
 echo -e "${GREEN}✓ Network configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring Uspot...${NC}"
-if [ -f /etc/config/uspot ]; then
-  cp /etc/config/uspot /etc/config/uspot.backup.$(date +%Y%m%d_%H%M%S)
-fi
-
-# Use UCI batch import for atomic, clean configuration
-# This replaces line-by-line uci set commands with a single import
-cat > /tmp/uspot.config << EOT
-package uspot
-
-config uspot 'main'
-    option enabled '1'
-    option setname 'spotfi'
-    option interface '$HOTSPOT_NET_IF'
-    option auth_mode 'radius'
-    option auth_server '$RADIUS_IP'
-    option auth_secret '$RADIUS_SECRET'
-    option nasid '$ROUTER_ID'
-    option nasmac '$MAC_ADDRESS'
-
-config instance 'spotfi'
-    option setname 'spotfi'
-    option name 'spotfi'
-    option enabled '1'
-    option interface '$HOTSPOT_NET_IF'
-    option ifname '$LAN_BRIDGE'
-    option auth_mode 'radius'
-    option auth 'radius'
-    option radius_auth_server '$RADIUS_IP'
-    option radius_acct_server '$RADIUS_IP'
-    option radius_secret '$RADIUS_SECRET'
-    option nas_id '$ROUTER_ID'
-    option mac_address '$MAC_ADDRESS'
-    option portal_url 'https://$PORTAL_DOMAIN/portal'
-    option lan_if '$LAN_BRIDGE'
-    option interim_update '300'
-    option session_timeout '7200'
-    option idle_timeout '600'
-EOT
-
-# Import configuration (wipes previous config, clean state)
-uci import uspot < /tmp/uspot.config
-uci commit uspot
-rm -f /tmp/uspot.config
-echo -e "${GREEN}✓ Uspot configured${NC}"
-
-STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring firewall...${NC}"
+
 if ! uci show firewall 2>/dev/null | grep -q "name='hotspot'"; then
   uci add firewall zone
   uci set firewall.@zone[-1].name='hotspot'
@@ -160,93 +111,38 @@ if ! uci show firewall 2>/dev/null | grep -q "src='hotspot'.*dest='wan'"; then
   uci set firewall.@forwarding[-1].dest='wan'
 fi
 
-if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-Auth'"; then
-  uci add firewall rule
-  uci set firewall.@rule[-1].name='Allow-RADIUS-Auth'
-  uci set firewall.@rule[-1].src='wan'
-  uci set firewall.@rule[-1].dest_port='1812'
-  uci set firewall.@rule[-1].proto='udp'
-  uci set firewall.@rule[-1].target='ACCEPT'
-fi
-if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-Acct'"; then
-  uci add firewall rule
-  uci set firewall.@rule[-1].name='Allow-RADIUS-Acct'
-  uci set firewall.@rule[-1].src='wan'
-  uci set firewall.@rule[-1].dest_port='1813'
-  uci set firewall.@rule[-1].proto='udp'
-  uci set firewall.@rule[-1].target='ACCEPT'
-fi
-# RFC5176 DAE (Dynamic Authorization Extensions) - port 3799
-if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-DAE'"; then
-  uci add firewall rule
-  uci set firewall.@rule[-1].name='Allow-RADIUS-DAE'
-  uci set firewall.@rule[-1].src='wan'
-  uci set firewall.@rule[-1].dest_port='3799'
-  uci set firewall.@rule[-1].proto='udp'
-  uci set firewall.@rule[-1].target='ACCEPT'
-fi
+for port in 1812 1813 3799; do
+  if ! uci show firewall 2>/dev/null | grep -q "name='Allow-RADIUS-$port'"; then
+    uci add firewall rule
+    uci set firewall.@rule[-1].name="Allow-RADIUS-$port"
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].dest_port="$port"
+    uci set firewall.@rule[-1].proto='udp'
+    uci set firewall.@rule[-1].target='ACCEPT'
+  fi
+done
+
 uci commit firewall
 echo -e "${GREEN}✓ Firewall configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring DHCP for RFC8908 Captive Portal API...${NC}"
-# Configure DHCP Option 114 for RFC8908 Captive Portal API support
-# This allows modern devices (iOS, Android, Windows) to automatically detect the captive portal
-if ! uci show dhcp 2>/dev/null | grep -q "name='captive'"; then
-  uci set dhcp.captive=dhcp
-  uci set dhcp.captive.interface='hotspot'
-  uci set dhcp.captive.start='100'
-  uci set dhcp.captive.limit='150'
-  uci set dhcp.captive.leasetime='12h'
-fi
-# Add DHCP Option 114 (RFC8908 Captive Portal API URL)
-# Remove existing option 114 if present
-uci del_list dhcp.captive.dhcp_option="114,*" 2>/dev/null || true
-uci add_list dhcp.captive.dhcp_option="114,https://$PORTAL_DOMAIN/api"
-uci commit dhcp
-echo -e "${GREEN}✓ DHCP configured with RFC8908 support${NC}"
-
-STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring HTTPS portal with TLS...${NC}"
-# Configure uhttpd for HTTPS portal
-# Generate self-signed certificate if not present
+echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring HTTPS portal...${NC}"
 if [ ! -f /etc/uhttpd.crt ] || [ ! -f /etc/uhttpd.key ]; then
-  echo "Generating self-signed certificate for HTTPS portal..."
   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
     -keyout /etc/uhttpd.key \
     -out /etc/uhttpd.crt \
-    -subj "/C=US/ST=State/L=City/O=SpotFi/CN=$PORTAL_DOMAIN" 2>/dev/null || {
-    echo -e "${YELLOW}Warning: Could not generate certificate. Install openssl-util if needed.${NC}"
+    -subj "/C=US/ST=State/L=City/O=SpotFi/CN=router" 2>/dev/null || {
+    echo -e "${YELLOW}Warning: Could not generate certificate${NC}"
   }
 fi
 
-# Configure uhttpd for HTTPS
-uci -q set uhttpd.main.listen_https='443'
-uci -q set uhttpd.main.cert='/etc/uhttpd.crt'
-uci -q set uhttpd.main.key='/etc/uhttpd.key'
-uci -q set uhttpd.main.redirect_https='0'  # Don't force redirect (uspot handles portal)
-
-# Ensure uhttpd doesn't conflict on port 80 if uspot needs it
-# Ensure 'uspot' uhttpd instance binds ONLY to the hotspot interface IP to prevent conflicts
-# Add this optimization:
-uci -q set uhttpd.main.listen_http="192.168.56.10:80"  # Bind strictly to gateway IP
-
-uci commit uhttpd
+uci -q set uhttpd.main.listen_https='443' || true
+uci -q set uhttpd.main.cert='/etc/uhttpd.crt' || true
+uci -q set uhttpd.main.key='/etc/uhttpd.key' || true
+uci -q set uhttpd.main.redirect_https='0' || true
+uci -q set uhttpd.main.listen_http="10.1.30.1:80" || true
+uci commit uhttpd 2>/dev/null || true
 echo -e "${GREEN}✓ HTTPS portal configured${NC}"
-
-STEP_NUM=$((STEP_NUM + 1))
-echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Configuring bandwidth control (ratelimit)...${NC}"
-# Install ratelimit package for bandwidth control
-opkg install ratelimit 2>/dev/null || {
-  echo -e "${YELLOW}Note: ratelimit package not available. Bandwidth control via RADIUS attributes only.${NC}"
-}
-
-# Configure uspot to use bandwidth limits from RADIUS
-# uspot reads WISPr-Bandwidth-Max-Up/Down or ChilliSpot-Max-Input-Octets/Output-Octets
-# These are set via RADIUS Reply attributes in the database
-uci -q set uspot.@instance[0].ratelimit='1'  # Enable rate limiting
-uci commit uspot
-echo -e "${GREEN}✓ Bandwidth control configured${NC}"
 
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Starting services...${NC}"
@@ -254,25 +150,20 @@ echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Starting services...${NC}"
 sleep 2
 /etc/init.d/firewall restart || true
 sleep 2
+[ -f /etc/init.d/wireless ] && /etc/init.d/wireless restart 2>/dev/null || true
 /etc/init.d/uhttpd enable 2>/dev/null || true
 /etc/init.d/uhttpd restart 2>/dev/null || true
-/etc/init.d/uspot enable 2>/dev/null || true
-/etc/init.d/uspot restart 2>/dev/null || true
 echo -e "${GREEN}✓ Services started${NC}"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Setup Complete!${NC}"
+echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Uspot Status:"
-echo "  - Router ID: $ROUTER_ID"
-echo "  - RADIUS Server: $RADIUS_IP"
-echo "  - Portal: https://$PORTAL_DOMAIN/portal"
-echo "  - LAN Bridge: $LAN_BRIDGE (includes all LAN interfaces)"
-echo "  - Gateway: 192.168.56.10"
+echo "Next steps:"
+echo "  1. Ensure router is connected to management backend via WebSocket bridge"
+echo "  2. Configure UAM/RADIUS via API:"
+echo "     POST /api/routers/:id/uam/configure"
 echo ""
-echo "Verification:"
-echo "  1. Check Uspot: /etc/init.d/uspot status"
-echo "  2. View logs: logread -f | grep -E 'uspot|radius'"
+echo "Gateway: 10.1.30.1 (standard captive portal range)"
 echo ""
