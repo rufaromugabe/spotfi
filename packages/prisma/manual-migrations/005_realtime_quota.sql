@@ -44,11 +44,13 @@ CREATE TABLE IF NOT EXISTS disconnect_queue (
     reason TEXT NOT NULL DEFAULT 'QUOTA_EXCEEDED',
     processed BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    processed_at TIMESTAMP,
-    
-    CONSTRAINT disconnect_queue_username_unique UNIQUE (username) 
-        WHERE processed = FALSE
+    processed_at TIMESTAMP
 );
+
+-- Create partial unique index (PostgreSQL doesn't support UNIQUE constraint with WHERE clause)
+CREATE UNIQUE INDEX IF NOT EXISTS disconnect_queue_username_unique 
+    ON disconnect_queue(username) 
+    WHERE processed = FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_disconnect_queue_unprocessed 
     ON disconnect_queue(username) 
