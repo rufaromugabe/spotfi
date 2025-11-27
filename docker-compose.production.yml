@@ -38,6 +38,10 @@ services:
     ports:
       - "${RADIUS_AUTH_PORT:-1812}:1812/udp"
       - "${RADIUS_ACCT_PORT:-1813}:1813/udp"
+    volumes:
+      # Optional: Override queries.conf for development/testing
+      # Uncomment to use local file instead of Dockerfile copy
+      # - ./raduis-server/mods-config/sql/main/postgresql/queries.conf:/etc/freeradius/mods-config/sql/main/postgresql/queries.conf:ro
     depends_on:
       postgres:
         condition: service_healthy

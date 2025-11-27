@@ -389,3 +389,19 @@ enum QuotaType {
   ONE_TIME  // One-time quota (doesn't reset)
 }
 
+// Disconnect Queue - For quota enforcement
+// Users who exceed quota are queued here for CoA disconnect
+// Note: Partial unique index on (username) WHERE processed = FALSE is created in SQL migration
+model DisconnectQueue {
+  id         Int      @id @default(autoincrement())
+  username   String
+  reason     String   @default("QUOTA_EXCEEDED")
+  processed  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+  processedAt DateTime? @map("processed_at")
+
+  @@index([username], map: "idx_disconnect_queue_unprocessed")
+  @@index([createdAt], map: "idx_disconnect_queue_created")
+  @@map("disconnect_queue")
+}
+

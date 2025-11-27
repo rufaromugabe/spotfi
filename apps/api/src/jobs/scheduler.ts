@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { generateInvoices } from '../services/billing.js';
 import { prisma } from '../lib/prisma.js';
+import { sendCoARequest } from '../services/coa-service.js';
 
 /**
  * Production-grade cron scheduler
@@ -59,10 +60,99 @@ export function startScheduler() {
     }
   });
 
+  // Quota enforcement - Process disconnect queue every minute
+  cron.schedule('* * * * *', async () => {
+    try {
+      const overageUsers = await prisma.disconnectQueue.findMany({
+        where: { processed: false },
+        orderBy: { createdAt: 'asc' },
+        take: 50 // Process in batches
+      });
+
+      if (overageUsers.length === 0) {
+        return;
+      }
+
+      console.log(`🚫 Processing ${overageUsers.length} quota overage user(s)`);
+
+      for (const item of overageUsers) {
+        try {
+          // Find all active sessions for this user
+          const activeSessions = await prisma.radAcct.findMany({
+            where: {
+              userName: item.username,
+              acctStopTime: null
+            },
+            include: {
+              router: {
+                select: {
+                  id: true,
+                  nasipaddress: true,
+                  radiusSecret: true
+                }
+              }
+            }
+          });
+
+          // Send CoA Disconnect to all active routers
+          const disconnectPromises = activeSessions
+            .filter(session => session.router?.nasipaddress && session.router?.radiusSecret)
+            .map(session => {
+              return sendCoARequest({
+                nasIp: session.router!.nasipaddress!,
+                nasId: session.router!.id,
+                secret: session.router!.radiusSecret!,
+                username: session.userName!,
+                acctSessionId: session.acctSessionId,
+                callingStationId: session.callingStationId || undefined,
+                calledStationId: session.calledStationId || undefined,
+                userIp: session.framedIpAddress || undefined,
+                logger: console
+              });
+            });
+
+          await Promise.allSettled(disconnectPromises);
+
+          // Disable user in RADIUS (prevent re-authentication)
+          await prisma.$executeRaw`
+            INSERT INTO radcheck (username, attribute, op, value)
+            VALUES (${item.username}, 'Auth-Type', ':=', 'Reject')
+            ON CONFLICT (username, attribute) 
+            DO UPDATE SET value = 'Reject', op = ':='
+          `;
+
+          // Mark as processed
+          await prisma.disconnectQueue.update({
+            where: { id: item.id },
+            data: {
+              processed: true,
+              processedAt: new Date()
+            }
+          });
+
+          console.log(`✅ Disconnected user ${item.username} (${activeSessions.length} session(s))`);
+        } catch (error) {
+          console.error(`❌ Failed to process disconnect for ${item.username}:`, error);
+          // Mark as processed anyway to prevent infinite retries
+          await prisma.disconnectQueue.update({
+            where: { id: item.id },
+            data: {
+              processed: true,
+              processedAt: new Date()
+            }
+          });
+        }
+      }
+    } catch (error) {
+      console.error('❌ Disconnect queue processing failed:', error);
+    }
+  });
+
   console.log('✅ Scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
   console.log('   → Status checks: Every 5 minutes');
   console.log('   → Daily stats: Daily at 1 AM');
+  console.log('   → Quota enforcement: Every minute (disconnect queue)');
   console.log('   → Quota tracking: Native (database triggers + Interim-Updates)');
   console.log('   → Session tracking: Real-time (database triggers)');
 }
