@@ -28,7 +28,6 @@ export async function portalRoutes(fastify: FastifyInstance) {
   const radiusServer1 = process.env.RADIUS_SERVER_1 || '';
   const radiusSecret = process.env.RADIUS_SECRET || '';
   const uamServerUrl = process.env.UAM_SERVER_URL || 'https://api.spotfi.com/uam/login';
-  const apiUrl = process.env.API_URL || 'https://api.spotfi.com';
   
   // Extract path from UAM_SERVER_URL for route registration
   let uamServerPath: string;
