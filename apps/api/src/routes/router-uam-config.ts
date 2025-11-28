@@ -17,7 +17,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         required: ['uamServerUrl', 'radiusServer', 'radiusSecret'],
         properties: {
           uamServerUrl: { type: 'string', description: 'Full UAM server URL (e.g., https://api.spotfi.com/uam/login)' },
-          uamSecret: { type: 'string', description: 'UAM secret for authentication' },
           radiusServer: { type: 'string', description: 'RADIUS server IP or hostname' },
           radiusSecret: { type: 'string', description: 'RADIUS secret' },
           radiusServer2: { type: 'string', description: 'Secondary RADIUS server (optional)' },
@@ -30,7 +29,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     const { id } = request.params as { id: string };
     const body = request.body as {
       uamServerUrl: string;
-      uamSecret?: string;
       radiusServer: string;
       radiusSecret: string;
       radiusServer2?: string;
@@ -43,34 +41,16 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const portalUrl = body.uamSecret 
-        ? `${body.uamServerUrl}?uamsecret=${body.uamSecret}`
-        : body.uamServerUrl;
-
       const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
 
       changes.push(
-        { config: 'uspot', section: '@instance[0]', option: 'portal_url', value: portalUrl },
+        { config: 'uspot', section: '@instance[0]', option: 'portal_url', value: body.uamServerUrl },
         { config: 'uspot', section: '@instance[0]', option: 'radius_auth_server', value: body.radiusServer },
         { config: 'uspot', section: '@instance[0]', option: 'radius_secret', value: body.radiusSecret }
       );
 
       if (body.radiusServer2) {
         changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_server', value: body.radiusServer2 });
-      }
-
-      if (body.uamSecret) {
-        try {
-          await routerRpcService.rpcCall(id, 'uci', 'set', {
-            config: 'uspot',
-            section: '@instance[0]',
-            option: 'uam_secret',
-            value: body.uamSecret
-          });
-          changes.push({ config: 'uspot', section: '@instance[0]', option: 'uam_secret', value: body.uamSecret });
-        } catch {
-          fastify.log.info(`[UAM Config] uam_secret option not supported, using URL parameter`);
-        }
       }
 
       for (const change of changes) {
@@ -106,10 +86,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         success: true,
         message: 'UAM and RADIUS configuration updated',
         config: {
-          portalUrl,
+          portalUrl: body.uamServerUrl,
           radiusServer: body.radiusServer,
-          radiusServer2: body.radiusServer2,
-          uamSecret: body.uamSecret ? 'configured' : 'not set'
+          radiusServer2: body.radiusServer2
         }
       };
     } catch (error: unknown) {
@@ -145,8 +124,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           portalUrl: instance.portal_url || instance['portal_url'],
           radiusServer: instance.radius_auth_server || instance['radius_auth_server'],
           radiusServer2: instance.radius_acct_server || instance['radius_acct_server'],
-          radiusSecret: instance.radius_secret || instance['radius_secret'] ? '***' : undefined,
-          uamSecret: instance.uam_secret || instance['uam_secret'] ? '***' : undefined
+          radiusSecret: instance.radius_secret || instance['radius_secret'] ? '***' : undefined
         }
       };
     } catch (error: unknown) {

@@ -23,6 +23,7 @@
     "migrate:deploy": "npm run prisma:migrate:deploy",
     "setup": "npm install && npm run prisma:generate && npm run prisma:migrate && npm run prisma:seed",
     "validate:radius": "tsx scripts/validate-radius-attributes.ts",
+    "tunnel": "node scripts/tunnel.js",
     "predeploy": "npm run validate:radius && npm run build"
   },
   "devDependencies": {

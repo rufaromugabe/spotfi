@@ -2,7 +2,6 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { renderLoginPage } from '../templates/login-page.js';
 import { authenticateUser } from '../services/radius-client.js';
 import { sendCoARequest, getRouterConfig } from '../services/coa-service.js';
-import { validateUamSecret, getClientIp } from '../utils/uam-security.js';
 
 interface PortalQuery {
   nasid?: string;
@@ -24,7 +23,6 @@ interface UamLoginBody {
 }
 
 export async function portalRoutes(fastify: FastifyInstance) {
-  const uamSecret = process.env.UAM_SECRET || '';
   const radiusServer1 = process.env.RADIUS_SERVER_1 || '';
   const radiusSecret = process.env.RADIUS_SECRET || '';
   const uamServerUrl = process.env.UAM_SERVER_URL || 'https://api.spotfi.com/uam/login';
@@ -39,12 +37,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
   }
 
   fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
-    const { nasid, uamip, uamport = '80', userurl = 'http://www.google.com', error, uamsecret } = request.query;
-
-    if (uamSecret && !validateUamSecret(request, uamSecret)) {
-      fastify.log.warn(`[UAM] Invalid UAM secret from ${getClientIp(request)}`);
-      return reply.code(403).send("Invalid UAM Secret");
-    }
+    const { nasid, uamip, uamport = '80', userurl = 'http://www.google.com', error } = request.query;
 
     if (!uamip) {
       return reply.code(400).send("Invalid Access: No NAS IP detected.");
@@ -56,7 +49,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       uamport,
       userurl: userurl || 'http://www.google.com',
       error,
-      uamsecret: uamsecret || uamSecret
+      uamsecret: ''
     });
 
     reply.type('text/html').send(html);
@@ -65,17 +58,10 @@ export async function portalRoutes(fastify: FastifyInstance) {
   fastify.post(uamServerPath, async (request: FastifyRequest<{ Body: UamLoginBody; Querystring: PortalQuery }>, reply: FastifyReply) => {
     const body = request.body as UamLoginBody;
     const query = request.query as PortalQuery;
-    const { username, password, uamip, uamport = '80', userurl = 'http://www.google.com', nasid, uamsecret } = { ...body, ...query };
-
-    if (uamSecret && !validateUamSecret(request, uamSecret)) {
-      fastify.log.warn(`[UAM] Invalid UAM secret from ${getClientIp(request)}`);
-      const secretParam = uamSecret ? `&uamsecret=${encodeURIComponent(uamSecret)}` : '';
-      return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Invalid UAM Secret')}${secretParam}`);
-    }
+    const { username, password, uamip, uamport = '80', userurl = 'http://www.google.com', nasid } = { ...body, ...query };
 
     if (!username || !password || !uamip) {
-      const secretParam = (uamsecret || uamSecret) ? `&uamsecret=${encodeURIComponent(uamsecret || uamSecret)}` : '';
-      return reply.redirect(`${uamServerUrl}?uamip=${uamip || ''}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Missing required fields')}${secretParam}`);
+      return reply.redirect(`${uamServerUrl}?uamip=${uamip || ''}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Missing required fields')}`);
     }
 
     try {
@@ -92,8 +78,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
       if (!routerRadiusSecret) {
         fastify.log.error(`[UAM] No RADIUS secret configured`);
-        const secretParam = (uamsecret || uamSecret) ? `&uamsecret=${encodeURIComponent(uamsecret || uamSecret)}` : '';
-        return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Server configuration error')}${secretParam}`);
+        return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Server configuration error')}`);
       }
 
       const authResult = await authenticateUser({
@@ -109,8 +94,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
       if (!authResult.success) {
         fastify.log.warn(`[UAM] Authentication failed for ${username}: ${authResult.error}`);
-        const secretParam = (uamsecret || uamSecret) ? `&uamsecret=${encodeURIComponent(uamsecret || uamSecret)}` : '';
-        return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Invalid username or password')}${secretParam}`);
+        return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Invalid username or password')}`);
       }
 
       if (routerConfig) {
@@ -126,8 +110,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       return reply.redirect(userurl || 'http://www.google.com');
     } catch (error: any) {
       fastify.log.error(`[UAM] Error processing login: ${error.message}`);
-      const secretParam = (uamsecret || uamSecret) ? `&uamsecret=${encodeURIComponent(uamsecret || uamSecret)}` : '';
-      return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Server error')}${secretParam}`);
+      return reply.redirect(`${uamServerUrl}?uamip=${uamip}&uamport=${uamport}&userurl=${encodeURIComponent(userurl)}&error=${encodeURIComponent('Server error')}`);
     }
   });
 

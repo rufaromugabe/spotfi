@@ -82,7 +82,6 @@ curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
     "uamServerUrl": "http://localhost:8080/uam/login",
-    "uamSecret": "test-uam-secret-123",
     "radiusServer": "127.0.0.1",
     "radiusSecret": "testing123",
     "restartUspot": true
@@ -96,7 +95,6 @@ curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
     "uamServerUrl": "https://api.spotfi.com/uam/login",
-    "uamSecret": "your-secure-uam-secret-min-32-chars",
     "radiusServer": "your-radius-server.com",
     "radiusSecret": "your-radius-secret",
     "radiusServer2": "backup-radius-server.com",
@@ -112,7 +110,7 @@ If router is not connected via WebSocket bridge, configure manually:
 ```bash
 ssh root@router-ip
 
-uci set uspot.@instance[0].portal_url="http://localhost:8080/uam/login?uamsecret=test-uam-secret-123"
+uci set uspot.@instance[0].portal_url="http://localhost:8080/uam/login"
 uci set uspot.@instance[0].radius_auth_server="127.0.0.1"
 uci set uspot.@instance[0].radius_secret="testing123"
 uci commit uspot
@@ -137,7 +135,7 @@ uci commit uspot
 
 ```bash
 # Simulate router redirecting user to UAM server
-curl -X GET "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=test-uam-secret-123&nasid=$ROUTER_ID" \
+curl -X GET "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&nasid=$ROUTER_ID" \
   -H "User-Agent: Mozilla/5.0" \
   -v
 
@@ -148,7 +146,7 @@ curl -X GET "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=
 
 ```bash
 # Test with valid credentials
-curl -X POST "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=test-uam-secret-123&nasid=$ROUTER_ID" \
+curl -X POST "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&nasid=$ROUTER_ID" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=testuser&password=testpass&uamip=10.1.30.1&uamport=80&userurl=http://www.google.com" \
   -v -L
@@ -159,7 +157,7 @@ curl -X POST "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl
 ### Test 3: Test Invalid Credentials
 
 ```bash
-curl -X POST "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=test-uam-secret-123" \
+curl -X POST "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=testuser&password=wrongpass&uamip=10.1.30.1&uamport=80&userurl=http://www.google.com" \
   -v -L
@@ -193,7 +191,7 @@ curl -X GET "http://localhost:8080/api?nasid=$ROUTER_ID" \
 
 1. Device connects to WiFi
 2. Device tries to access any website
-3. Router intercepts and redirects to: `http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=test-uam-secret-123`
+3. Router intercepts and redirects to: `http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com`
 4. User sees login page
 5. User enters credentials (e.g., `testuser` / `testpass`)
 6. UAM server authenticates via RADIUS
@@ -235,16 +233,7 @@ ubus call uspot client_list
 
 ## Step 9: Test Different Scenarios
 
-### Scenario 1: Invalid UAM Secret
-
-```bash
-curl -X GET "http://localhost:8080/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=wrong-secret" \
-  -v
-
-# Should return: 403 Forbidden - "Invalid UAM Secret"
-```
-
-### Scenario 2: Missing UAM IP
+### Scenario 1: Missing UAM IP
 
 ```bash
 curl -X GET "http://localhost:8080/uam/login?userurl=http://www.google.com" \
@@ -253,7 +242,7 @@ curl -X GET "http://localhost:8080/uam/login?userurl=http://www.google.com" \
 # Should return: 400 Bad Request - "Invalid Access: No NAS IP detected."
 ```
 
-### Scenario 3: RADIUS Server Unavailable
+### Scenario 2: RADIUS Server Unavailable
 
 ```bash
 # Configure router with wrong RADIUS server
@@ -266,7 +255,6 @@ curl -X GET "http://localhost:8080/uam/login?userurl=http://www.google.com" \
 Ensure your `.env` file has:
 
 ```bash
-UAM_SECRET=test-uam-secret-123
 UAM_SERVER_URL=http://localhost:8080/uam/login
 RADIUS_SERVER_1=127.0.0.1
 RADIUS_SECRET=testing123
@@ -275,22 +263,6 @@ API_URL=http://localhost:8080
 ```
 
 ## Troubleshooting
-
-### Issue: "Invalid UAM Secret"
-
-**Check:**
-- UAM_SECRET in `.env` matches router configuration
-- Router is sending `uamsecret` parameter correctly
-
-**Fix:**
-```bash
-# Verify UAM secret
-echo $UAM_SECRET
-
-# Check router config
-curl -X GET "http://localhost:8080/api/routers/$ROUTER_ID/uam/config" \
-  -H "Authorization: Bearer $TOKEN"
-```
 
 ### Issue: "Authentication Failed"
 
@@ -333,13 +305,12 @@ Save as `test-uam.sh`:
 API_URL="http://localhost:8080"
 TOKEN="your-token-here"
 ROUTER_ID="your-router-id-here"
-UAM_SECRET="test-uam-secret-123"
 
 echo "Testing UAM Server..."
 
 # Test 1: Login Page
 echo "1. Testing GET login page..."
-curl -s "$API_URL/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=$UAM_SECRET&nasid=$ROUTER_ID" | grep -q "SpotFi" && echo "✓ Login page works" || echo "✗ Login page failed"
+curl -s "$API_URL/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&nasid=$ROUTER_ID" | grep -q "SpotFi" && echo "✓ Login page works" || echo "✗ Login page failed"
 
 # Test 2: RFC8908 API
 echo "2. Testing RFC8908 API..."
@@ -347,7 +318,7 @@ curl -s "$API_URL/api?nasid=$ROUTER_ID" | grep -q "captive" && echo "✓ RFC8908
 
 # Test 3: Authentication
 echo "3. Testing authentication..."
-RESPONSE=$(curl -s -L -X POST "$API_URL/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com&uamsecret=$UAM_SECRET" \
+RESPONSE=$(curl -s -L -X POST "$API_URL/uam/login?uamip=10.1.30.1&uamport=80&userurl=http://www.google.com" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=testuser&password=testpass&uamip=10.1.30.1&uamport=80&userurl=http://www.google.com")
 

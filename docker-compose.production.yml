@@ -92,7 +92,6 @@ services:
       # For production: https://api.spotfi.com or http://your-ip:8080
       API_URL: ${API_URL:-http://localhost:8080}
       # UAM Server Configuration
-      UAM_SECRET: ${UAM_SECRET:-your-secure-uam-secret-min-32-chars}
       UAM_SERVER_URL: ${UAM_SERVER_URL:-http://localhost:8080/uam/login}
       # RADIUS Server Configuration
       # Use 'freeradius' service name for internal Docker network communication

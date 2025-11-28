@@ -4,7 +4,6 @@ export const renderLoginPage = (props: {
   uamport: string; 
   userurl: string; 
   error?: string;
-  uamsecret?: string;
 }) => `
 <!DOCTYPE html>
 <html lang="en">
@@ -30,7 +29,6 @@ export const renderLoginPage = (props: {
             <input type="hidden" name="uamip" value="${props.uamip}">
             <input type="hidden" name="uamport" value="${props.uamport}">
             <input type="hidden" name="userurl" value="${props.userurl}">
-            ${props.uamsecret ? `<input type="hidden" name="uamsecret" value="${props.uamsecret}">` : ''}
             
             <label>Username</label>
             <input type="text" name="username" required autofocus autocomplete="username">

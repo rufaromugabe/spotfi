@@ -3,7 +3,6 @@
 ## Environment Variables
 
 ```bash
-UAM_SECRET=your-secure-uam-secret-min-32-chars
 UAM_SERVER_URL=https://api.spotfi.com/uam/login
 RADIUS_SERVER_1=radius.hotspotsystem.com
 RADIUS_SERVER_2=radius2.hotspotsystem.com
@@ -16,7 +15,6 @@ API_URL=https://api.spotfi.com
 
 ```
 UAM Server: https://api.spotfi.com/uam/login
-UAM Secret: your-secure-uam-secret-min-32-chars
 RADIUS server 1: radius.hotspotsystem.com
 RADIUS server 2: radius2.hotspotsystem.com
 RADIUS Secret: hotsys123
@@ -29,14 +27,8 @@ UAM Allowed: api.spotfi.com,8.8.8.8,8.8.4.4
 uci set uspot.@instance[0].portal_url="https://api.spotfi.com/uam/login"
 uci set uspot.@instance[0].radius_auth_server="radius.hotspotsystem.com"
 uci set uspot.@instance[0].radius_secret="hotsys123"
-uci set uspot.@instance[0].uam_secret="your-secure-uam-secret-min-32-chars"
 uci commit uspot
 /etc/init.d/uspot restart
-```
-
-**Note:** If uspot doesn't support `uam_secret` option, append it to the portal URL:
-```bash
-uci set uspot.@instance[0].portal_url="https://api.spotfi.com/uam/login?uamsecret=your-secure-uam-secret-min-32-chars"
 ```
 
 ## Endpoints
@@ -47,6 +39,5 @@ uci set uspot.@instance[0].portal_url="https://api.spotfi.com/uam/login?uamsecre
 ## Features
 
 - Standard UAM/WISPr protocol
-- UAM Secret validation
 - RADIUS authentication
 - CoA (RFC 5176) support

@@ -7,20 +7,8 @@
 set -e
 
 API_URL="${API_URL:-http://localhost:8080}"
-# UAM_SECRET from environment or use default test secret
-# If UAM_SECRET is set in .env, tests will use it; otherwise use default
-UAM_SECRET="${UAM_SECRET:-test-uam-secret-123}"
 ROUTER_IP="${ROUTER_IP:-10.1.30.1}"
 ROUTER_PORT="${ROUTER_PORT:-80}"
-
-# Check if UAM_SECRET is actually set in environment (from .env)
-# If not, we'll skip UAM secret validation tests
-ENV_UAM_SECRET=$(grep "^UAM_SECRET=" .env 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
-if [ -n "$ENV_UAM_SECRET" ] && [ -n "$UAM_SECRET" ]; then
-  echo "Note: UAM_SECRET is configured - validation will be enforced"
-  echo "Using UAM_SECRET from environment for tests"
-  UAM_SECRET="$ENV_UAM_SECRET"
-fi
 
 # Get router ID from API if not set
 if [ -z "$ROUTER_ID" ]; then
@@ -48,7 +36,6 @@ echo "UAM Server Test Script"
 echo "=========================================="
 echo ""
 echo "API URL: $API_URL"
-echo "UAM Secret: $UAM_SECRET"
 echo "Router IP: $ROUTER_IP"
 echo ""
 
@@ -62,7 +49,7 @@ NC='\033[0m'
 echo -e "${YELLOW}Test 1: GET Login Page${NC}"
 NASID_PARAM=""
 [ -n "$ROUTER_ID" ] && NASID_PARAM="&nasid=$ROUTER_ID"
-RESPONSE=$(curl -s -w "\n%{http_code}" "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com&uamsecret=$UAM_SECRET$NASID_PARAM")
+RESPONSE=$(curl -s -w "\n%{http_code}" "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com$NASID_PARAM")
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | head -n-1)
 
@@ -97,7 +84,7 @@ echo ""
 
 # Test 3: Authentication with valid credentials
 echo -e "${YELLOW}Test 3: Authentication (testuser/testpass)${NC}"
-RESPONSE=$(curl -s --max-time 10 -w "\n%{http_code}" -X POST "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com&uamsecret=$UAM_SECRET" \
+RESPONSE=$(curl -s --max-time 10 -w "\n%{http_code}" -X POST "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=testuser&password=testpass&uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com" 2>&1)
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -113,7 +100,7 @@ echo ""
 
 # Test 4: Invalid credentials
 echo -e "${YELLOW}Test 4: Invalid Credentials${NC}"
-RESPONSE=$(curl -s --max-time 10 -w "\n%{http_code}\n%{redirect_url}" -X POST "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com&uamsecret=$UAM_SECRET" \
+RESPONSE=$(curl -s --max-time 10 -w "\n%{http_code}\n%{redirect_url}" -X POST "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=testuser&password=wrongpass&uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com" 2>&1)
 HTTP_CODE=$(echo "$RESPONSE" | tail -n2 | head -n1)
@@ -133,23 +120,7 @@ else
 fi
 echo ""
 
-# Test 5: Invalid UAM Secret
-echo -e "${YELLOW}Test 5: Invalid UAM Secret${NC}"
-RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?uamip=$ROUTER_IP&uamport=$ROUTER_PORT&userurl=http://www.google.com&uamsecret=wrong-secret" 2>&1)
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-BODY=$(echo "$RESPONSE" | head -n-1)
-
-if [ "$HTTP_CODE" = "403" ]; then
-  echo -e "${GREEN}✓ Invalid UAM secret rejected (HTTP 403)${NC}"
-elif echo "$BODY" | grep -qi "invalid.*secret\|forbidden"; then
-  echo -e "${GREEN}✓ Invalid UAM secret rejected (HTTP $HTTP_CODE)${NC}"
-else
-  echo -e "${YELLOW}⚠ UAM secret validation may be optional (HTTP $HTTP_CODE)${NC}"
-  echo "Note: If UAM_SECRET is not set in .env, validation is skipped"
-fi
-echo ""
-
-# Test 6: Missing UAM IP
+# Test 5: Missing UAM IP
 echo -e "${YELLOW}Test 6: Missing UAM IP${NC}"
 # Test without UAM secret to avoid secret validation interfering
 # If UAM_SECRET is set, we need to provide it or it will fail secret check first
@@ -165,9 +136,6 @@ BODY=$(echo "$RESPONSE" | head -n-1)
 
 if [ "$HTTP_CODE" = "400" ]; then
   echo -e "${GREEN}✓ Missing UAM IP rejected (HTTP 400)${NC}"
-elif [ "$HTTP_CODE" = "403" ] && echo "$BODY" | grep -qi "secret"; then
-  echo -e "${YELLOW}⚠ Missing UAM IP test blocked by UAM secret validation (HTTP 403)${NC}"
-  echo "  Note: This is expected when UAM_SECRET is configured - secret validation runs first"
 else
   echo -e "${RED}✗ Missing UAM IP not rejected (HTTP $HTTP_CODE)${NC}"
   echo "$BODY" | head -n3
