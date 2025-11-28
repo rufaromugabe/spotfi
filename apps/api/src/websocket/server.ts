@@ -4,50 +4,9 @@ import { RouterConnectionHandler } from './connection-handler.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { commandManager } from './command-manager.js';
 import { prisma } from '../lib/prisma.js';
-import {
-  registerRouterConnection,
-  unregisterRouterConnection,
-  getLocalConnection,
-  isRouterConnected,
-  initializeRedisPubSub,
-  sendRpcCommand,
-  sendXTunnelData,
-  cleanup as cleanupRedisAdapter,
-  getServerId
-} from '../services/websocket-redis-adapter.js';
+export const activeConnections = new Map<string, WebSocket>();
 
-export async function setupWebSocket(fastify: FastifyInstance) {
-  // Initialize Redis Pub/Sub for horizontal scaling
-  await initializeRedisPubSub(
-    // Handle RPC messages from other servers
-    async (routerId, message) => {
-      // If routerId is empty, this is a response (routed back to requesting server)
-      if (!routerId && message.id) {
-        // This is an RPC response - handle it via command manager
-        commandManager.handleResponse(message.id, message);
-        return;
-      }
-
-      // This is an RPC request - forward to local router
-      // The message already has _responseChannel metadata for routing response back
-      const localSocket = getLocalConnection(routerId);
-      if (localSocket && localSocket.readyState === WebSocket.OPEN) {
-        // Forward the message as-is (connection handler will extract _responseChannel)
-        localSocket.send(JSON.stringify(message));
-      }
-    },
-    // Handle x tunnel messages from other servers
-    (routerId, message) => {
-      const localSocket = getLocalConnection(routerId);
-      if (localSocket && localSocket.readyState === WebSocket.OPEN) {
-        localSocket.send(JSON.stringify(message));
-      }
-    },
-    fastify.log
-  );
-
-  fastify.log.info(`🚀 WebSocket server initialized (Server ID: ${getServerId()})`);
-
+export function setupWebSocket(fastify: FastifyInstance) {
   fastify.register(async function (fastify: FastifyInstance) {
     fastify.get('/ws', { websocket: true }, async (connection, request: any) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
@@ -93,17 +52,15 @@ export async function setupWebSocket(fastify: FastifyInstance) {
         await handler.initialize(clientIp, routerName || undefined);
         handler.setupMessageHandlers();
         handler.sendWelcome();
-        
-        // Register router connection in Redis (for horizontal scaling)
-        await registerRouterConnection(routerId, connection, fastify.log);
+        activeConnections.set(routerId, connection);
 
         // Clean up on disconnect
-        connection.on('close', async () => {
-          await unregisterRouterConnection(routerId);
+        connection.on('close', () => {
+          activeConnections.delete(routerId);
         });
 
-        connection.on('error', async () => {
-          await unregisterRouterConnection(routerId);
+        connection.on('error', () => {
+          activeConnections.delete(routerId);
         });
       } catch (error) {
         fastify.log.error(`Connection setup failed: ${error}`);
@@ -151,15 +108,12 @@ export async function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Check if router is online (any server)
-        const isOnline = await isRouterConnected(routerId);
-        if (!isOnline) {
+        // Check if router is online
+        const routerSocket = activeConnections.get(routerId);
+        if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
           connection.close(1011, 'Router is offline');
           return;
         }
-
-        // Get local connection if available, otherwise will use Redis Pub/Sub
-        const routerSocket = getLocalConnection(routerId);
 
         // Create x tunnel session (includes ping verification)
         let session;

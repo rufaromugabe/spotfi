@@ -1,6 +1,7 @@
+import { WebSocket } from 'ws';
+import { activeConnections } from '../websocket/server.js';
 import { prisma } from '../lib/prisma.js';
 import { isRouterOnline } from './redis-router.js';
-import { isRouterConnected } from './websocket-redis-adapter.js';
 
 class RouterStatusService {
   /**
@@ -8,15 +9,16 @@ class RouterStatusService {
    * Priority: Redis heartbeat (fastest) > WebSocket connection > Database
    */
   async checkConnectionStatus(routerId: string): Promise<'ONLINE' | 'OFFLINE'> {
-    // First check Redis heartbeat (sub-ms latency, most up-to-date)
+    // First check Redis (sub-ms latency, most up-to-date)
     const redisOnline = await isRouterOnline(routerId);
     if (redisOnline) {
       return 'ONLINE';
     }
     
-    // Check if router is connected (any server) via Redis connection registry
-    const isConnected = await isRouterConnected(routerId);
-    return isConnected ? 'ONLINE' : 'OFFLINE';
+    // Fallback to WebSocket connection check
+    const socket = activeConnections.get(routerId);
+    const isActuallyOnline = socket && socket.readyState === WebSocket.OPEN;
+    return isActuallyOnline ? 'ONLINE' : 'OFFLINE';
   }
 
   /**

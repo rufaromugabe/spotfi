@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { FastifyBaseLogger } from 'fastify';
-import { isRouterConnected, getLocalConnection, sendXTunnelData } from '../services/websocket-redis-adapter.js';
+import { activeConnections } from './server.js';
 import { prisma } from '../lib/prisma.js';
 
 /**
@@ -73,19 +73,10 @@ export class xTunnelManager {
     userId: string,
     logger: FastifyBaseLogger
   ): Promise<xTunnelSession> {
-    // Check if router is online (any server)
-    const isOnline = await isRouterConnected(routerId);
-    if (!isOnline) {
+    // Check if router is online
+    const routerSocket = activeConnections.get(routerId);
+    if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
       throw new Error('Router is offline');
-    }
-
-    // Get local connection if available
-    const routerSocket = getLocalConnection(routerId);
-    if (!routerSocket) {
-      // Router is on another server - x tunnel will use Redis Pub/Sub
-      // Note: x tunnel sessions require the router to be on the same server for now
-      // Full cross-server x tunnel support would require additional routing
-      throw new Error('Router is on another server - x tunnel requires local connection');
     }
 
     // Ping router to verify it's responsive

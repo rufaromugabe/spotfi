@@ -6,7 +6,6 @@ import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { commandManager } from './command-manager.js';
 import { recordRouterHeartbeat, markRouterOffline } from '../services/redis-router.js';
-import { sendRpcResponse } from '../services/websocket-redis-adapter.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -17,8 +16,6 @@ export class RouterConnectionHandler {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private readonly PING_INTERVAL = 30000; // 30 seconds
   private readonly PONG_TIMEOUT = 60000; // 60 seconds - mark offline if no pong
-  // Track cross-server RPC requests (commandId -> responseChannel)
-  private crossServerRpcRequests = new Map<string, string>();
 
   constructor(
     routerId: string,
@@ -141,16 +138,7 @@ export class RouterConnectionHandler {
           case 'rpc-result':
             // Handle RPC call result (generic ubus response)
             if (message.id) {
-              // Check if this was a cross-server request
-              const responseChannel = this.crossServerRpcRequests.get(message.id);
-              if (responseChannel) {
-                // Send response back to requesting server via Redis
-                await sendRpcResponse(responseChannel, message, this.logger);
-                this.crossServerRpcRequests.delete(message.id);
-              } else {
-                // Local request - handle via command manager
-                commandManager.handleResponse(message.id, message);
-              }
+              commandManager.handleResponse(message.id, message);
             }
             break;
 
