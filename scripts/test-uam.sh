@@ -121,16 +121,8 @@ fi
 echo ""
 
 # Test 5: Missing UAM IP
-echo -e "${YELLOW}Test 6: Missing UAM IP${NC}"
-# Test without UAM secret to avoid secret validation interfering
-# If UAM_SECRET is set, we need to provide it or it will fail secret check first
-if [ -n "$ENV_UAM_SECRET" ]; then
-  # UAM_SECRET is set, so we test with it to get past secret validation
-  RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?userurl=http://www.google.com&uamsecret=$UAM_SECRET" 2>&1)
-else
-  # No UAM_SECRET, test without it
-  RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?userurl=http://www.google.com" 2>&1)
-fi
+echo -e "${YELLOW}Test 5: Missing UAM IP${NC}"
+RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?userurl=http://www.google.com" 2>&1)
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | head -n-1)
 
