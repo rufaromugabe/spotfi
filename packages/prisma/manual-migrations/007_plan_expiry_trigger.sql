@@ -124,11 +124,13 @@ RETURNS TABLE(
 DECLARE
     expired_plans_count BIGINT;
     unique_users_count BIGINT;
+    result_record RECORD;
 BEGIN
     -- Call batch_expire_plans which handles NOTIFY internally
-    SELECT expired_count, users_affected
+    -- Use explicit column names to avoid ambiguity
+    SELECT result.expired_count, result.users_affected
     INTO expired_plans_count, unique_users_count
-    FROM batch_expire_plans();
+    FROM batch_expire_plans() AS result;
     
     RETURN QUERY SELECT expired_plans_count, unique_users_count;
 END;
