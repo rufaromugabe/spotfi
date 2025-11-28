@@ -48,8 +48,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       uamip,
       uamport,
       userurl: userurl || 'http://www.google.com',
-      error,
-      uamsecret: ''
+      error
     });
 
     reply.type('text/html').send(html);
