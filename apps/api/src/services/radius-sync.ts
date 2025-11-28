@@ -17,7 +17,7 @@ interface SyncOptions {
  */
 export async function syncUserToRadius({ username, logger }: SyncOptions): Promise<void> {
   try {
-    // 1. Fetch end user first, then user plan
+    // 1. Fetch end user first, then all active user plans
     const endUser = await prisma.endUser.findUnique({ where: { username } });
 
     if (!endUser) {
@@ -25,7 +25,8 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
       return;
     }
 
-    const userPlan = await prisma.userPlan.findFirst({
+    // Fetch ALL active plans (multi-plan pooling support)
+    const activePlans = await prisma.userPlan.findMany({
       where: {
         userId: endUser.id,
         status: 'ACTIVE',
@@ -36,19 +37,66 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
     });
 
     // 2. Handle "Access Denied" Case
-    if (!userPlan) {
+    if (activePlans.length === 0) {
       await disableUserInRadius(username, logger);
       return;
     }
 
-    const plan = userPlan.plan;
-    const quotaLimit = userPlan.dataQuota || plan.dataQuota;
-    const quotaUsed = userPlan.dataUsed;
-    
-    // Calculate remaining (ensure non-negative)
-    const remaining = quotaLimit ? (quotaLimit - quotaUsed > 0n ? quotaLimit - quotaUsed : 0n) : null;
+    // 3. Aggregate quotas (SUM - additive pooling)
+    // Sum all plan quotas and usage
+    let totalQuota = 0n;
+    let totalUsed = 0n;
+    let hasUnlimitedQuota = false;
 
-    // 3. Prepare Operations (Batch Transaction)
+    for (const userPlan of activePlans) {
+      const planQuota = userPlan.dataQuota || userPlan.plan.dataQuota;
+      if (planQuota === null) {
+        hasUnlimitedQuota = true;
+      } else {
+        totalQuota += planQuota;
+      }
+      totalUsed += userPlan.dataUsed;
+    }
+
+    // If any plan has unlimited quota, remaining is null (unlimited)
+    const remaining = hasUnlimitedQuota ? null : (totalQuota > totalUsed ? totalQuota - totalUsed : 0n);
+
+    // 4. Aggregate bandwidth limits (MAX - most permissive)
+    let maxDownload = 0n;
+    let maxUpload = 0n;
+    for (const userPlan of activePlans) {
+      const plan = userPlan.plan;
+      if (plan.maxDownloadSpeed && plan.maxDownloadSpeed > maxDownload) {
+        maxDownload = plan.maxDownloadSpeed;
+      }
+      if (plan.maxUploadSpeed && plan.maxUploadSpeed > maxUpload) {
+        maxUpload = plan.maxUploadSpeed;
+      }
+    }
+
+    // 5. Aggregate session limits (MAX - most permissive)
+    let maxSessions = 1;
+    for (const userPlan of activePlans) {
+      const plan = userPlan.plan;
+      if (plan.maxSessions && plan.maxSessions > maxSessions) {
+        maxSessions = plan.maxSessions;
+      }
+    }
+
+    // 6. Aggregate timeouts (MAX - longest/most permissive)
+    let sessionTimeout: number | null = null;
+    let idleTimeout: number | null = null;
+    for (const userPlan of activePlans) {
+      const plan = userPlan.plan;
+      if (plan.sessionTimeout && (sessionTimeout === null || plan.sessionTimeout > sessionTimeout)) {
+        sessionTimeout = plan.sessionTimeout;
+      }
+      if (plan.idleTimeout && (idleTimeout === null || plan.idleTimeout > idleTimeout)) {
+        idleTimeout = plan.idleTimeout;
+      }
+    }
+
+    // 7. Prepare Operations (Batch Transaction)
     const ops = [];
 
     // --- Auth Check (radcheck) ---
@@ -57,28 +105,29 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
       where: { userName: username, attribute: 'Auth-Type', value: 'Reject' }
     }));
 
-    // Simultaneous-Use
-    if (plan.maxSessions) {
-      ops.push(upsertRadCheck(username, 'Simultaneous-Use', ':=', plan.maxSessions.toString()));
+    // Simultaneous-Use (MAX from all plans)
+    if (maxSessions > 0) {
+      ops.push(upsertRadCheck(username, 'Simultaneous-Use', ':=', maxSessions.toString()));
     }
 
     // --- Attributes (radreply) ---
-    // Clean up attributes we are about to set to ensure no duplicates if logic changed
-    // (Optional: only if you strictly need to switch attribute types, otherwise upsert handles it)
-
-    // Time Limits
-    if (plan.sessionTimeout) ops.push(upsertRadReply(username, 'Session-Timeout', '=', plan.sessionTimeout.toString()));
-    if (plan.idleTimeout) ops.push(upsertRadReply(username, 'Idle-Timeout', '=', plan.idleTimeout.toString()));
-
-    // Bandwidth (WISPr) - Convert Bytes/s to Bits/s
-    if (plan.maxDownloadSpeed) {
-      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', '=', (plan.maxDownloadSpeed * 8n).toString()));
+    // Time Limits (MAX from all plans)
+    if (sessionTimeout) {
+      ops.push(upsertRadReply(username, 'Session-Timeout', '=', sessionTimeout.toString()));
     }
-    if (plan.maxUploadSpeed) {
-      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', '=', (plan.maxUploadSpeed * 8n).toString()));
+    if (idleTimeout) {
+      ops.push(upsertRadReply(username, 'Idle-Timeout', '=', idleTimeout.toString()));
     }
 
-    // Data Quota (Native Uspot/Coova Support)
+    // Bandwidth (WISPr) - Convert Bytes/s to Bits/s (MAX from all plans)
+    if (maxDownload > 0n) {
+      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Down', '=', (maxDownload * 8n).toString()));
+    }
+    if (maxUpload > 0n) {
+      ops.push(upsertRadReply(username, 'WISPr-Bandwidth-Max-Up', '=', (maxUpload * 8n).toString()));
+    }
+
+    // Data Quota (Native Uspot/Coova Support) - SUM from all plans
     // If quota is 0, uspot kicks immediately.
     if (remaining !== null) {
       ops.push(upsertRadReply(username, 'ChilliSpot-Max-Total-Octets', '=', remaining.toString()));
@@ -86,7 +135,9 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
 
     // Execute all
     await prisma.$transaction(ops);
-    logger?.info(`[RADIUS Sync] Synced ${username} (Plan: ${plan.name}, Rem: ${remaining})`);
+    
+    const planNames = activePlans.map(up => up.plan.name).join(' + ');
+    logger?.info(`[RADIUS Sync] Synced ${username} (Plans: ${planNames}, Rem: ${remaining}, Sessions: ${maxSessions})`);
 
   } catch (error) {
     logger?.error(`[RADIUS Sync] Failed: ${error}`);

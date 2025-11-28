@@ -76,18 +76,18 @@ DECLARE
     current_total BIGINT;
     plan_active BOOLEAN;
 BEGIN
-    -- Get the user's total allowed quota from active plan
+    -- Get the user's total allowed quota by SUMMING all active plans (multi-plan pooling)
     SELECT 
-        COALESCE(up.data_quota, p.data_quota) INTO max_quota
+        SUM(COALESCE(up.data_quota, p.data_quota)) INTO max_quota
     FROM end_users u
     JOIN user_plans up ON u.id = up.user_id
     JOIN plans p ON up.plan_id = p.id
     WHERE u.username = NEW.username 
     AND up.status = 'ACTIVE'
     AND (up.expires_at IS NULL OR up.expires_at > NOW())
-    LIMIT 1;
+    HAVING SUM(COALESCE(up.data_quota, p.data_quota)) IS NOT NULL;
 
-    -- If no quota limit, exit
+    -- If no quota limit (unlimited or no active plans), exit
     IF max_quota IS NULL THEN
         RETURN NEW;
     END IF;

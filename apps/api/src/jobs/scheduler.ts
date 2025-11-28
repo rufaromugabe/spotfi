@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { generateInvoices } from '../services/billing.js';
 import { prisma } from '../lib/prisma.js';
 import { sendCoARequest } from '../services/coa-service.js';
+import { syncUserToRadius } from '../services/radius-sync.js';
 
 /**
  * Production-grade cron scheduler
@@ -188,13 +189,119 @@ export function startScheduler() {
     }
   });
 
+  // Plan expiry handler - every hour
+  // Automatically expires plans and handles user access based on remaining active plans
+  cron.schedule('0 * * * *', async () => {
+    try {
+      const now = new Date();
+      
+      // Find all expired plans that are still marked as ACTIVE
+      const expiredPlans = await prisma.userPlan.findMany({
+        where: {
+          status: 'ACTIVE',
+          expiresAt: { lte: now, not: null }
+        },
+        include: {
+          user: {
+            select: {
+              username: true
+            }
+          }
+        }
+      });
+
+      if (expiredPlans.length === 0) {
+        return;
+      }
+
+      console.log(`⏰ Processing ${expiredPlans.length} expired plan(s)`);
+
+      // Group by user to handle multiple plan expiries per user
+      const usersToProcess = new Map<string, typeof expiredPlans>();
+
+      for (const userPlan of expiredPlans) {
+        const username = userPlan.user.username;
+        if (!usersToProcess.has(username)) {
+          usersToProcess.set(username, []);
+        }
+        usersToProcess.get(username)!.push(userPlan);
+      }
+
+      // Process each user
+      for (const [username, plans] of usersToProcess.entries()) {
+        try {
+          // Mark all expired plans as EXPIRED
+          await prisma.userPlan.updateMany({
+            where: {
+              id: { in: plans.map(p => p.id) },
+              status: 'ACTIVE'
+            },
+            data: {
+              status: 'EXPIRED'
+            }
+          });
+
+          // Check if user has any remaining active plans
+          const remainingPlans = await prisma.userPlan.findFirst({
+            where: {
+              userId: plans[0].userId,
+              status: 'ACTIVE',
+              OR: [
+                { expiresAt: null },
+                { expiresAt: { gt: now } }
+              ]
+            }
+          });
+
+          if (!remainingPlans) {
+            // No active plans remaining - disable user in RADIUS
+            await prisma.radCheck.upsert({
+              where: {
+                userName_attribute: {
+                  userName: username,
+                  attribute: 'Auth-Type'
+                }
+              },
+              update: {
+                value: 'Reject',
+                op: ':='
+              },
+              create: {
+                userName: username,
+                attribute: 'Auth-Type',
+                op: ':=',
+                value: 'Reject'
+              }
+            });
+            console.log(`🚫 Disabled user ${username} (no active plans remaining)`);
+          } else {
+            // User has remaining active plans - re-sync to RADIUS with new aggregated limits
+            await syncUserToRadius({
+              username,
+              logger: console as any
+            });
+            console.log(`🔄 Re-synced user ${username} (${plans.length} plan(s) expired, ${remainingPlans ? 'has remaining plans' : 'no plans'})`);
+          }
+        } catch (error) {
+          console.error(`❌ Failed to process expired plans for user ${username}:`, error);
+        }
+      }
+
+      console.log(`✅ Plan expiry processing complete`);
+    } catch (error) {
+      console.error('❌ Plan expiry handler failed:', error);
+    }
+  });
+
   console.log('✅ Scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
   console.log('   → Status checks: Every 5 minutes');
   console.log('   → Daily stats: Daily at 1 AM');
   console.log('   → Quota enforcement: Every 10 seconds (high-frequency, real-time)');
   console.log('   → Stale session cleanup: Every 5 minutes');
+  console.log('   → Plan expiry handler: Every hour (automatic plan switching)');
   console.log('   → Quota tracking: Native (database triggers + Interim-Updates)');
   console.log('   → Session tracking: Real-time (database triggers)');
+  console.log('   → Multi-plan pooling: Enabled (SUM quotas, MAX speeds/sessions/timeouts)');
 }
 
