@@ -5,6 +5,7 @@ import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { commandManager } from './command-manager.js';
+import { recordRouterHeartbeat, markRouterOffline } from '../services/redis-router.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -12,11 +13,9 @@ export class RouterConnectionHandler {
   private logger: FastifyBaseLogger;
   private nasService: NasService;
   private lastPongTime: number;
-  private lastSeenUpdate: number;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private readonly PING_INTERVAL = 30000; // 30 seconds
   private readonly PONG_TIMEOUT = 60000; // 60 seconds - mark offline if no pong
-  private readonly LAST_SEEN_UPDATE_INTERVAL = 600000; // 10 minutes
 
   constructor(
     routerId: string,
@@ -28,7 +27,6 @@ export class RouterConnectionHandler {
     this.logger = logger;
     this.nasService = new NasService(logger);
     this.lastPongTime = Date.now();
-    this.lastSeenUpdate = Date.now();
   }
 
   async initialize(clientIp: string, routerName?: string): Promise<void> {
@@ -44,7 +42,12 @@ export class RouterConnectionHandler {
     const ipChanged = router.nasipaddress && router.nasipaddress !== clientIp;
     const nameChanged = routerName && routerName.trim() && router.name !== routerName.trim();
 
-    // Update router status, IP, and optionally name
+    // Record initial heartbeat in Redis (immediate, no DB write)
+    await recordRouterHeartbeat(this.routerId).catch((err) => {
+      this.logger.warn(`Failed to record initial heartbeat for router ${this.routerId}: ${err.message}`);
+    });
+
+    // Update router status, IP, and optionally name in Postgres (for persistence)
     await prisma.router.update({
       where: { id: this.routerId },
       data: {
@@ -95,12 +98,10 @@ export class RouterConnectionHandler {
     // Handle native WebSocket pong frames (more efficient than application-level)
     this.socket.on('pong', async () => {
       this.lastPongTime = Date.now();
-      // Update lastSeen every 10 minutes to reduce database load
-      const timeSinceLastUpdate = Date.now() - this.lastSeenUpdate;
-      if (timeSinceLastUpdate >= this.LAST_SEEN_UPDATE_INTERVAL) {
-        await this.updateLastSeen();
-        this.lastSeenUpdate = Date.now();
-      }
+      // Record heartbeat in Redis (memory, sub-ms latency, no DB write)
+      await recordRouterHeartbeat(this.routerId).catch((err) => {
+        this.logger.warn(`Failed to record heartbeat for router ${this.routerId}: ${err.message}`);
+      });
     });
 
     this.socket.on('message', async (data: Buffer) => {
@@ -112,6 +113,10 @@ export class RouterConnectionHandler {
           case 'metrics':
             // Metrics indicate connection is alive
             this.lastPongTime = Date.now();
+            // Record heartbeat in Redis (metrics indicate router is active)
+            await recordRouterHeartbeat(this.routerId).catch((err) => {
+              this.logger.warn(`Failed to record heartbeat for router ${this.routerId}: ${err.message}`);
+            });
             await this.handleMetrics(message.metrics);
             break;
 
@@ -152,7 +157,11 @@ export class RouterConnectionHandler {
 
     this.socket.on('close', async () => {
       this.cleanup();
-      await this.markOffline();
+      // Mark offline in Redis (immediate) and Postgres (for persistence)
+      await Promise.all([
+        markRouterOffline(this.routerId).catch(() => {}),
+        this.markOfflineInPostgres()
+      ]);
       // Close all x sessions for this router
       xTunnelManager.closeRouterSessions(this.routerId);
       this.logger.info(`Router ${this.routerId} disconnected`);
@@ -161,7 +170,11 @@ export class RouterConnectionHandler {
     this.socket.on('error', async (error: Error) => {
       this.logger.error(`Router ${this.routerId} socket error: ${error.message}`);
       this.cleanup();
-      await this.markOffline();
+      // Mark offline in Redis (immediate) and Postgres (for persistence)
+      await Promise.all([
+        markRouterOffline(this.routerId).catch(() => {}),
+        this.markOfflineInPostgres()
+      ]);
     });
 
     // Start health check with native ping/pong
@@ -173,7 +186,11 @@ export class RouterConnectionHandler {
       // Check if connection is still alive
       if (this.socket.readyState !== WebSocket.OPEN) {
         this.cleanup();
-        await this.markOffline();
+        // Mark offline in Redis (immediate) and Postgres (for persistence)
+        await Promise.all([
+          markRouterOffline(this.routerId).catch(() => {}),
+          this.markOfflineInPostgres()
+        ]);
         return;
       }
 
@@ -182,7 +199,11 @@ export class RouterConnectionHandler {
       if (timeSinceLastPong > this.PONG_TIMEOUT) {
         this.logger.warn(`Router ${this.routerId} appears dead (no pong for ${timeSinceLastPong}ms)`);
         this.cleanup();
-        await this.markOffline();
+        // Mark offline in Redis (immediate) and Postgres (for persistence)
+        await Promise.all([
+          markRouterOffline(this.routerId).catch(() => {}),
+          this.markOfflineInPostgres()
+        ]);
         this.socket.terminate();
         return;
       }
@@ -193,22 +214,23 @@ export class RouterConnectionHandler {
       } catch (error) {
         this.logger.error(`Failed to send ping to router ${this.routerId}: ${error}`);
         this.cleanup();
-        await this.markOffline();
+        // Mark offline in Redis (immediate) and Postgres (for persistence)
+        await Promise.all([
+          markRouterOffline(this.routerId).catch(() => {}),
+          this.markOfflineInPostgres()
+        ]);
       }
     }, this.PING_INTERVAL);
   }
 
-  private async updateLastSeen(): Promise<void> {
+  private async markOfflineInPostgres(): Promise<void> {
     try {
       await prisma.router.update({
         where: { id: this.routerId },
-        data: {
-          lastSeen: new Date(),
-          status: 'ONLINE'
-        }
+        data: { status: 'OFFLINE' }
       });
     } catch (err) {
-      this.logger.error(`Failed to update lastSeen for router ${this.routerId}: ${err}`);
+      this.logger.error(`Failed to mark router ${this.routerId} offline in Postgres: ${err}`);
     }
   }
 
@@ -221,30 +243,9 @@ export class RouterConnectionHandler {
     commandManager.clearAll(this.routerId);
   }
 
-  private async markOffline(): Promise<void> {
-    try {
-      await prisma.router.update({
-        where: { id: this.routerId },
-        data: { status: 'OFFLINE' }
-      });
-    } catch (err) {
-      this.logger.error(`Failed to mark router ${this.routerId} offline: ${err}`);
-    }
-  }
-
   private async handleMetrics(metrics: any): Promise<void> {
-    // Update lastSeen when metrics are received (more frequent than ping/pong)
-    const timeSinceLastUpdate = Date.now() - this.lastSeenUpdate;
-    if (timeSinceLastUpdate >= this.LAST_SEEN_UPDATE_INTERVAL) {
-      await this.updateLastSeen();
-      this.lastSeenUpdate = Date.now();
-    } else {
-      // Still update status to ONLINE even if not updating lastSeen
-      await prisma.router.update({
-        where: { id: this.routerId },
-        data: { status: 'ONLINE' }
-      }).catch(() => {});
-    }
+    // Metrics indicate router is active - heartbeat already recorded in Redis
+    // No need to update Postgres here (handled by periodic sync job)
   }
 
   private handlexData(message: any): void {

@@ -41,6 +41,7 @@ const MANUAL_MIGRATIONS = [
   '006_user_quota_counters.sql',
   '007_plan_expiry_trigger.sql',
   '008_pg_cron_setup.sql', // Optional - only runs if pg_cron is available
+  '009_pg_notify_disconnect_queue.sql', // PG_NOTIFY for real-time quota enforcement
 ];
 
 async function runSingleMigration(migrationFile: string, force: boolean = false) {

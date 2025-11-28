@@ -7,7 +7,7 @@ import Redis from 'ioredis';
 const redisUrl = process.env.REDIS_URL || `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`;
 
 export const redis = new Redis(redisUrl, {
-  maxRetriesPerRequest: 3,
+  maxRetriesPerRequest: null, // Required by BullMQ for blocking operations
   retryStrategy: (times) => {
     const delay = Math.min(times * 50, 2000);
     return delay;

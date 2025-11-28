@@ -22,6 +22,7 @@
     "fastify": "^5.6.1",
     "ioredis": "^5.8.2",
     "node-cron": "^3.0.3",
+    "pg": "^8.11.3",
     "pino-pretty": "^10.3.1",
     "radius": "^1.1.4",
     "ws": "^8.16.0",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.10.9",
     "@types/ws": "^8.5.10",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"

@@ -25,6 +25,7 @@ import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { disconnectWorker } from './queues/disconnect-queue.js';
+import { stopPgNotifyListener } from './services/pg-notify.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -182,6 +183,7 @@ start();
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   await fastify.close();
+  await stopPgNotifyListener(fastify.log);
   await prisma.$disconnect();
   await disconnectWorker.close();
   process.exit(0);
@@ -189,6 +191,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   await fastify.close();
+  await stopPgNotifyListener(fastify.log);
   await prisma.$disconnect();
   await disconnectWorker.close();
   process.exit(0);

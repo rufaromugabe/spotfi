@@ -1,0 +1,178 @@
+/**
+ * PostgreSQL NOTIFY/LISTEN Service
+ * Real-time event-driven architecture for disconnect_queue processing
+ * 
+ * Architecture:
+ * - Database trigger sends NOTIFY when disconnect_queue row is inserted
+ * - Node.js LISTENs for notifications using dedicated pg connection
+ * - Instant processing (ms latency) instead of polling (10s delay)
+ * 
+ * Benefits:
+ * - Eliminates polling overhead
+ * - Near real-time quota enforcement
+ * - Reduces database read load
+ */
+
+import { Client } from 'pg';
+import { prisma } from '../lib/prisma.js';
+import { disconnectQueue } from '../queues/disconnect-queue.js';
+import { FastifyBaseLogger } from 'fastify';
+
+const NOTIFY_CHANNEL = 'disconnect_queue_notify';
+
+let notifyClient: Client | null = null;
+let isListening = false;
+
+/**
+ * Start listening for PostgreSQL NOTIFY events
+ * Uses a dedicated pg connection for LISTEN (Prisma doesn't support persistent connections)
+ */
+export async function startPgNotifyListener(logger?: FastifyBaseLogger): Promise<void> {
+  if (isListening) {
+    logger?.warn('⚠️  PG_NOTIFY listener already started');
+    return;
+  }
+
+  try {
+    // Parse DATABASE_URL to create pg client
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL environment variable not set');
+    }
+
+    // Create dedicated client for LISTEN/NOTIFY (requires persistent connection)
+    notifyClient = new Client({
+      connectionString: databaseUrl,
+      // Keep connection alive for LISTEN
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+    });
+
+    await notifyClient.connect();
+    logger?.info('✅ Connected to PostgreSQL for NOTIFY listener');
+
+    // Start listening on the channel
+    await notifyClient.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    isListening = true;
+    logger?.info(`✅ Started PostgreSQL NOTIFY listener on channel: ${NOTIFY_CHANNEL}`);
+
+    // Set up notification handler
+    notifyClient.on('notification', async (msg) => {
+      if (msg.channel === NOTIFY_CHANNEL) {
+        logger?.debug(`📨 Received NOTIFY on ${NOTIFY_CHANNEL}, processing disconnect queue...`);
+        // Process disconnect queue immediately when notified
+        await processDisconnectQueueOnNotify(logger);
+      }
+    });
+
+    // Handle connection errors
+    notifyClient.on('error', (err) => {
+      logger?.error(`❌ PostgreSQL NOTIFY client error: ${err.message}`);
+      isListening = false;
+      // Attempt to reconnect after delay
+      setTimeout(() => {
+        if (!isListening) {
+          logger?.warn('🔄 Attempting to reconnect PostgreSQL NOTIFY listener...');
+          startPgNotifyListener(logger).catch(() => {
+            logger?.error('❌ Failed to reconnect PostgreSQL NOTIFY listener');
+          });
+        }
+      }, 5000);
+    });
+
+    // Handle disconnection
+    notifyClient.on('end', () => {
+      logger?.warn('⚠️  PostgreSQL NOTIFY client disconnected');
+      isListening = false;
+    });
+
+  } catch (error: any) {
+    logger?.error(`❌ Failed to start PostgreSQL NOTIFY listener: ${error.message}`);
+    logger?.warn('⚠️  Falling back to polling mode (10s interval)');
+    isListening = false;
+  }
+}
+
+/**
+ * Stop listening for PostgreSQL NOTIFY events
+ */
+export async function stopPgNotifyListener(logger?: FastifyBaseLogger): Promise<void> {
+  if (notifyClient && isListening) {
+    try {
+      await notifyClient.query(`UNLISTEN ${NOTIFY_CHANNEL}`);
+      await notifyClient.end();
+      isListening = false;
+      logger?.info('✅ Stopped PostgreSQL NOTIFY listener');
+    } catch (error: any) {
+      logger?.error(`❌ Error stopping PostgreSQL NOTIFY listener: ${error.message}`);
+    } finally {
+      notifyClient = null;
+    }
+  }
+}
+
+/**
+ * Process disconnect_queue items immediately (called on NOTIFY)
+ * This replaces the polling mechanism with event-driven processing
+ */
+export async function processDisconnectQueueOnNotify(logger?: FastifyBaseLogger): Promise<void> {
+  try {
+    // Get unprocessed items (same logic as polling, but triggered by NOTIFY)
+    const overageUsers = await prisma.disconnectQueue.findMany({
+      where: { processed: false },
+      orderBy: { createdAt: 'asc' },
+      take: 200 // Process larger batches
+    });
+
+    if (overageUsers.length === 0) {
+      return;
+    }
+
+    logger?.info(`🚫 Processing ${overageUsers.length} disconnect job(s) from NOTIFY trigger`);
+
+    // Add all users to BullMQ queue (parallel processing)
+    const jobs = await Promise.allSettled(
+      overageUsers.map(item =>
+        disconnectQueue.add(
+          `disconnect-${item.username}`,
+          {
+            username: item.username,
+            reason: item.reason as 'QUOTA_EXCEEDED' | 'PLAN_EXPIRED',
+            queueId: item.id
+          },
+          {
+            jobId: `disconnect-${item.username}-${item.id}`, // Prevent duplicates
+            removeOnComplete: true,
+            removeOnFail: false
+          }
+        )
+      )
+    );
+
+    const successful = jobs.filter(j => j.status === 'fulfilled').length;
+    const failed = jobs.filter(j => j.status === 'rejected').length;
+
+    if (successful > 0) {
+      logger?.info(`✅ Queued ${successful} disconnect job(s) to BullMQ (NOTIFY-triggered)`);
+    }
+    if (failed > 0) {
+      logger?.error(`❌ Failed to queue ${failed} disconnect job(s)`);
+    }
+  } catch (error: any) {
+    logger?.error(`❌ Failed to process disconnect queue on NOTIFY: ${error.message}`);
+  }
+}
+
+/**
+ * Get the NOTIFY channel name (for database trigger)
+ */
+export function getNotifyChannel(): string {
+  return NOTIFY_CHANNEL;
+}
+
+/**
+ * Check if listener is active
+ */
+export function isListenerActive(): boolean {
+  return isListening && notifyClient !== null;
+}
