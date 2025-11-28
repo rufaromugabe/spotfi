@@ -1,16 +1,24 @@
 import { WebSocket } from 'ws';
 import { commandManager } from '../websocket/command-manager.js';
-import { activeConnections } from '../websocket/server.js';
+import {
+  getLocalConnection,
+  isRouterConnected,
+  sendRpcCommand
+} from './websocket-redis-adapter.js';
 
 /**
  * Router RPC Service
  * Generic UBUS proxy service - The ONLY method you need!
  * All wrapper methods are one-liners that call rpcCall()
+ * 
+ * Now supports horizontal scaling via Redis Pub/Sub
  */
 export class RouterRpcService {
   /**
    * Generic RPC Call - The ONLY method you effectively need
    * All other methods are just convenience wrappers
+   * 
+   * Supports cross-server routing via Redis Pub/Sub for horizontal scaling
    * 
    * @public - Exposed for advanced use cases (e.g., cron jobs, background tasks)
    */
@@ -21,20 +29,72 @@ export class RouterRpcService {
     args: any = {},
     timeout: number = 30000
   ): Promise<any> {
-    const socket = activeConnections.get(routerId);
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    // Check if router is connected (any server)
+    const isOnline = await isRouterConnected(routerId);
+    if (!isOnline) {
       throw new Error('Router is offline');
     }
 
-    // Send as 'rpc' type (bridge.py handles this generically)
-    const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
-      path,
-      method,
-      args
-    }, timeout);
+    // Get local connection if available
+    const socket = getLocalConnection(routerId);
+    
+    if (socket) {
+      // Router is on this server - use direct WebSocket connection
+      const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
+        path,
+        method,
+        args
+      }, timeout);
+      return response.result || response;
+    } else {
+      // Router is on another server - use Redis Pub/Sub with response routing
+      const commandId = commandManager.generateCommandId();
+      
+      // Set up promise for response (command manager will resolve it)
+      const responsePromise = new Promise<any>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          commandManager.handleResponse(commandId, { type: 'error', error: 'Timeout' });
+          reject(new Error(`RPC timeout after ${timeout}ms`));
+        }, timeout);
 
-    // Extract result from response (bridge.py sends 'result' field)
-    return response.result || response;
+        // Store pending command in command manager
+        const pendingCommand = {
+          resolve: (value: any) => {
+            clearTimeout(timeoutId);
+            resolve(value);
+          },
+          reject: (error: any) => {
+            clearTimeout(timeoutId);
+            reject(error);
+          },
+          timeout: timeoutId,
+          commandId
+        };
+        
+        // Temporarily store in command manager's pending commands
+        // The command manager will handle the response when it arrives via Pub/Sub
+        (commandManager as any).pendingCommands.set(commandId, pendingCommand);
+      });
+
+      // Send RPC command via Redis Pub/Sub
+      const message = {
+        type: 'rpc',
+        id: commandId,
+        path,
+        method,
+        args
+      };
+
+      const sent = await sendRpcCommand(routerId, message);
+      if (!sent) {
+        (commandManager as any).pendingCommands.delete(commandId);
+        throw new Error('Failed to send RPC command to router');
+      }
+
+      // Wait for response (will be routed back via Redis Pub/Sub and handled by command manager)
+      const response = await responsePromise;
+      return response.result || response;
+    }
   }
 
   // Wrapper methods become one-liners - leveraging ubus native capabilities

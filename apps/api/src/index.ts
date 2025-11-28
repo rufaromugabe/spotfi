@@ -22,6 +22,7 @@ import { planRoutes } from './routes/plans.js';
 import { endUserRoutes } from './routes/end-users.js';
 import { userPlanRoutes } from './routes/user-plans.js';
 import { setupWebSocket } from './websocket/server.js';
+import { cleanup as cleanupRedisAdapter } from './services/websocket-redis-adapter.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { disconnectWorker } from './queues/disconnect-queue.js';
@@ -134,7 +135,7 @@ await fastify.register(userPlanRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
-setupWebSocket(fastify);
+await setupWebSocket(fastify);
 
 // Health check
 fastify.get('/health', {
@@ -184,6 +185,7 @@ start();
 process.on('SIGTERM', async () => {
   await fastify.close();
   await stopPgNotifyListener(fastify.log);
+  await cleanupRedisAdapter();
   await prisma.$disconnect();
   await disconnectWorker.close();
   process.exit(0);
@@ -192,6 +194,7 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   await fastify.close();
   await stopPgNotifyListener(fastify.log);
+  await cleanupRedisAdapter();
   await prisma.$disconnect();
   await disconnectWorker.close();
   process.exit(0);
