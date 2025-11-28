@@ -39,6 +39,8 @@ const MANUAL_MIGRATIONS = [
   '004_partial_index_and_stoptime.sql',
   '005_realtime_quota.sql',
   '006_user_quota_counters.sql',
+  '007_plan_expiry_trigger.sql',
+  '008_pg_cron_setup.sql', // Optional - only runs if pg_cron is available
 ];
 
 async function runSingleMigration(migrationFile: string, force: boolean = false) {

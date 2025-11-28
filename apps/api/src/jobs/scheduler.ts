@@ -1,8 +1,7 @@
 import cron from 'node-cron';
 import { generateInvoices } from '../services/billing.js';
 import { prisma } from '../lib/prisma.js';
-import { sendCoARequest } from '../services/coa-service.js';
-import { syncUserToRadius } from '../services/radius-sync.js';
+import { disconnectQueue } from '../queues/disconnect-queue.js';
 
 /**
  * Production-grade cron scheduler
@@ -29,12 +28,13 @@ export function startScheduler() {
     }
   });
 
-  // Router status monitoring - every 5 minutes
+  // Maintenance tasks - every 5 minutes
+  // Combines: Router status monitoring + Stale session cleanup
   cron.schedule('*/5 * * * *', async () => {
     try {
+      // Router status monitoring
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      
-      const result = await prisma.router.updateMany({
+      const routerResult = await prisma.router.updateMany({
         where: {
           status: 'ONLINE',
           lastSeen: { lt: fiveMinutesAgo }
@@ -42,127 +42,13 @@ export function startScheduler() {
         data: { status: 'OFFLINE' }
       });
 
-      if (result.count > 0) {
-        console.log(`📡 ${result.count} router(s) marked offline`);
+      if (routerResult.count > 0) {
+        console.log(`📡 ${routerResult.count} router(s) marked offline`);
       }
-    } catch (error) {
-      console.error('❌ Status check failed:', error);
-    }
-  });
 
-  // Daily stats refresh - 1 AM daily
-  cron.schedule('0 1 * * *', async () => {
-    console.log('📊 Refreshing materialized view (daily stats)');
-    try {
-      await prisma.$executeRaw`SELECT refresh_daily_stats()`;
-      console.log('✅ Daily stats refreshed');
-    } catch (error) {
-      console.error('❌ Stats refresh failed:', error);
-    }
-  });
-
-  // Quota enforcement - High-frequency processing (every 10 seconds)
-  // Uses recursive timeout pattern for real-time enforcement
-  // Critical for high-speed connections (1Gbps = 7GB/minute)
-  const runQuotaEnforcement = async () => {
-    try {
-      const overageUsers = await prisma.disconnectQueue.findMany({
-        where: { processed: false },
-        orderBy: { createdAt: 'asc' },
-        take: 50 // Process in batches
-      });
-
-      if (overageUsers.length > 0) {
-        console.log(`🚫 Processing ${overageUsers.length} quota overage user(s)`);
-
-        for (const item of overageUsers) {
-          try {
-            // Find all active sessions for this user
-            const activeSessions = await prisma.radAcct.findMany({
-              where: {
-                userName: item.username,
-                acctStopTime: null
-              },
-              include: {
-                router: {
-                  select: {
-                    id: true,
-                    nasipaddress: true,
-                    radiusSecret: true
-                  }
-                }
-              }
-            });
-
-            // Send CoA Disconnect to all active routers
-            const disconnectPromises = activeSessions
-              .filter(session => session.router?.nasipaddress && session.router?.radiusSecret)
-              .map(session => {
-                return sendCoARequest({
-                  nasIp: session.router!.nasipaddress!,
-                  nasId: session.router!.id,
-                  secret: session.router!.radiusSecret!,
-                  username: session.userName!,
-                  acctSessionId: session.acctSessionId,
-                  callingStationId: session.callingStationId || undefined,
-                  calledStationId: session.calledStationId || undefined,
-                  userIp: session.framedIpAddress || undefined
-                });
-              });
-
-            await Promise.allSettled(disconnectPromises);
-
-            // Disable user in RADIUS (prevent re-authentication)
-            await prisma.$executeRaw`
-              INSERT INTO radcheck (username, attribute, op, value)
-              VALUES (${item.username}, 'Auth-Type', ':=', 'Reject')
-              ON CONFLICT (username, attribute) 
-              DO UPDATE SET value = 'Reject', op = ':='
-            `;
-
-            // Mark as processed
-            await prisma.disconnectQueue.update({
-              where: { id: item.id },
-              data: {
-                processed: true,
-                processedAt: new Date()
-              }
-            });
-
-            console.log(`✅ Disconnected user ${item.username} (${activeSessions.length} session(s))`);
-          } catch (error) {
-            console.error(`❌ Failed to process disconnect for ${item.username}:`, error);
-            // Mark as processed anyway to prevent infinite retries
-            await prisma.disconnectQueue.update({
-              where: { id: item.id },
-              data: {
-                processed: true,
-                processedAt: new Date()
-              }
-            });
-          }
-        }
-      }
-    } catch (error) {
-      console.error('❌ Disconnect queue processing failed:', error);
-    } finally {
-      // Schedule next run in 10 seconds (high-frequency for real-time enforcement)
-      setTimeout(runQuotaEnforcement, 10000);
-    }
-  };
-
-  // Start the high-frequency quota enforcement loop
-  runQuotaEnforcement();
-
-  // Stale session cleanup - every 5 minutes
-  // Prevents orphaned sessions from permanently locking users out of quota
-  cron.schedule('*/5 * * * *', async () => {
-    try {
-      // Close sessions with no update for 2x interim interval (typically 10 minutes)
-      // This handles cases where routers lose power or network connectivity
+      // Stale session cleanup
       const staleThreshold = new Date(Date.now() - 10 * 60 * 1000);
-      
-      const result = await prisma.radAcct.updateMany({
+      const staleResult = await prisma.radAcct.updateMany({
         where: {
           acctStopTime: null,
           OR: [
@@ -181,125 +67,88 @@ export function startScheduler() {
         }
       });
       
-      if (result.count > 0) {
-        console.log(`🧹 Cleaned up ${result.count} stale session(s)`);
+      if (staleResult.count > 0) {
+        console.log(`🧹 Cleaned up ${staleResult.count} stale session(s)`);
       }
     } catch (error) {
-      console.error('❌ Stale session cleanup failed:', error);
+      console.error('❌ Maintenance tasks failed:', error);
     }
   });
 
-  // Plan expiry handler - every hour
-  // Automatically expires plans and handles user access based on remaining active plans
-  cron.schedule('0 * * * *', async () => {
+  // Daily stats refresh - 1 AM daily
+  cron.schedule('0 1 * * *', async () => {
+    console.log('📊 Refreshing materialized view (daily stats)');
     try {
-      const now = new Date();
-      
-      // Find all expired plans that are still marked as ACTIVE
-      const expiredPlans = await prisma.userPlan.findMany({
-        where: {
-          status: 'ACTIVE',
-          expiresAt: { lte: now, not: null }
-        },
-        include: {
-          user: {
-            select: {
-              username: true
-            }
-          }
-        }
+      await prisma.$executeRaw`SELECT refresh_daily_stats()`;
+      console.log('✅ Daily stats refreshed');
+    } catch (error) {
+      console.error('❌ Stats refresh failed:', error);
+    }
+  });
+
+  // Quota enforcement - BullMQ-based (highly scalable)
+  // Polls disconnect_queue table and adds jobs to BullMQ for parallel processing
+  // Critical for high-speed connections (1Gbps = 7GB/minute)
+  const runQuotaEnforcement = async () => {
+    try {
+      const overageUsers = await prisma.disconnectQueue.findMany({
+        where: { processed: false },
+        orderBy: { createdAt: 'asc' },
+        take: 200 // Process larger batches (BullMQ handles concurrency)
       });
 
-      if (expiredPlans.length === 0) {
-        return;
-      }
+      if (overageUsers.length > 0) {
+        console.log(`🚫 Queueing ${overageUsers.length} disconnect job(s) to BullMQ`);
 
-      console.log(`⏰ Processing ${expiredPlans.length} expired plan(s)`);
-
-      // Group by user to handle multiple plan expiries per user
-      const usersToProcess = new Map<string, typeof expiredPlans>();
-
-      for (const userPlan of expiredPlans) {
-        const username = userPlan.user.username;
-        if (!usersToProcess.has(username)) {
-          usersToProcess.set(username, []);
-        }
-        usersToProcess.get(username)!.push(userPlan);
-      }
-
-      // Process each user
-      for (const [username, plans] of usersToProcess.entries()) {
-        try {
-          // Mark all expired plans as EXPIRED
-          await prisma.userPlan.updateMany({
-            where: {
-              id: { in: plans.map(p => p.id) },
-              status: 'ACTIVE'
-            },
-            data: {
-              status: 'EXPIRED'
-            }
-          });
-
-          // Check if user has any remaining active plans
-          const remainingPlans = await prisma.userPlan.findFirst({
-            where: {
-              userId: plans[0].userId,
-              status: 'ACTIVE',
-              OR: [
-                { expiresAt: null },
-                { expiresAt: { gt: now } }
-              ]
-            }
-          });
-
-          if (!remainingPlans) {
-            // No active plans remaining - disable user in RADIUS
-            await prisma.radCheck.upsert({
-              where: {
-                userName_attribute: {
-                  userName: username,
-                  attribute: 'Auth-Type'
-                }
+        // Add all users to BullMQ queue (parallel processing)
+        const jobs = await Promise.allSettled(
+          overageUsers.map(item =>
+            disconnectQueue.add(
+              `disconnect-${item.username}`,
+              {
+                username: item.username,
+                reason: item.reason as 'QUOTA_EXCEEDED' | 'PLAN_EXPIRED',
+                queueId: item.id
               },
-              update: {
-                value: 'Reject',
-                op: ':='
-              },
-              create: {
-                userName: username,
-                attribute: 'Auth-Type',
-                op: ':=',
-                value: 'Reject'
+              {
+                jobId: `disconnect-${item.username}-${item.id}`, // Prevent duplicates
+                removeOnComplete: true,
+                removeOnFail: false
               }
-            });
-            console.log(`🚫 Disabled user ${username} (no active plans remaining)`);
-          } else {
-            // User has remaining active plans - re-sync to RADIUS with new aggregated limits
-            await syncUserToRadius({
-              username,
-              logger: console as any
-            });
-            console.log(`🔄 Re-synced user ${username} (${plans.length} plan(s) expired, ${remainingPlans ? 'has remaining plans' : 'no plans'})`);
-          }
-        } catch (error) {
-          console.error(`❌ Failed to process expired plans for user ${username}:`, error);
+            )
+          )
+        );
+
+        const successful = jobs.filter(j => j.status === 'fulfilled').length;
+        const failed = jobs.filter(j => j.status === 'rejected').length;
+
+        if (successful > 0) {
+          console.log(`✅ Queued ${successful} disconnect job(s) to BullMQ`);
+        }
+        if (failed > 0) {
+          console.error(`❌ Failed to queue ${failed} disconnect job(s)`);
         }
       }
-
-      console.log(`✅ Plan expiry processing complete`);
     } catch (error) {
-      console.error('❌ Plan expiry handler failed:', error);
+      console.error('❌ Disconnect queue polling failed:', error);
+    } finally {
+      // Schedule next run in 10 seconds (high-frequency for real-time enforcement)
+      setTimeout(runQuotaEnforcement, 10000);
     }
-  });
+  };
+
+  // Start the high-frequency quota enforcement loop
+  runQuotaEnforcement();
+
+  // Plan expiry is handled entirely by pg_cron (database-native)
+  // No application cron needed - pg_cron runs every minute in the database
 
   console.log('✅ Scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
-  console.log('   → Status checks: Every 5 minutes');
+  console.log('   → Maintenance: Every 5 minutes (router status + stale sessions)');
   console.log('   → Daily stats: Daily at 1 AM');
-  console.log('   → Quota enforcement: Every 10 seconds (high-frequency, real-time)');
-  console.log('   → Stale session cleanup: Every 5 minutes');
-  console.log('   → Plan expiry handler: Every hour (automatic plan switching)');
+  console.log('   → Quota enforcement: BullMQ (20 parallel workers, 100 jobs/sec)');
+  console.log('   → Plan expiry: pg_cron (every minute, database-native)');
   console.log('   → Quota tracking: Native (database triggers + Interim-Updates)');
   console.log('   → Session tracking: Real-time (database triggers)');
 }

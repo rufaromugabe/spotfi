@@ -44,15 +44,17 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
     }
 
     // 3. Aggregate quotas (SUM - additive pooling)
-    // Sum all plan quotas
-    let totalQuota = 0n;
+    // If any plan has unlimited quota (null), user gets unlimited access
+    let totalQuota: bigint | null = null;
     let hasUnlimitedQuota = false;
 
     for (const userPlan of activePlans) {
       const planQuota = userPlan.dataQuota || userPlan.plan.dataQuota;
       if (planQuota === null) {
         hasUnlimitedQuota = true;
+        break; // Once we find unlimited, no need to sum
       } else {
+        if (totalQuota === null) totalQuota = 0n;
         totalQuota += planQuota;
       }
     }
@@ -61,7 +63,8 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
     const totalUsed = await getUserTotalUsage(username);
 
     // If any plan has unlimited quota, remaining is null (unlimited)
-    const remaining = hasUnlimitedQuota ? null : (totalQuota > totalUsed ? totalQuota - totalUsed : 0n);
+    // Otherwise calculate remaining from summed quotas
+    const remaining = hasUnlimitedQuota ? null : (totalQuota !== null && totalQuota > totalUsed ? totalQuota - totalUsed : 0n);
 
     // 4. Aggregate bandwidth limits (MAX - most permissive)
     let maxDownload = 0n;

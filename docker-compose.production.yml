@@ -1,4 +1,22 @@
 services:
+  # Redis (for BullMQ job queue)
+  redis:
+    image: redis:7-alpine
+    container_name: spotfi-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - spotfi-network
+
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
@@ -83,6 +101,10 @@ services:
       RADIUS_SERVER_2: ${RADIUS_SERVER_2:-}
       RADIUS_SECRET: ${RADIUS_SECRET:-testing123}
       RADIUS_PORT: ${RADIUS_PORT:-1812}
+      # Redis Configuration
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "${API_PORT:-8080}:${PORT:-8080}"
     depends_on:
@@ -99,6 +121,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local
 
 networks:

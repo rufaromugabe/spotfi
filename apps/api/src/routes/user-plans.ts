@@ -7,6 +7,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { syncUserToRadius } from '../services/radius-sync.js';
 import { getUserTotalUsage } from '../services/usage.js';
+import { sendCoARequest } from '../services/coa-service.js';
 import { z } from 'zod';
 
 const AssignPlanSchema = z.object({
@@ -201,6 +202,46 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
       username: userPlan.user.username,
       logger: fastify.log,
     });
+
+    // Find active sessions and disconnect them immediately
+    // This forces re-authentication with new limits (or rejection if no active plans)
+    const activeSessions = await prisma.radAcct.findMany({
+      where: {
+        userName: userPlan.user.username,
+        acctStopTime: null
+      },
+      include: {
+        router: {
+          select: {
+            id: true,
+            nasipaddress: true,
+            radiusSecret: true
+          }
+        }
+      }
+    });
+
+    // Send CoA Disconnect to all active routers
+    const disconnectPromises = activeSessions
+      .filter(session => session.router?.nasipaddress && session.router?.radiusSecret)
+      .map(session => {
+        return sendCoARequest({
+          nasIp: session.router!.nasipaddress!,
+          nasId: session.router!.id,
+          secret: session.router!.radiusSecret!,
+          username: session.userName!,
+          acctSessionId: session.acctSessionId,
+          callingStationId: session.callingStationId || undefined,
+          calledStationId: session.calledStationId || undefined,
+          userIp: session.framedIpAddress || undefined
+        });
+      });
+
+    await Promise.allSettled(disconnectPromises);
+
+    if (activeSessions.length > 0) {
+      fastify.log.info(`Disconnected ${activeSessions.length} active session(s) for user ${userPlan.user.username} after plan cancellation`);
+    }
 
     return { success: true, message: 'Plan cancelled' };
   });

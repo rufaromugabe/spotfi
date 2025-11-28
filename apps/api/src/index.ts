@@ -24,6 +24,7 @@ import { userPlanRoutes } from './routes/user-plans.js';
 import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
+import { disconnectWorker } from './queues/disconnect-queue.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -164,6 +165,10 @@ const start = async () => {
     
     console.log(`🚀 Server listening on ${host}:${port}`);
     
+    // Start BullMQ worker (handles disconnect jobs)
+    console.log('🚀 Starting BullMQ disconnect worker...');
+    // Worker is already initialized when imported (singleton pattern)
+    
     // Start production scheduler
     startScheduler();
   } catch (err) {
@@ -178,12 +183,14 @@ start();
 process.on('SIGTERM', async () => {
   await fastify.close();
   await prisma.$disconnect();
+  await disconnectWorker.close();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   await fastify.close();
   await prisma.$disconnect();
+  await disconnectWorker.close();
   process.exit(0);
 });
 
