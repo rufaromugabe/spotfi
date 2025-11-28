@@ -7,6 +7,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { hashPassword } from '../utils/auth.js';
 import { syncUserToRadius, removeUserFromRadius } from '../services/radius-sync.js';
+import { getUserTotalUsage } from '../services/usage.js';
 import { z } from 'zod';
 
 const CreateEndUserSchema = z.object({
@@ -232,18 +233,23 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       },
     });
 
-    const totalUsage = await prisma.radAcct.aggregate({
-      where: { userName: endUser.username },
-      _sum: {
-        acctInputOctets: true,
-        acctOutputOctets: true,
-      },
-    });
+    const totalUsageBytes = await getUserTotalUsage(endUser.username);
 
-    const totalBytes = Number(totalUsage._sum.acctInputOctets || 0) + 
-                       Number(totalUsage._sum.acctOutputOctets || 0);
+    const activePlans = endUser.userPlans.filter(up => up.status === 'ACTIVE');
+    
+    // Calculate total quota from all active plans
+    let totalQuota = 0n;
+    let hasUnlimitedQuota = false;
+    for (const userPlan of activePlans) {
+      const planQuota = userPlan.dataQuota || userPlan.plan.dataQuota;
+      if (planQuota === null) {
+        hasUnlimitedQuota = true;
+      } else {
+        totalQuota += planQuota;
+      }
+    }
 
-    const activePlan = endUser.userPlans.find(up => up.status === 'ACTIVE');
+    const activePlan = activePlans.length > 0 ? activePlans[0] : null;
 
     return {
       id: endUser.id,
@@ -256,13 +262,13 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       activePlan: activePlan ? {
         id: activePlan.plan.id,
         name: activePlan.plan.name,
-        dataQuota: activePlan.dataQuota ? Number(activePlan.dataQuota) : null,
-        dataUsed: Number(activePlan.dataUsed),
+        dataQuota: hasUnlimitedQuota ? null : Number(totalQuota),
+        dataUsed: Number(totalUsageBytes),
         expiresAt: activePlan.expiresAt,
       } : null,
       usage: {
         activeSessions,
-        totalBytes,
+        totalBytes: Number(totalUsageBytes),
       },
       plans: endUser.userPlans.map(up => ({
         id: up.id,
@@ -394,17 +400,6 @@ async function assignPlanToUser(
   if (!endUser) {
     throw new Error('User not found');
   }
-
-  // Deactivate existing active plans
-  await prisma.userPlan.updateMany({
-    where: {
-      userId,
-      status: 'ACTIVE',
-    },
-    data: {
-      status: 'EXPIRED',
-    },
-  });
 
   // Calculate expiry
   let expiresAt: Date | null = null;

@@ -6,6 +6,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { syncUserToRadius } from '../services/radius-sync.js';
+import { getUserTotalUsage } from '../services/usage.js';
 import { z } from 'zod';
 
 const AssignPlanSchema = z.object({
@@ -62,17 +63,6 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'Plan not found' });
     }
 
-    // Deactivate existing active plans
-    await prisma.userPlan.updateMany({
-      where: {
-        userId,
-        status: 'ACTIVE',
-      },
-      data: {
-        status: 'EXPIRED',
-      },
-    });
-
     // Calculate expiry
     let expiresAt: Date | null = null;
     if (body.expiresAt) {
@@ -120,7 +110,7 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
       },
       status: userPlan.status,
       dataQuota: userPlan.dataQuota ? Number(userPlan.dataQuota) : null,
-      dataUsed: Number(userPlan.dataUsed),
+      dataUsed: Number(await getUserTotalUsage(endUser.username)),
       expiresAt: userPlan.expiresAt,
       autoRenew: userPlan.autoRenew,
       activatedAt: userPlan.activatedAt,
@@ -154,6 +144,9 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
       orderBy: { assignedAt: 'desc' },
     });
 
+    // Get total usage
+    const totalUsage = await getUserTotalUsage(endUser.username);
+
     return {
       plans: userPlans.map(up => ({
         id: up.id,
@@ -164,7 +157,7 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
         },
         status: up.status,
         dataQuota: up.dataQuota ? Number(up.dataQuota) : null,
-        dataUsed: Number(up.dataUsed),
+        dataUsed: Number(totalUsage),
         assignedAt: up.assignedAt,
         activatedAt: up.activatedAt,
         expiresAt: up.expiresAt,

@@ -302,6 +302,5 @@ export function startScheduler() {
   console.log('   → Plan expiry handler: Every hour (automatic plan switching)');
   console.log('   → Quota tracking: Native (database triggers + Interim-Updates)');
   console.log('   → Session tracking: Real-time (database triggers)');
-  console.log('   → Multi-plan pooling: Enabled (SUM quotas, MAX speeds/sessions/timeouts)');
 }
 

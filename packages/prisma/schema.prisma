@@ -338,7 +338,7 @@ model UserPlan {
   expiresAt         DateTime?  @map("expires_at") // Plan expiry (null = never expires)
   
   // Usage tracking
-  dataUsed          BigInt     @default(0) @map("data_used") // Bytes used in this period
+  dataUsed          BigInt     @default(0) @map("data_used")
   dataQuota         BigInt?    @map("data_quota") // Quota for this assignment (can override plan default)
   
   // Auto-renewal

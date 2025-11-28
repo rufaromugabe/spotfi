@@ -5,6 +5,7 @@
 
 import { prisma } from '../lib/prisma.js';
 import { FastifyBaseLogger } from 'fastify';
+import { getUserTotalUsage } from './usage.js';
 
 interface SyncOptions {
   username: string;
@@ -12,7 +13,7 @@ interface SyncOptions {
 }
 
 /**
- * Optimized RADIUS Sync
+ * RADIUS Synchronization Service
  * Uses Upsert to prevent authentication race conditions during updates.
  */
 export async function syncUserToRadius({ username, logger }: SyncOptions): Promise<void> {
@@ -25,7 +26,7 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
       return;
     }
 
-    // Fetch ALL active plans (multi-plan pooling support)
+    // Fetch all active plans
     const activePlans = await prisma.userPlan.findMany({
       where: {
         userId: endUser.id,
@@ -43,9 +44,8 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
     }
 
     // 3. Aggregate quotas (SUM - additive pooling)
-    // Sum all plan quotas and usage
+    // Sum all plan quotas
     let totalQuota = 0n;
-    let totalUsed = 0n;
     let hasUnlimitedQuota = false;
 
     for (const userPlan of activePlans) {
@@ -55,8 +55,10 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
       } else {
         totalQuota += planQuota;
       }
-      totalUsed += userPlan.dataUsed;
     }
+
+    // Get total usage
+    const totalUsed = await getUserTotalUsage(username);
 
     // If any plan has unlimited quota, remaining is null (unlimited)
     const remaining = hasUnlimitedQuota ? null : (totalQuota > totalUsed ? totalQuota - totalUsed : 0n);
