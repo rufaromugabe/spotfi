@@ -1,15 +1,17 @@
 /**
  * PostgreSQL NOTIFY/LISTEN Service
- * Real-time event-driven architecture for disconnect_queue processing
+ * Real-time event-driven architecture for disconnect_queue and plan expiry processing
  * 
  * Architecture:
  * - Database trigger sends NOTIFY when disconnect_queue row is inserted
+ * - Database trigger sends NOTIFY when user_plans expire
  * - Node.js LISTENs for notifications using dedicated pg connection
  * - Instant processing (ms latency) instead of polling (10s delay)
  * 
  * Benefits:
  * - Eliminates polling overhead
  * - Near real-time quota enforcement
+ * - Instant plan expiry detection
  * - Reduces database read load
  */
 
@@ -18,7 +20,8 @@ import { prisma } from '../lib/prisma.js';
 import { disconnectQueue } from '../queues/disconnect-queue.js';
 import { FastifyBaseLogger } from 'fastify';
 
-const NOTIFY_CHANNEL = 'disconnect_queue_notify';
+const DISCONNECT_QUEUE_CHANNEL = 'disconnect_queue_notify';
+const PLAN_EXPIRY_CHANNEL = 'plan_expiry_notify';
 
 let notifyClient: Client | null = null;
 let isListening = false;
@@ -51,17 +54,25 @@ export async function startPgNotifyListener(logger?: FastifyBaseLogger): Promise
     await notifyClient.connect();
     logger?.info('✅ Connected to PostgreSQL for NOTIFY listener');
 
-    // Start listening on the channel
-    await notifyClient.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    // Start listening on both channels
+    await notifyClient.query(`LISTEN ${DISCONNECT_QUEUE_CHANNEL}`);
+    await notifyClient.query(`LISTEN ${PLAN_EXPIRY_CHANNEL}`);
     isListening = true;
-    logger?.info(`✅ Started PostgreSQL NOTIFY listener on channel: ${NOTIFY_CHANNEL}`);
+    logger?.info(`✅ Started PostgreSQL NOTIFY listener on channels: ${DISCONNECT_QUEUE_CHANNEL}, ${PLAN_EXPIRY_CHANNEL}`);
 
     // Set up notification handler
     notifyClient.on('notification', async (msg) => {
-      if (msg.channel === NOTIFY_CHANNEL) {
-        logger?.debug(`📨 Received NOTIFY on ${NOTIFY_CHANNEL}, processing disconnect queue...`);
+      if (msg.channel === DISCONNECT_QUEUE_CHANNEL) {
+        logger?.debug(`📨 Received NOTIFY on ${DISCONNECT_QUEUE_CHANNEL}, processing disconnect queue...`);
         // Process disconnect queue immediately when notified
         await processDisconnectQueueOnNotify(logger);
+      } else if (msg.channel === PLAN_EXPIRY_CHANNEL) {
+        const userId = msg.payload || '';
+        logger?.debug(`📨 Received NOTIFY on ${PLAN_EXPIRY_CHANNEL}, processing plan expiry for user: ${userId}`);
+        // Process plan expiry immediately when notified
+        if (userId) {
+          await processPlanExpiryOnNotify(userId, logger);
+        }
       }
     });
 
@@ -99,7 +110,8 @@ export async function startPgNotifyListener(logger?: FastifyBaseLogger): Promise
 export async function stopPgNotifyListener(logger?: FastifyBaseLogger): Promise<void> {
   if (notifyClient && isListening) {
     try {
-      await notifyClient.query(`UNLISTEN ${NOTIFY_CHANNEL}`);
+      await notifyClient.query(`UNLISTEN ${DISCONNECT_QUEUE_CHANNEL}`);
+      await notifyClient.query(`UNLISTEN ${PLAN_EXPIRY_CHANNEL}`);
       await notifyClient.end();
       isListening = false;
       logger?.info('✅ Stopped PostgreSQL NOTIFY listener');
@@ -164,10 +176,42 @@ export async function processDisconnectQueueOnNotify(logger?: FastifyBaseLogger)
 }
 
 /**
- * Get the NOTIFY channel name (for database trigger)
+ * Process plan expiry immediately (called on NOTIFY)
+ * This handles instant plan expiry detection via database triggers
  */
-export function getNotifyChannel(): string {
-  return NOTIFY_CHANNEL;
+async function processPlanExpiryOnNotify(userId: string, logger?: FastifyBaseLogger): Promise<void> {
+  try {
+    // Call the database function to expire plans and disable users
+    const result = await prisma.$queryRaw<Array<{ expired_count: bigint; users_affected: bigint }>>`
+      SELECT * FROM batch_expire_plans()
+    `;
+    
+    if (result.length > 0 && result[0].expired_count > 0n) {
+      logger?.info(`⏰ Processed plan expiry: ${result[0].expired_count} plan(s) expired, ${result[0].users_affected} user(s) affected`);
+    }
+    
+    // Disable users without active plans (this also sends NOTIFY for disconnect_queue)
+    const disableResult = await prisma.$queryRaw<Array<{ disabled_count: bigint }>>`
+      SELECT * FROM disable_users_without_plans()
+    `;
+    
+    if (disableResult.length > 0 && disableResult[0].disabled_count > 0n) {
+      logger?.info(`🚫 Disabled ${disableResult[0].disabled_count} user(s) without active plans`);
+    }
+  } catch (error: any) {
+    logger?.error(`❌ Failed to process plan expiry on NOTIFY: ${error.message}`);
+  }
+}
+
+/**
+ * Get the NOTIFY channel names (for database triggers)
+ */
+export function getDisconnectQueueChannel(): string {
+  return DISCONNECT_QUEUE_CHANNEL;
+}
+
+export function getPlanExpiryChannel(): string {
+  return PLAN_EXPIRY_CHANNEL;
 }
 
 /**

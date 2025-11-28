@@ -91,19 +91,38 @@ export function startScheduler() {
   // Critical for high-speed connections (1Gbps = 7GB/minute)
   startPgNotifyListener(console as any).catch((error) => {
     console.error('❌ Failed to start PG_NOTIFY listener:', error);
-    console.warn('⚠️  Quota enforcement will not work in real-time');
+    console.warn('⚠️  Quota enforcement and plan expiry will not work in real-time');
   });
 
-  // Plan expiry is handled entirely by pg_cron (database-native)
-  // No application cron needed - pg_cron runs every minute in the database
+  // Plan expiry - PG_NOTIFY event-driven (instant triggers) + periodic safety check
+  // Database triggers send NOTIFY when plans expire (instant detection)
+  // Periodic check (every 30 seconds) catches any edge cases with reduced delay
+  // Using setInterval for precise 30-second intervals (more reliable than cron for sub-minute intervals)
+  setInterval(async () => {
+    try {
+      // Safety net: Check for any plans that might have expired
+      // Most expiry is handled instantly via NOTIFY triggers
+      // Reduced interval from 60s to 30s for faster detection (worst case: 29s delay)
+      const result = await prisma.$queryRaw<Array<{ expired_count: bigint; users_affected: bigint }>>`
+        SELECT * FROM check_and_expire_plans()
+      `;
+      
+      if (result.length > 0 && result[0].expired_count > 0n) {
+        console.log(`⏰ Plan expiry check: ${result[0].expired_count} plan(s) expired, ${result[0].users_affected} user(s) affected`);
+      }
+    } catch (error) {
+      console.error('❌ Plan expiry check failed:', error);
+    }
+  }, 30 * 1000); // 30 seconds
 
   console.log('✅ Hyper-scalable scheduler ready');
   console.log('   → Invoices: Monthly (1st at 2 AM)');
   console.log('   → Maintenance: Every 5 minutes (Redis sync + stale sessions)');
   console.log('   → Daily stats: Daily at 1 AM');
   console.log('   → Quota enforcement: PG_NOTIFY event-driven (ms latency)');
+  console.log('   → Plan expiry: PG_NOTIFY event-driven (instant) + periodic check every 30s (safety net)');
   console.log('   → Router heartbeats: Redis TTL pattern (sub-ms latency)');
-  console.log('   → Plan expiry: pg_cron (every minute, database-native)');
   console.log('   → Architecture: Hyper-scalable (10k+ routers supported)');
+  console.log('   → Scheduling: Redis + NOTIFY/LISTEN (no pg_cron dependency)');
 }
 
