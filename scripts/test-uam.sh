@@ -122,7 +122,7 @@ echo ""
 
 # Test 5: Missing UAM IP
 echo -e "${YELLOW}Test 5: Missing UAM IP${NC}"
-RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?userurl=http://www.google.com" 2>&1)
+  RESPONSE=$(curl -s --max-time 5 -w "\n%{http_code}" "$API_URL/uam/login?userurl=http://www.google.com" 2>&1)
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | head -n-1)
 
