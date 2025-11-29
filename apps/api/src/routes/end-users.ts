@@ -3,12 +3,13 @@
  * Registration, profile management, and user operations
  */
 
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply, FastifyBaseLogger } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { hashPassword } from '../utils/auth.js';
 import { syncUserToRadius, removeUserFromRadius } from '../services/radius-sync.js';
 import { getUserTotalUsage } from '../services/usage.js';
 import { z } from 'zod';
+import { Prisma, EndUserStatus } from '@prisma/client';
 
 const CreateEndUserSchema = z.object({
   username: z.string().min(3).max(50).regex(/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, underscores, and hyphens'),
@@ -28,6 +29,19 @@ const UpdateEndUserSchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED', 'EXPIRED']).optional(),
   password: z.string().min(6).optional(),
 });
+
+interface DecodedUser {
+  userId: string;
+  role: string;
+  [key: string]: unknown;
+}
+
+interface EndUserQuery {
+  status?: EndUserStatus;
+  search?: string;
+  page?: number;
+  limit?: number;
+}
 
 export async function endUserRoutes(fastify: FastifyInstance) {
   // Register end user
@@ -53,7 +67,7 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       },
     },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
+    const user = request.user as DecodedUser;
     const body = CreateEndUserSchema.parse(request.body);
 
     // Check if username already exists
@@ -118,7 +132,7 @@ export async function endUserRoutes(fastify: FastifyInstance) {
   });
 
   // List end users
-  fastify.get('/api/end-users', {
+  fastify.get<{ Querystring: EndUserQuery }>('/api/end-users', {
     preHandler: [fastify.authenticate],
     schema: {
       tags: ['end-users'],
@@ -134,19 +148,14 @@ export async function endUserRoutes(fastify: FastifyInstance) {
         },
       },
     },
-  }, async (request: FastifyRequest) => {
-    const query = request.query as {
-      status?: string;
-      search?: string;
-      page?: number;
-      limit?: number;
-    };
+  }, async (request) => {
+    const query = request.query;
 
     const pageNum = Math.max(1, Number(query.page) || 1);
     const limitNum = Math.min(100, Math.max(1, Number(query.limit) || 50));
     const skip = (pageNum - 1) * limitNum;
 
-    const where: any = {};
+    const where: Prisma.EndUserWhereInput = {};
     if (query.status) {
       where.status = query.status;
     }
@@ -236,7 +245,7 @@ export async function endUserRoutes(fastify: FastifyInstance) {
     const totalUsageBytes = await getUserTotalUsage(endUser.username);
 
     const activePlans = endUser.userPlans.filter(up => up.status === 'ACTIVE');
-    
+
     // Calculate total quota from all active plans
     let totalQuota = 0n;
     let hasUnlimitedQuota = false;
@@ -302,7 +311,7 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'User not found' });
     }
 
-    const updateData: any = {};
+    const updateData: Prisma.EndUserUpdateInput = {};
     if (body.email !== undefined) updateData.email = body.email;
     if (body.phone !== undefined) updateData.phone = body.phone;
     if (body.fullName !== undefined) updateData.fullName = body.fullName;
@@ -313,7 +322,7 @@ export async function endUserRoutes(fastify: FastifyInstance) {
     if (body.password) {
       const hashedPassword = await hashPassword(body.password);
       updateData.password = hashedPassword;
-      
+
       // Update RADIUS password
       await prisma.radCheck.updateMany({
         where: {
@@ -359,8 +368,8 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       security: [{ bearerAuth: [] }],
     },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as any;
-    
+    const user = request.user as DecodedUser;
+
     if (user.role !== 'ADMIN') {
       return reply.code(403).send({ error: 'Admin access required' });
     }
@@ -389,7 +398,7 @@ async function assignPlanToUser(
   userId: string,
   planId: string,
   assignedById: string,
-  logger: any
+  logger: FastifyBaseLogger
 ): Promise<void> {
   const plan = await prisma.plan.findUnique({ where: { id: planId } });
   if (!plan) {
@@ -429,4 +438,3 @@ async function assignPlanToUser(
 
   logger.info(`Assigned plan ${plan.name} to user ${endUser.username}`);
 }
-

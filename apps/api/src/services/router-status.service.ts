@@ -2,6 +2,14 @@ import { WebSocket } from 'ws';
 import { activeConnections } from '../websocket/server.js';
 import { prisma } from '../lib/prisma.js';
 import { isRouterOnline } from './redis-router.js';
+import { Router } from '@prisma/client';
+
+interface Logger {
+  error(msg: string): void;
+  info(msg: string): void;
+  warn(msg: string): void;
+  debug(msg: string): void;
+}
 
 class RouterStatusService {
   /**
@@ -29,7 +37,7 @@ class RouterStatusService {
     routerId: string,
     dbStatus: string,
     actualStatus: 'ONLINE' | 'OFFLINE',
-    logger: any
+    logger: Logger
   ): Promise<void> {
     if (dbStatus !== actualStatus) {
       // Update DB asynchronously - don't block response
@@ -52,8 +60,8 @@ class RouterStatusService {
    * Updates DB asynchronously if status differs
    */
   async getRouterWithRealStatus(
-    router: { id: string; status: string; [key: string]: any },
-    logger: any
+    router: Partial<Router> & { id: string; status: string },
+    logger: Logger
   ) {
     const actualStatus = await this.checkConnectionStatus(router.id);
     

@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
 import { RouterConnectionHandler } from './connection-handler.js';
 import { xTunnelManager } from './x-tunnel.js';
@@ -6,9 +6,26 @@ import { commandManager } from './command-manager.js';
 import { prisma } from '../lib/prisma.js';
 export const activeConnections = new Map<string, WebSocket>();
 
+interface RouterQuery {
+  id: string;
+  token: string;
+  name?: string;
+}
+
+interface XTunnelQuery {
+  routerId: string;
+  token?: string;
+}
+
+interface DecodedUser {
+  userId: string;
+  role: string;
+  [key: string]: unknown;
+}
+
 export function setupWebSocket(fastify: FastifyInstance) {
   fastify.register(async function (fastify: FastifyInstance) {
-    fastify.get('/ws', { websocket: true }, async (connection, request: any) => {
+    fastify.get('/ws', { websocket: true }, async (connection, request: FastifyRequest<{ Querystring: RouterQuery }>) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       const routerId = url.searchParams.get('id');
       const token = url.searchParams.get('token');
@@ -30,7 +47,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
       }
 
       // Extract client IP
-      const clientIp = 
+      const clientIp =
         request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
         request.headers['x-real-ip']?.toString() ||
         request.socket?.remoteAddress ||
@@ -47,7 +64,7 @@ export function setupWebSocket(fastify: FastifyInstance) {
         if (commandManager.getPendingCount() === 0) {
           commandManager.setLogger(fastify.log);
         }
-        
+
         const handler = new RouterConnectionHandler(routerId, connection, fastify.log);
         await handler.initialize(clientIp, routerName || undefined);
         handler.setupMessageHandlers();
@@ -69,12 +86,12 @@ export function setupWebSocket(fastify: FastifyInstance) {
     });
 
     // x Tunnel WebSocket endpoint (for frontend clients)
-    fastify.get('/x', { websocket: true }, async (connection, request: any) => {
+    fastify.get('/x', { websocket: true }, async (connection, request: FastifyRequest<{ Querystring: XTunnelQuery }>) => {
       try {
         // Extract authentication from query params or Authorization header
         const url = new URL(request.url!, `http://${request.headers.host}`);
         const routerId = url.searchParams.get('routerId');
-        
+
         // Get JWT token from query param or Authorization header
         let token = url.searchParams.get('token');
         if (!token) {
@@ -90,9 +107,9 @@ export function setupWebSocket(fastify: FastifyInstance) {
         }
 
         // Verify JWT token (user authentication)
-        let user: any;
+        let user: DecodedUser;
         try {
-          const decoded = await fastify.jwt.verify(token);
+          const decoded = await fastify.jwt.verify<DecodedUser>(token);
           user = decoded;
         } catch (error) {
           connection.close(1008, 'Invalid authentication token');
@@ -126,10 +143,10 @@ export function setupWebSocket(fastify: FastifyInstance) {
             fastify.log
           );
           fastify.log.info(`[x] x tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
-        } catch (error: any) {
-          const errorMessage = error.message || 'Failed to create x session';
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : 'Failed to create x session';
           fastify.log.error(`[x] x session creation failed for router ${routerId}: ${errorMessage}`);
-          
+
           // Use valid WebSocket close codes (1000-1015 are standard)
           // 1011 = Internal Error (for router not responding/offline)
           connection.close(1011, errorMessage);

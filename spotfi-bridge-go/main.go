@@ -1,87 +1,30 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
+	"spotfi-bridge/pkg/config"
+	"spotfi-bridge/pkg/metrics"
+	"spotfi-bridge/pkg/rpc"
+	"spotfi-bridge/pkg/session"
+
 	"github.com/gorilla/websocket"
 )
 
-// Config holds environment variables
-type Config struct {
-	RouterID   string
-	Token      string
-	Mac        string
-	WsURL      string
-	RouterName string
-}
-
 // Global state
 var (
-	config      Config
-	wsConn      *websocket.Conn
-	wsMu        sync.Mutex
-	done        chan struct{}
-	xSessions   = make(map[string]*XSession)
-	xMu         sync.Mutex
+	cfg            config.Config
+	wsConn         *websocket.Conn
+	wsMu           sync.Mutex
+	sessionManager *session.SessionManager
 )
-
-type XSession struct {
-	ID     string
-	Cmd    *exec.Cmd
-	Pty    *os.File
-	Active bool
-}
-
-// Load .env file manually to avoid extra dependencies
-func loadEnv() {
-	file, err := os.Open("/etc/spotfi.env")
-	if err != nil {
-		// Fallback for local testing
-		file, err = os.Open(".env")
-		if err != nil {
-			log.Fatal("Could not open env file")
-		}
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-
-		switch key {
-		case "SPOTFI_ROUTER_ID":
-			config.RouterID = val
-		case "SPOTFI_TOKEN":
-			config.Token = val
-		case "SPOTFI_MAC":
-			config.Mac = val
-		case "SPOTFI_WS_URL":
-			config.WsURL = val
-		case "SPOTFI_ROUTER_NAME":
-			config.RouterName = val
-		}
-	}
-}
 
 // Thread-safe WebSocket write
 func sendJSON(v interface{}) error {
@@ -93,221 +36,21 @@ func sendJSON(v interface{}) error {
 	return wsConn.WriteJSON(v)
 }
 
-// --- UBUS / RPC Handling ---
-
-type RPCRequest struct {
-	ID     string          `json:"id"`
-	Path   string          `json:"path"`
-	Method string          `json:"method"`
-	Args   json.RawMessage `json:"args"`
-}
-
-func handleRPC(msg map[string]interface{}) {
-	// Re-marshal to struct for easier handling
-	tmp, _ := json.Marshal(msg)
-	var req RPCRequest
-	json.Unmarshal(tmp, &req)
-
-	// Execute ubus command via OS exec (safest/most portable way on OpenWrt)
-	argsStr := "{}"
-	if len(req.Args) > 0 {
-		argsStr = string(req.Args)
-	}
-
-	cmd := exec.Command("ubus", "call", req.Path, req.Method, argsStr)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	response := map[string]interface{}{
-		"type": "rpc-result",
-		"id":   req.ID,
-	}
-
-	if err := cmd.Run(); err != nil {
-		response["status"] = "error"
-		response["error"] = err.Error()
-	} else {
-		response["status"] = "success"
-		var result interface{}
-		// Try parsing as JSON, if empty string or invalid, return raw or empty
-		if out.Len() > 0 {
-			if err := json.Unmarshal(out.Bytes(), &result); err == nil {
-				response["result"] = result
-			} else {
-				response["result"] = map[string]interface{}{}
-			}
-		} else {
-			response["result"] = map[string]interface{}{}
-		}
-	}
-
-	sendJSON(response)
-}
-
-func getMetrics() map[string]interface{} {
-	// 1. System Info
-	cmdSys := exec.Command("ubus", "call", "system", "info")
-	outSys, _ := cmdSys.Output()
-	var sysInfo map[string]interface{}
-	json.Unmarshal(outSys, &sysInfo)
-
-	// 2. Client List
-	cmdClients := exec.Command("ubus", "call", "uspot", "client_list")
-	outClients, _ := cmdClients.Output()
-	var clientList map[string]interface{}
-	json.Unmarshal(outClients, &clientList)
-
-	// Calculate active users
-	activeUsers := 0
-	for _, iface := range clientList {
-		if clients, ok := iface.(map[string]interface{}); ok {
-			activeUsers += len(clients)
-		}
-	}
-
-	// Extract memory
-	var totalMem, freeMem float64
-	if mem, ok := sysInfo["memory"].(map[string]interface{}); ok {
-		totalMem, _ = mem["total"].(float64)
-		freeMem, _ = mem["free"].(float64)
-	}
-
-	// Extract Load
-	var cpuLoad float64
-	if load, ok := sysInfo["load"].([]interface{}); ok && len(load) > 0 {
-		// OpenWrt load is usually integer scaled by 65535
-		if l, ok := load[0].(float64); ok {
-			cpuLoad = (l / 65535.0) * 100.0
-		}
-	}
-
-	return map[string]interface{}{
-		"uptime":      fmt.Sprintf("%.0f", sysInfo["uptime"]),
-		"cpuLoad":     cpuLoad,
-		"totalMemory": totalMem,
-		"freeMemory":  freeMem,
-		"activeUsers": activeUsers,
-	}
-}
-
-// --- X Tunnel (PTY) Handling ---
-
-func handleXStart(msg map[string]interface{}) {
-	sessionID, _ := msg["sessionId"].(string)
-	if sessionID == "" {
-		return
-	}
-
-	// Clean existing if present
-	handleXStop(msg)
-
-	// Create command
-	c := exec.Command("/bin/sh")
-	c.Env = append(os.Environ(), "TERM=xterm-256color", "HOME=/root")
-
-	// Start PTY
-	f, err := pty.Start(c)
-	if err != nil {
-		sendJSON(map[string]interface{}{
-			"type":      "x-error",
-			"sessionId": sessionID,
-			"error":     err.Error(),
-		})
-		return
-	}
-
-	// Set window size (standard)
-	pty.Setsize(f, &pty.Winsize{Rows: 24, Cols: 80})
-
-	sess := &XSession{
-		ID:     sessionID,
-		Cmd:    c,
-		Pty:    f,
-		Active: true,
-	}
-
-	xMu.Lock()
-	xSessions[sessionID] = sess
-	xMu.Unlock()
-
-	// Ack
-	sendJSON(map[string]interface{}{
-		"type":      "x-started",
-		"sessionId": sessionID,
-		"status":    "ready",
-	})
-
-	// Reader Loop
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := f.Read(buf)
-			if err != nil {
-				break // EOF or error (process died)
-			}
-			if n > 0 {
-				dataB64 := base64.StdEncoding.EncodeToString(buf[:n])
-				sendJSON(map[string]interface{}{
-					"type":      "x-data",
-					"sessionId": sessionID,
-					"data":      dataB64,
-				})
-			}
-		}
-		// Cleanup when read fails (process exit)
-		handleXStop(map[string]interface{}{"sessionId": sessionID})
-	}()
-}
-
-func handleXData(msg map[string]interface{}) {
-	sessionID, _ := msg["sessionId"].(string)
-	dataB64, _ := msg["data"].(string)
-
-	xMu.Lock()
-	sess, exists := xSessions[sessionID]
-	xMu.Unlock()
-
-	if !exists || !sess.Active {
-		return
-	}
-
-	data, err := base64.StdEncoding.DecodeString(dataB64)
-	if err == nil {
-		sess.Pty.Write(data)
-	}
-}
-
-func handleXStop(msg map[string]interface{}) {
-	sessionID, _ := msg["sessionId"].(string)
-
-	xMu.Lock()
-	defer xMu.Unlock()
-
-	if sess, ok := xSessions[sessionID]; ok {
-		sess.Active = false
-		sess.Pty.Close()
-		if sess.Cmd.Process != nil {
-			sess.Cmd.Process.Kill()
-		}
-		delete(xSessions, sessionID)
-	}
-}
-
 // --- Main Loop ---
 
 func connect() error {
-	u, err := url.Parse(config.WsURL)
+	u, err := url.Parse(cfg.WsURL)
 	if err != nil {
 		return err
 	}
 
 	// Add Query Params
 	q := u.Query()
-	q.Set("id", config.RouterID)
-	q.Set("token", config.Token)
-	q.Set("mac", config.Mac)
-	if config.RouterName != "" {
-		q.Set("name", config.RouterName)
+	q.Set("id", cfg.RouterID)
+	q.Set("token", cfg.Token)
+	q.Set("mac", cfg.Mac)
+	if cfg.RouterName != "" {
+		q.Set("name", cfg.RouterName)
 	}
 	u.RawQuery = q.Encode()
 
@@ -327,7 +70,7 @@ func connect() error {
 	// Send initial metrics
 	sendJSON(map[string]interface{}{
 		"type":    "metrics",
-		"metrics": getMetrics(),
+		"metrics": metrics.GetMetrics(),
 	})
 
 	// Read Loop
@@ -342,13 +85,13 @@ func connect() error {
 		msgType, _ := msg["type"].(string)
 		switch msgType {
 		case "rpc":
-			go handleRPC(msg)
+			go rpc.HandleRPC(msg, sendJSON)
 		case "x-start":
-			go handleXStart(msg)
+			go sessionManager.HandleStart(msg)
 		case "x-data":
-			handleXData(msg)
+			sessionManager.HandleData(msg)
 		case "x-stop":
-			handleXStop(msg)
+			sessionManager.HandleStop(msg)
 		}
 	}
 }
@@ -356,7 +99,7 @@ func connect() error {
 func main() {
 	// Ensure errors go to stderr
 	log.SetOutput(os.Stderr)
-	
+
 	// Check for version/test flags
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -365,23 +108,23 @@ func main() {
 			os.Exit(0)
 		case "--test", "-t":
 			fmt.Fprintln(os.Stdout, "Testing configuration...")
-			loadEnv()
-			if config.RouterID == "" {
+			cfg = config.LoadEnv()
+			if cfg.RouterID == "" {
 				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_ROUTER_ID")
 				os.Exit(1)
 			}
-			if config.Token == "" {
+			if cfg.Token == "" {
 				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_TOKEN")
 				os.Exit(1)
 			}
-			if config.WsURL == "" {
+			if cfg.WsURL == "" {
 				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_WS_URL")
 				os.Exit(1)
 			}
 			fmt.Fprintln(os.Stdout, "Configuration OK:")
-			fmt.Fprintf(os.Stdout, "  Router ID: %s\n", config.RouterID)
-			fmt.Fprintf(os.Stdout, "  WebSocket URL: %s\n", config.WsURL)
-			fmt.Fprintf(os.Stdout, "  MAC Address: %s\n", config.Mac)
+			fmt.Fprintf(os.Stdout, "  Router ID: %s\n", cfg.RouterID)
+			fmt.Fprintf(os.Stdout, "  WebSocket URL: %s\n", cfg.WsURL)
+			fmt.Fprintf(os.Stdout, "  MAC Address: %s\n", cfg.Mac)
 			os.Exit(0)
 		case "--help", "-h":
 			fmt.Fprintln(os.Stdout, "Usage: spotfi-bridge [--version|--test|--help]")
@@ -393,10 +136,13 @@ func main() {
 	}
 
 	// If we get here, try to load env and start
-	loadEnv()
-	if config.RouterID == "" {
+	cfg = config.LoadEnv()
+	if cfg.RouterID == "" {
 		log.Fatal("Missing configuration: SPOTFI_ROUTER_ID not set")
 	}
+
+	// Initialize Session Manager
+	sessionManager = session.NewSessionManager(sendJSON)
 
 	// Heartbeat ticker
 	go func() {
@@ -405,7 +151,7 @@ func main() {
 			if wsConn != nil {
 				sendJSON(map[string]interface{}{
 					"type":    "metrics",
-					"metrics": getMetrics(),
+					"metrics": metrics.GetMetrics(),
 				})
 			}
 		}
@@ -437,4 +183,3 @@ func main() {
 		wsConn.Close()
 	}
 }
-
