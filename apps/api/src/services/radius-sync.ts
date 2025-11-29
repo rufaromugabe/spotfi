@@ -18,8 +18,11 @@ interface SyncOptions {
  */
 export async function syncUserToRadius({ username, logger }: SyncOptions): Promise<void> {
   try {
-    // 1. Fetch end user first, then all active user plans
-    const endUser = await prisma.endUser.findUnique({ where: { username } });
+    // 1. Fetch end user and usage in parallel
+    const [endUser, totalUsed] = await Promise.all([
+      prisma.endUser.findUnique({ where: { username } }),
+      getUserTotalUsage(username)
+    ]);
 
     if (!endUser) {
       await disableUserInRadius(username, logger);
@@ -58,9 +61,6 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
         totalQuota += planQuota;
       }
     }
-
-    // Get total usage
-    const totalUsed = await getUserTotalUsage(username);
 
     // If any plan has unlimited quota, remaining is null (unlimited)
     // Otherwise calculate remaining from summed quotas
@@ -140,7 +140,7 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
 
     // Execute all
     await prisma.$transaction(ops);
-    
+
     const planNames = activePlans.map(up => up.plan.name).join(' + ');
     logger?.info(`[RADIUS Sync] Synced ${username} (Plans: ${planNames}, Rem: ${remaining}, Sessions: ${maxSessions})`);
 
@@ -154,22 +154,22 @@ export async function syncUserToRadius({ username, logger }: SyncOptions): Promi
 function upsertRadCheck(userName: string, attribute: string, op: string, value: string) {
   return prisma.radCheck.upsert({
     where: {
-      userName_attribute: { 
-        userName, 
-        attribute 
-    }
+      userName_attribute: {
+        userName,
+        attribute
+      }
     },
     update: { value, op },
     create: { userName, attribute, op, value }
-    });
-  }
+  });
+}
 
 function upsertRadReply(userName: string, attribute: string, op: string, value: string) {
   return prisma.radReply.upsert({
-      where: {
-      userName_attribute: { 
-        userName, 
-        attribute 
+    where: {
+      userName_attribute: {
+        userName,
+        attribute
       }
     },
     update: { value, op },

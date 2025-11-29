@@ -1,5 +1,6 @@
 import radius from 'radius';
 import dgram from 'dgram';
+import crypto from 'crypto';
 import { FastifyBaseLogger } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 
@@ -20,6 +21,9 @@ interface CoAResult {
   error?: string;
 }
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+
 export async function sendCoARequest(options: CoAOptions): Promise<CoAResult> {
   const {
     nasIp,
@@ -33,40 +37,58 @@ export async function sendCoARequest(options: CoAOptions): Promise<CoAResult> {
     logger
   } = options;
 
-  const coaPort = 3799;
+  const coaPort = parseInt(process.env.COA_PORT || '3799', 10);
 
+  // Build CoA-Request packet
+  const attributes: Array<[string, string | number]> = [
+    ['User-Name', username],
+  ];
+
+  if (nasId) attributes.push(['NAS-Identifier', nasId]);
+  if (userIp) attributes.push(['Framed-IP-Address', userIp]);
+  if (calledStationId) attributes.push(['Called-Station-Id', calledStationId]);
+  if (callingStationId) attributes.push(['Calling-Station-Id', callingStationId]);
+  if (acctSessionId) attributes.push(['Acct-Session-Id', acctSessionId]);
+
+  let attempt = 0;
+  let lastError = '';
+
+  while (attempt < MAX_RETRIES) {
+    attempt++;
+    try {
+      const result = await sendSingleCoARequest(nasIp, coaPort, secret, attributes, logger);
+      if (result.success) {
+        return result;
+      }
+      lastError = result.error || 'Unknown error';
+    } catch (error: any) {
+      lastError = error.message;
+    }
+
+    if (attempt < MAX_RETRIES) {
+      logger?.warn(`[CoA] Attempt ${attempt} failed for ${username} at ${nasIp}. Retrying in ${RETRY_DELAY_MS}ms...`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+  }
+
+  logger?.error(`[CoA] All ${MAX_RETRIES} attempts failed for ${username} at ${nasIp}. Last error: ${lastError}`);
+  return { success: false, error: lastError };
+}
+
+function sendSingleCoARequest(
+  nasIp: string,
+  port: number,
+  secret: string,
+  attributes: Array<[string, string | number]>,
+  logger?: FastifyBaseLogger
+): Promise<CoAResult> {
   return new Promise((resolve) => {
     const client = dgram.createSocket('udp4');
-    const identifier = Math.floor(Math.random() * 256);
-    const timeout = 5000; // 5 second timeout
-
-    // Build CoA-Request packet (CoA-Request uses same format as Access-Request)
-    const attributes: Array<[string, string | number]> = [
-      ['User-Name', username],
-    ];
-
-    if (nasId) {
-      attributes.push(['NAS-Identifier', nasId]);
-    }
-
-    if (userIp) {
-      attributes.push(['Framed-IP-Address', userIp]);
-    }
-
-    if (calledStationId) {
-      attributes.push(['Called-Station-Id', calledStationId]);
-    }
-
-    if (callingStationId) {
-      attributes.push(['Calling-Station-Id', callingStationId]);
-    }
-
-    if (acctSessionId) {
-      attributes.push(['Acct-Session-Id', acctSessionId]);
-    }
+    const identifier = crypto.randomBytes(1)[0]; // Secure random identifier
+    const timeout = 5000;
 
     const packet = radius.encode({
-      code: 'Access-Request',
+      code: 'CoA-Request' as any, // Cast to any as @types/radius might miss this
       secret,
       identifier,
       attributes
@@ -81,60 +103,34 @@ export async function sendCoARequest(options: CoAOptions): Promise<CoAResult> {
 
     timeoutId = setTimeout(() => {
       cleanup();
-      logger?.warn(`[CoA] Timeout sending CoA-Request to ${nasIp}:${coaPort} for ${username}`);
-      resolve({
-        success: false,
-        error: 'CoA server timeout'
-      });
+      resolve({ success: false, error: 'CoA server timeout' });
     }, timeout);
 
-    client.on('message', (msg, rinfo) => {
+    client.on('message', (msg) => {
       cleanup();
-
       try {
-        const response = radius.decode({
-          packet: msg,
-          secret
-        });
-
-        if (response.code === 'Access-Accept') {
-          logger?.info(`[CoA] CoA-ACK received from ${nasIp}:${coaPort} for ${username}`);
-          resolve({
-            success: true
-          });
+        const response = radius.decode({ packet: msg, secret });
+        if ((response as any).code === 'CoA-ACK') {
+          logger?.info(`[CoA] CoA-ACK received from ${nasIp}:${port}`);
+          resolve({ success: true });
         } else {
-          logger?.warn(`[CoA] CoA-NAK received (code: ${response.code}) from ${nasIp}:${coaPort} for ${username}`);
-          resolve({
-            success: false,
-            error: `CoA-NAK: ${response.code}`
-          });
+          logger?.warn(`[CoA] CoA-NAK received (code: ${response.code}) from ${nasIp}:${port}`);
+          resolve({ success: false, error: `CoA-NAK: ${response.code}` });
         }
       } catch (error) {
-        logger?.error(`[CoA] Error decoding response: ${error}`);
-        resolve({
-          success: false,
-          error: 'Invalid CoA response'
-        });
+        resolve({ success: false, error: 'Invalid CoA response' });
       }
     });
 
     client.on('error', (error) => {
       cleanup();
-      logger?.error(`[CoA] UDP error: ${error.message}`);
-      resolve({
-        success: false,
-        error: `Network error: ${error.message}`
-      });
+      resolve({ success: false, error: `Network error: ${error.message}` });
     });
 
-    client.send(packet, coaPort, nasIp, (error) => {
+    client.send(packet, port, nasIp, (error) => {
       if (error) {
         cleanup();
-        logger?.error(`[CoA] Send error: ${error.message}`);
-        resolve({
-          success: false,
-          error: `Send error: ${error.message}`
-        });
+        resolve({ success: false, error: `Send error: ${error.message}` });
       }
     });
   });
