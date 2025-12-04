@@ -66,7 +66,7 @@ export const disconnectWorker = new Worker<DisconnectJobData>(
       const disconnectPromises = activeSessions.map(async (session) => {
         if (!session.routerId || !session.callingStationId) {
           console.warn(`[Disconnect] Cannot kick session ${session.acctSessionId}: Missing RouterID or MAC`);
-          return;
+          return { success: false, routerOffline: false, error: 'Missing RouterID or MAC' };
         }
 
         try {
@@ -75,32 +75,48 @@ export const disconnectWorker = new Worker<DisconnectJobData>(
           // Sends 'ubus call uspot client_remove' via the bridge
           await routerRpcService.kickClient(session.routerId, session.callingStationId);
           
-          return true;
+          return { success: true, routerOffline: false };
         } catch (error: any) {
+          const isRouterOffline = error.message?.includes('offline') || error.message?.includes('Router is offline');
           console.error(`[Disconnect] Failed to kick MAC ${session.callingStationId} on router ${session.routerId}: ${error.message}`);
-          // We continue anyway to ensure the user is disabled in DB
-          return false;
+          return { success: false, routerOffline: isRouterOffline, error: error.message };
         }
       });
 
       const results = await Promise.allSettled(disconnectPromises);
-      const successful = results.filter(r => r.status === 'fulfilled' && r.value === true).length;
+      const successful = results.filter(r => 
+        r.status === 'fulfilled' && r.value?.success === true
+      ).length;
+      
+      const routerOfflineCount = results.filter(r => 
+        r.status === 'fulfilled' && r.value?.routerOffline === true
+      ).length;
 
       // Disable user in RADIUS (prevent re-authentication)
       await disableUserInRadius(username);
 
-      // Force close sessions in DB (Accounting Stop might not arrive if router is offline)
-      // We set a specific terminate cause so we know the system did it
-      await prisma.radAcct.updateMany({
-        where: {
-          userName: username,
-          acctStopTime: null
-        },
-        data: {
-          acctStopTime: new Date(),
-          acctTerminateCause: 'Admin-Reset' // Standard RADIUS attribute for forced disconnect
-        }
-      });
+      // Only force-close sessions in DB if router was online and kick succeeded
+      // OR if all routers were offline (we'll reconcile when they come back)
+      const allRoutersOffline = routerOfflineCount === activeSessions.length;
+      
+      if (!allRoutersOffline) {
+        // At least one router was online, close all sessions in DB
+        // Sessions on offline routers will be reconciled when router reconnects
+        await prisma.radAcct.updateMany({
+          where: {
+            userName: username,
+            acctStopTime: null
+          },
+          data: {
+            acctStopTime: new Date(),
+            acctTerminateCause: 'Admin-Reset' // Standard RADIUS attribute for forced disconnect
+          }
+        });
+      } else {
+        // All routers were offline - don't close sessions in DB yet
+        // They will be reconciled when routers come back online
+        console.warn(`[Disconnect] All routers offline for ${username}, sessions will be reconciled on router reconnect`);
+      }
 
       // Mark queue item as processed
       await markQueueProcessed(queueId);
@@ -108,7 +124,8 @@ export const disconnectWorker = new Worker<DisconnectJobData>(
       return {
         sessions: activeSessions.length,
         kicked: successful,
-        failed: results.length - successful
+        failed: results.length - successful,
+        routersOffline: routerOfflineCount
       };
     } catch (error: any) {
       console.error(`❌ Failed to process disconnect for ${username}:`, error);

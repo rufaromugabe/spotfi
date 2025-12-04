@@ -7,7 +7,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { syncUserToRadius } from '../services/radius-sync.js';
 import { getUserTotalUsage } from '../services/usage.js';
-import { sendCoARequest } from '../services/coa-service.js';
+import { routerRpcService } from '../services/router-rpc.service.js';
 import { z } from 'zod';
 
 const AssignPlanSchema = z.object({
@@ -210,34 +210,41 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
         userName: userPlan.user.username,
         acctStopTime: null
       },
-      include: {
-        router: {
-          select: {
-            id: true,
-            nasipaddress: true,
-            radiusSecret: true
-          }
-        }
+      select: {
+        acctSessionId: true,
+        routerId: true,
+        callingStationId: true // MAC Address required for WebSocket kick
       }
     });
 
-    // Send CoA Disconnect to all active routers
+    // Send WebSocket Kick Command to all active routers
+    // This works behind NAT because it uses the persistent WebSocket bridge
     const disconnectPromises = activeSessions
-      .filter(session => session.router?.nasipaddress && session.router?.radiusSecret)
-      .map(session => {
-        return sendCoARequest({
-          nasIp: session.router!.nasipaddress!,
-          nasId: session.router!.id,
-          secret: session.router!.radiusSecret!,
-          username: session.userName!,
-          acctSessionId: session.acctSessionId,
-          callingStationId: session.callingStationId || undefined,
-          calledStationId: session.calledStationId || undefined,
-          userIp: session.framedIpAddress || undefined
-        });
+      .filter(session => session.routerId && session.callingStationId)
+      .map(async (session) => {
+        try {
+          await routerRpcService.kickClient(session.routerId!, session.callingStationId!);
+          return true;
+        } catch (error: any) {
+          fastify.log.error(`[Plan Cancel] Failed to kick MAC ${session.callingStationId} on router ${session.routerId}: ${error.message}`);
+          return false;
+        }
       });
 
-    await Promise.allSettled(disconnectPromises);
+    const results = await Promise.allSettled(disconnectPromises);
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value === true).length;
+
+    // Force close sessions in DB (Accounting Stop might not arrive if router is offline)
+    await prisma.radAcct.updateMany({
+      where: {
+        userName: userPlan.user.username,
+        acctStopTime: null
+      },
+      data: {
+        acctStopTime: new Date(),
+        acctTerminateCause: 'Admin-Reset'
+      }
+    });
 
     if (activeSessions.length > 0) {
       fastify.log.info(`Disconnected ${activeSessions.length} active session(s) for user ${userPlan.user.username} after plan cancellation`);

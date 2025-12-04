@@ -3,6 +3,7 @@ import { generateInvoices } from '../services/billing.js';
 import { prisma } from '../lib/prisma.js';
 import { syncRouterStatusToPostgres } from '../services/redis-router.js';
 import { startPgNotifyListener } from '../services/pg-notify.js';
+import { reconcileAllRouters } from '../services/session-reconciliation.js';
 
 /**
  * Hyper-scalable production scheduler
@@ -33,7 +34,7 @@ export function startScheduler() {
   });
 
   // Maintenance tasks - every 5 minutes
-  // Combines: Router status sync (Redis -> Postgres) + Stale session cleanup
+  // Combines: Router status sync (Redis -> Postgres) + Stale session cleanup + Session reconciliation
   cron.schedule('*/5 * * * *', async () => {
     try {
       // Sync router status from Redis to Postgres (bulk update)
@@ -69,6 +70,10 @@ export function startScheduler() {
       if (staleResult.count > 0) {
         console.log(`🧹 Cleaned up ${staleResult.count} stale session(s)`);
       }
+
+      // Session reconciliation - ensure DB state matches router state
+      // This catches any sessions that should be terminated but weren't
+      await reconcileAllRouters(console as any);
     } catch (error) {
       console.error('❌ Maintenance tasks failed:', error);
     }

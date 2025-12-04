@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { commandManager } from './command-manager.js';
 import { recordRouterHeartbeat, markRouterOffline } from '../services/redis-router.js';
+import { reconcileRouterSessions, queueFailedDisconnectsForRetry } from '../services/session-reconciliation.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -92,6 +93,26 @@ export class RouterConnectionHandler {
     }
 
     this.logger.info(`Router ${this.routerId} connected from ${clientIp}`);
+
+    // Reconcile sessions after router reconnects (async, don't block)
+    // This ensures any sessions that should be terminated are properly handled
+    setImmediate(async () => {
+      try {
+        // Queue any failed disconnects for retry
+        await queueFailedDisconnectsForRetry(this.routerId, this.logger);
+        
+        // Reconcile sessions (compare DB state with router state)
+        const result = await reconcileRouterSessions(this.routerId, this.logger);
+        if (result.mismatches > 0) {
+          this.logger.info(
+            `[Reconciliation] Router ${this.routerId}: ${result.mismatches} mismatches found, ` +
+            `${result.kicked} sessions kicked, ${result.errors} errors`
+          );
+        }
+      } catch (error: any) {
+        this.logger.error(`[Reconciliation] Error during router ${this.routerId} reconciliation: ${error.message}`);
+      }
+    });
   }
 
   setupMessageHandlers(): void {

@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { renderLoginPage } from '../templates/login-page.js';
 import { authenticateUser } from '../services/radius-client.js';
-import { sendCoARequest, getRouterConfig } from '../services/coa-service.js';
+import { prisma } from '../lib/prisma.js';
 
 interface PortalQuery {
   nasid?: string;
@@ -70,9 +70,18 @@ export async function portalRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      let routerConfig = nasid ? await getRouterConfig(nasid) : null;
-      if (!routerConfig && uamip) {
-        routerConfig = await getRouterConfig(undefined, uamip);
+      // Get router config for RADIUS authentication
+      let routerConfig = null;
+      if (nasid) {
+        routerConfig = await prisma.router.findUnique({
+          where: { id: nasid },
+          select: { id: true, nasipaddress: true, radiusSecret: true }
+        });
+      } else if (uamip) {
+        routerConfig = await prisma.router.findFirst({
+          where: { nasipaddress: uamip },
+          select: { id: true, nasipaddress: true, radiusSecret: true }
+        });
       }
 
       const radiusServer = radiusServer1 || 'localhost';
@@ -102,15 +111,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
         return safeRedirect('Invalid username or password');
       }
 
-      if (routerConfig) {
-        await sendCoARequest({
-          nasIp: uamip,
-          nasId: routerConfig.id,
-          secret: routerRadiusSecret,
-          username,
-          logger: fastify.log
-        });
-      }
+      // Note: After successful authentication, the router will automatically allow the user
+      // through the captive portal. No CoA/WebSocket disconnect needed here since we want
+      // to allow the user, not disconnect them.
 
       return reply.redirect(userurl || 'http://www.google.com');
     } catch (error: any) {
