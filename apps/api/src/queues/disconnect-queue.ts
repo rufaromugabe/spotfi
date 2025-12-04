@@ -6,7 +6,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { redis } from '../lib/redis.js';
 import { prisma } from '../lib/prisma.js';
-import { sendCoARequest } from '../services/coa-service.js';
+import { routerRpcService } from '../services/router-rpc.service.js';
 
 export interface DisconnectJobData {
   username: string;
@@ -46,81 +46,68 @@ export const disconnectWorker = new Worker<DisconnectJobData>(
           userName: username,
           acctStopTime: null
         },
-        include: {
-          router: {
-            select: {
-              id: true,
-              nasipaddress: true,
-              radiusSecret: true
-            }
-          }
+        select: {
+          acctSessionId: true,
+          routerId: true,
+          callingStationId: true, // MAC Address is required for Uspot kick
+          framedIpAddress: true
         }
       });
 
       if (activeSessions.length === 0) {
         // No active sessions, just disable in RADIUS
-        await prisma.$executeRaw`
-          INSERT INTO radcheck (username, attribute, op, value)
-          VALUES (${username}, 'Auth-Type', ':=', 'Reject')
-          ON CONFLICT (username, attribute) 
-          DO UPDATE SET value = 'Reject', op = ':='
-        `;
+        await disableUserInRadius(username);
+        await markQueueProcessed(queueId);
+        return { sessions: 0, kicked: 0 };
+      }
 
-        // Mark queue item as processed if queueId provided
-        if (queueId) {
-          await prisma.disconnectQueue.update({
-            where: { id: queueId },
-            data: {
-              processed: true,
-              processedAt: new Date()
-            }
-          });
+      // Send WebSocket Kick Command to all active routers
+      // This works behind NAT because it uses the persistent WebSocket bridge
+      const disconnectPromises = activeSessions.map(async (session) => {
+        if (!session.routerId || !session.callingStationId) {
+          console.warn(`[Disconnect] Cannot kick session ${session.acctSessionId}: Missing RouterID or MAC`);
+          return;
         }
 
-        return { sessions: 0, coaSent: 0 };
-      }
-
-      // Send CoA Disconnect to all active routers (parallel)
-      const disconnectPromises = activeSessions
-        .filter(session => session.router?.nasipaddress && session.router?.radiusSecret)
-        .map(session => {
-          return sendCoARequest({
-            nasIp: session.router!.nasipaddress!,
-            nasId: session.router!.id,
-            secret: session.router!.radiusSecret!,
-            username: session.userName!,
-            acctSessionId: session.acctSessionId,
-            callingStationId: session.callingStationId || undefined,
-            calledStationId: session.calledStationId || undefined,
-            userIp: session.framedIpAddress || undefined
-          });
-        });
+        try {
+          console.log(`[Disconnect] Kicking user ${username} (MAC: ${session.callingStationId}) from router ${session.routerId} via WebSocket`);
+          
+          // Sends 'ubus call uspot client_remove' via the bridge
+          await routerRpcService.kickClient(session.routerId, session.callingStationId);
+          
+          return true;
+        } catch (error: any) {
+          console.error(`[Disconnect] Failed to kick MAC ${session.callingStationId} on router ${session.routerId}: ${error.message}`);
+          // We continue anyway to ensure the user is disabled in DB
+          return false;
+        }
+      });
 
       const results = await Promise.allSettled(disconnectPromises);
-      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const successful = results.filter(r => r.status === 'fulfilled' && r.value === true).length;
 
       // Disable user in RADIUS (prevent re-authentication)
-      await prisma.$executeRaw`
-        INSERT INTO radcheck (username, attribute, op, value)
-        VALUES (${username}, 'Auth-Type', ':=', 'Reject')
-        ON CONFLICT (username, attribute) 
-        DO UPDATE SET value = 'Reject', op = ':='
-      `;
+      await disableUserInRadius(username);
 
-      // Mark queue item as processed if queueId provided
-      if (queueId) {
-        await prisma.disconnectQueue.update({
-          where: { id: queueId },
-          data: {
-            processed: true,
-            processedAt: new Date()
-          }
-        });
-      }
+      // Force close sessions in DB (Accounting Stop might not arrive if router is offline)
+      // We set a specific terminate cause so we know the system did it
+      await prisma.radAcct.updateMany({
+        where: {
+          userName: username,
+          acctStopTime: null
+        },
+        data: {
+          acctStopTime: new Date(),
+          acctTerminateCause: 'Admin-Reset' // Standard RADIUS attribute for forced disconnect
+        }
+      });
+
+      // Mark queue item as processed
+      await markQueueProcessed(queueId);
 
       return {
         sessions: activeSessions.length,
-        coaSent: successful,
+        kicked: successful,
         failed: results.length - successful
       };
     } catch (error: any) {
@@ -138,16 +125,39 @@ export const disconnectWorker = new Worker<DisconnectJobData>(
   }
 );
 
+// Helper: Disable user in RadCheck to prevent immediate reconnection
+async function disableUserInRadius(username: string) {
+  await prisma.$executeRaw`
+    INSERT INTO radcheck (username, attribute, op, value)
+    VALUES (${username}, 'Auth-Type', ':=', 'Reject')
+    ON CONFLICT (username, attribute) 
+    DO UPDATE SET value = 'Reject', op = ':='
+  `;
+}
+
+// Helper: Mark database queue item as processed
+async function markQueueProcessed(queueId?: number) {
+  if (!queueId) return;
+  
+  await prisma.disconnectQueue.update({
+    where: { id: queueId },
+    data: {
+      processed: true,
+      processedAt: new Date()
+    }
+  });
+}
+
 // Worker event handlers
 disconnectWorker.on('completed', (job) => {
   const { username, reason } = job.data;
   const result = job.returnvalue;
-  console.log(`✅ Disconnected user ${username} (${result.sessions} session(s), ${result.coaSent} CoA sent) - Reason: ${reason}`);
+  console.log(`✅ Processed disconnect for ${username}: ${result.sessions} session(s) closed, ${result.kicked} router kicks sent via WS - Reason: ${reason}`);
 });
 
 disconnectWorker.on('failed', (job, err) => {
   const { username } = job?.data || { username: 'unknown' };
-  console.error(`❌ Failed to disconnect user ${username}:`, err.message);
+  console.error(`❌ Failed disconnect job for ${username}:`, err.message);
 });
 
 disconnectWorker.on('error', (err) => {
