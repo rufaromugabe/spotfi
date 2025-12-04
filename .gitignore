@@ -34,4 +34,9 @@ packages/prisma/migrations/
 spotfi-bridge-go/spotfi-bridge-*
 spotfi-bridge-go/release/
 spotfi-bridge-go/spotfi-bridge-binaries.tar.gz
+spotfi-bridge-go/upx/
+
+# Tools and binaries
+.tools/
+*.exe
 
