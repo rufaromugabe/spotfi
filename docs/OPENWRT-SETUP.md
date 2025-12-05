@@ -98,18 +98,37 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 
 **For Private Repository (with GitHub Token):**
 
+> **Note:** BusyBox `wget` on OpenWRT doesn't support `--header`. Use `curl` instead, or install full `wget`.
+
 Create a GitHub Personal Access Token:
 1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
 2. Generate new token with `repo` scope
 3. Copy the token (starts with `ghp_`)
 
-**Option 1: Store token on router (recommended):**
+**Option 1: Using curl (Recommended - works with BusyBox):**
 ```bash
 # Store token securely
 echo "ghp_your_token_here" > /etc/github_token
 chmod 600 /etc/github_token
 
-# Download script
+# Download script using curl
+curl -H "Authorization: token $(cat /etc/github_token)" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     -o /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
+**Option 2: Install full wget (if curl not available):**
+```bash
+# Install full wget package
+opkg update
+opkg install wget
+
+# Then use wget with headers
+echo "ghp_your_token_here" > /etc/github_token
+chmod 600 /etc/github_token
+
 wget --header="Authorization: token $(cat /etc/github_token)" \
      --header="Accept: application/vnd.github.v3.raw" \
      -O /tmp/openwrt-setup-cloud.sh \
@@ -117,15 +136,17 @@ wget --header="Authorization: token $(cat /etc/github_token)" \
 chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
-**Option 2: Use environment variable:**
-```bash
-export GITHUB_TOKEN="ghp_your_token_here"
-wget --header="Authorization: token ${GITHUB_TOKEN}" \
-     --header="Accept: application/vnd.github.v3.raw" \
-     -O /tmp/openwrt-setup-cloud.sh \
-     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
-chmod +x /tmp/openwrt-setup-cloud.sh
-```
+**Option 3: Manual download (if both fail):**
+1. Download the script on your computer from: `https://github.com/rufaromugabe/spotfi/blob/main/scripts/openwrt-setup-cloud.sh`
+2. Copy to router via SCP:
+   ```bash
+   # From your computer
+   scp openwrt-setup-cloud.sh root@192.168.1.1:/tmp/
+   ```
+3. On router:
+   ```bash
+   chmod +x /tmp/openwrt-setup-cloud.sh
+   ```
 
 ---
 
@@ -138,7 +159,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
 # With custom server (for self-hosting)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wvgss://your-server.com/ws
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws
 
 # With GitHub token (if not stored in /etc/github_token)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_your_token_here
@@ -314,6 +335,67 @@ ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
 ---
 
 ## 🔍 Troubleshooting
+
+### Problem: "wget: unrecognized option: header"
+
+**Error:**
+```
+wget: unrecognized option: header=Authorization: token ...
+```
+
+**Cause:**
+BusyBox `wget` (default on OpenWRT) doesn't support the `--header` option. This is needed for downloading from private GitHub repositories.
+
+**Solutions:**
+
+**Solution 1: Use curl (Recommended)**
+```bash
+# Check if curl is available
+which curl
+
+# If available, use curl instead:
+curl -H "Authorization: token $(cat /etc/github_token)" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     -o /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
+**Solution 2: Install full wget**
+```bash
+# Install full wget package (replaces BusyBox wget)
+opkg update
+opkg install wget
+
+# Now wget with headers will work
+wget --header="Authorization: token $(cat /etc/github_token)" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
+**Solution 3: Install curl (if not available)**
+```bash
+# Install curl package
+opkg update
+opkg install curl ca-bundle
+
+# Then use curl (see Solution 1)
+```
+
+**Solution 4: Manual download**
+If you can't install packages, download the script on your computer and copy it:
+```bash
+# On your computer, download the script
+# Then copy to router via SCP:
+scp openwrt-setup-cloud.sh root@192.168.1.1:/tmp/
+
+# On router:
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
+
+---
 
 ### Problem: "Router shows OFFLINE"
 
