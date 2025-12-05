@@ -8,6 +8,7 @@ import { prisma } from '../lib/prisma.js';
 import { hashPassword } from '../utils/auth.js';
 import { syncUserToRadius, removeUserFromRadius } from '../services/radius-sync.js';
 import { getUserTotalUsage } from '../services/usage.js';
+import { getUserActiveSessionCount } from '../services/session-counter.js';
 import { z } from 'zod';
 import { Prisma, EndUserStatus } from '@prisma/client';
 
@@ -70,21 +71,21 @@ export async function endUserRoutes(fastify: FastifyInstance) {
     const user = request.user as DecodedUser;
     const body = CreateEndUserSchema.parse(request.body);
 
-    // Check if username already exists
-    const existing = await prisma.endUser.findUnique({
-      where: { username: body.username },
-    });
-
-    if (existing) {
-      return reply.code(400).send({ error: 'Username already exists' });
-    }
-
     // Hash password
     const hashedPassword = await hashPassword(body.password);
 
-    // Create user
-    const endUser = await prisma.endUser.create({
-      data: {
+    // Idempotent user creation: Use upsert to handle retries safely
+    // If user already exists, return existing user (idempotent)
+    const endUser = await prisma.endUser.upsert({
+      where: { username: body.username },
+      update: {
+        // Update only if provided (idempotent - safe to retry)
+        email: body.email ?? undefined,
+        phone: body.phone ?? undefined,
+        fullName: body.fullName ?? undefined,
+        notes: body.notes ?? undefined,
+      },
+      create: {
         username: body.username,
         password: hashedPassword,
         email: body.email,
@@ -95,9 +96,18 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       },
     });
 
-    // Create RADIUS entry (User-Password in radcheck)
-    await prisma.radCheck.create({
-      data: {
+    // Idempotent RADIUS entry: Use upsert
+    await prisma.radCheck.upsert({
+      where: {
+        userName_attribute: {
+          userName: body.username,
+          attribute: 'User-Password',
+        },
+      },
+      update: {
+        value: body.password, // Update password if retrying
+      },
+      create: {
         userName: body.username,
         attribute: 'User-Password',
         op: ':=',
@@ -234,13 +244,8 @@ export async function endUserRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'User not found' });
     }
 
-    // Get usage statistics
-    const activeSessions = await prisma.radAcct.count({
-      where: {
-        userName: endUser.username,
-        acctStopTime: null,
-      },
-    });
+    // Get usage statistics (use Redis for fast session count)
+    const activeSessions = await getUserActiveSessionCount(endUser.username, fastify.log);
 
     const totalUsageBytes = await getUserTotalUsage(endUser.username);
 

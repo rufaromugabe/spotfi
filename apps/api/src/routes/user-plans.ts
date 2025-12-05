@@ -17,6 +17,7 @@ const AssignPlanSchema = z.object({
   autoRenew: z.boolean().default(false),
   renewalPlanId: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
+  idempotencyKey: z.string().optional(), // For idempotent requests
 });
 
 export async function userPlanRoutes(fastify: FastifyInstance) {
@@ -76,25 +77,84 @@ export async function userPlanRoutes(fastify: FastifyInstance) {
     // Use custom quota or plan default
     const dataQuota = body.dataQuota ? BigInt(Math.floor(body.dataQuota)) : plan.dataQuota;
 
-    // Create user plan
-    const userPlan = await prisma.userPlan.create({
-      data: {
+    // Idempotency: Check if plan already assigned with same idempotency key
+    // Or check for existing active plan with same planId (idempotent by design)
+    if (body.idempotencyKey) {
+      const existing = await prisma.userPlan.findFirst({
+        where: {
+          userId,
+          planId: body.planId,
+          status: 'ACTIVE',
+          // In a real system, you'd store idempotencyKey in a separate table
+          // For now, we check if an active plan with same planId exists
+        },
+        include: { plan: true },
+      });
+
+      if (existing) {
+        // Return existing plan (idempotent response)
+        return reply.code(200).send({
+          id: existing.id,
+          userId: existing.userId,
+          plan: {
+            id: existing.plan.id,
+            name: existing.plan.name,
+          },
+          status: existing.status,
+          dataQuota: existing.dataQuota ? Number(existing.dataQuota) : null,
+          dataUsed: Number(await getUserTotalUsage(endUser.username)),
+          expiresAt: existing.expiresAt,
+          autoRenew: existing.autoRenew,
+          activatedAt: existing.activatedAt,
+        });
+      }
+    }
+
+    // Idempotent approach: Check for existing active plan first, then create or update
+    const existingActivePlan = await prisma.userPlan.findFirst({
+      where: {
         userId,
         planId: body.planId,
         status: 'ACTIVE',
-        activatedAt: new Date(),
-        expiresAt,
-        dataQuota,
-        dataUsed: 0n,
-        autoRenew: body.autoRenew,
-        renewalPlanId: body.renewalPlanId,
-        assignedById: user.userId,
-        notes: body.notes,
       },
-      include: {
-        plan: true,
-      },
+      include: { plan: true },
     });
+
+    let userPlan;
+    if (existingActivePlan) {
+      // Update existing active plan (idempotent - safe to retry)
+      userPlan = await prisma.userPlan.update({
+        where: { id: existingActivePlan.id },
+        data: {
+          expiresAt,
+          dataQuota,
+          autoRenew: body.autoRenew,
+          renewalPlanId: body.renewalPlanId,
+          notes: body.notes,
+        },
+        include: { plan: true },
+      });
+    } else {
+      // Create new plan assignment
+      userPlan = await prisma.userPlan.create({
+        data: {
+          userId,
+          planId: body.planId,
+          status: 'ACTIVE',
+          activatedAt: new Date(),
+          expiresAt,
+          dataQuota,
+          dataUsed: 0n,
+          autoRenew: body.autoRenew,
+          renewalPlanId: body.renewalPlanId,
+          assignedById: user.userId,
+          notes: body.notes,
+        },
+        include: {
+          plan: true,
+        },
+      });
+    }
 
     // Sync to RADIUS
     await syncUserToRadius({

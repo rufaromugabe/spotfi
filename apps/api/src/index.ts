@@ -26,6 +26,7 @@ import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { disconnectWorker } from './queues/disconnect-queue.js';
 import { stopPgNotifyListener } from './services/pg-notify.js';
+import { initializeSessionCounts } from './services/session-counter.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -172,6 +173,11 @@ const start = async () => {
     
     // Start production scheduler
     startScheduler();
+    
+    // Initialize Redis session counts (async, don't block startup)
+    initializeSessionCounts(fastify.log).catch((err) => {
+      fastify.log.warn(`Failed to initialize session counts: ${err.message}`);
+    });
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

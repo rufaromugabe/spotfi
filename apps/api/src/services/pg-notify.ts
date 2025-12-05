@@ -18,10 +18,12 @@
 import { Client } from 'pg';
 import { prisma } from '../lib/prisma.js';
 import { disconnectQueue } from '../queues/disconnect-queue.js';
+import { incrementUserSessionCount, decrementUserSessionCount } from './session-counter.js';
 import { FastifyBaseLogger } from 'fastify';
 
 const DISCONNECT_QUEUE_CHANNEL = 'disconnect_queue_notify';
 const PLAN_EXPIRY_CHANNEL = 'plan_expiry_notify';
+const SESSION_COUNT_CHANNEL = 'session_count_change';
 
 let notifyClient: Client | null = null;
 let isListening = false;
@@ -54,11 +56,12 @@ export async function startPgNotifyListener(logger?: FastifyBaseLogger): Promise
     await notifyClient.connect();
     logger?.info('✅ Connected to PostgreSQL for NOTIFY listener');
 
-    // Start listening on both channels
+    // Start listening on all channels
     await notifyClient.query(`LISTEN ${DISCONNECT_QUEUE_CHANNEL}`);
     await notifyClient.query(`LISTEN ${PLAN_EXPIRY_CHANNEL}`);
+    await notifyClient.query(`LISTEN ${SESSION_COUNT_CHANNEL}`);
     isListening = true;
-    logger?.info(`✅ Started PostgreSQL NOTIFY listener on channels: ${DISCONNECT_QUEUE_CHANNEL}, ${PLAN_EXPIRY_CHANNEL}`);
+    logger?.info(`✅ Started PostgreSQL NOTIFY listener on channels: ${DISCONNECT_QUEUE_CHANNEL}, ${PLAN_EXPIRY_CHANNEL}, ${SESSION_COUNT_CHANNEL}`);
 
     // Set up notification handler
     notifyClient.on('notification', async (msg) => {
@@ -72,6 +75,24 @@ export async function startPgNotifyListener(logger?: FastifyBaseLogger): Promise
         // Process plan expiry immediately when notified
         if (userId) {
           await processPlanExpiryOnNotify(userId, logger);
+        }
+      } else if (msg.channel === SESSION_COUNT_CHANNEL) {
+        // Update Redis session counter
+        try {
+          const data = JSON.parse(msg.payload || '{}');
+          const { username, action } = data;
+          
+          if (username && action) {
+            if (action === 'start') {
+              await incrementUserSessionCount(username);
+              logger?.debug(`[SessionCounter] Incremented count for ${username}`);
+            } else if (action === 'stop') {
+              await decrementUserSessionCount(username);
+              logger?.debug(`[SessionCounter] Decremented count for ${username}`);
+            }
+          }
+        } catch (error: any) {
+          logger?.warn(`[SessionCounter] Failed to process session count notification: ${error.message}`);
         }
       }
     });
@@ -112,6 +133,7 @@ export async function stopPgNotifyListener(logger?: FastifyBaseLogger): Promise<
     try {
       await notifyClient.query(`UNLISTEN ${DISCONNECT_QUEUE_CHANNEL}`);
       await notifyClient.query(`UNLISTEN ${PLAN_EXPIRY_CHANNEL}`);
+      await notifyClient.query(`UNLISTEN ${SESSION_COUNT_CHANNEL}`);
       await notifyClient.end();
       isListening = false;
       logger?.info('✅ Stopped PostgreSQL NOTIFY listener');
