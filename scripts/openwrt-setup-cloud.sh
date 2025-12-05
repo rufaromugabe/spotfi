@@ -77,68 +77,10 @@ echo ""
 
 TOTAL_STEPS=6
 
-# Step 1: Update package list and ensure wget is installed
+# Step 1: Update package list
 STEP_NUM=1
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
 opkg update
-
-# Ensure wget with full features (SSL/TLS and headers) is installed
-WGET_NEEDED=0
-WGET_FULL=0
-
-# Check if wget exists
-if ! command -v wget >/dev/null 2>&1; then
-    WGET_NEEDED=1
-else
-    # Check if wget supports required features (headers and HTTPS)
-    if ! wget --help 2>&1 | grep -qE "header|https"; then
-        echo "  - Current wget lacks required features, upgrading to full version..."
-        WGET_NEEDED=1
-    else
-        # Test if it's the SSL-enabled version (wget-ssl)
-        if wget --version 2>&1 | grep -qi "ssl\|gnutls\|openssl"; then
-            WGET_FULL=1
-            echo -e "${GREEN}✓ wget (full version with SSL) already installed${NC}"
-        else
-            echo "  - Upgrading to wget-ssl for full features..."
-            WGET_NEEDED=1
-        fi
-    fi
-fi
-
-# Install or upgrade wget if needed
-if [ $WGET_NEEDED -eq 1 ]; then
-    echo "  - Installing wget (full version with SSL/TLS and header support)..."
-    # Remove basic wget if present
-    opkg remove wget wget-nossl 2>/dev/null || true
-    
-    # Try to install wget-ssl (full-featured version with SSL/TLS)
-    if opkg install wget-ssl 2>/dev/null; then
-        echo -e "${GREEN}✓ wget-ssl installed (full version with SSL/TLS)${NC}"
-        WGET_FULL=1
-    elif opkg install wget; then
-        echo -e "${GREEN}✓ wget installed${NC}"
-        # Verify it has the features we need
-        if ! wget --help 2>&1 | grep -qE "header|https"; then
-            echo -e "${YELLOW}Warning: Installed wget may have limited features${NC}"
-        else
-            WGET_FULL=1
-        fi
-    else
-        echo -e "${RED}Error: Failed to install wget${NC}"
-        echo "Please install wget manually: opkg install wget-ssl (or opkg install wget)"
-        exit 1
-    fi
-fi
-
-# Final verification
-if [ $WGET_FULL -eq 0 ]; then
-    if wget --help 2>&1 | grep -qE "header"; then
-        echo -e "${GREEN}✓ wget supports custom headers${NC}"
-    else
-        echo -e "${YELLOW}Warning: wget may not support all required features${NC}"
-    fi
-fi
 
 # Step 2: Configure timezone to Harare (CAT, UTC+2)
 STEP_NUM=$((STEP_NUM + 1))
@@ -280,120 +222,42 @@ echo "  - Downloading binary for $ARCH_STRING..."
 if [ -n "$GITHUB_TOKEN" ]; then
     # Private repo: Use GitHub API to get release assets
     # First, get the latest release info
-    echo "  - Fetching release information from GitHub API..."
-    RELEASE_JSON=$(wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
-                        --header="Accept: application/vnd.github+json" \
-                        --header="X-GitHub-Api-Version: 2022-11-28" \
-                        -O - "$DOWNLOAD_URL" 2>&1)
-    WGET_EXIT=$?
+    RELEASE_JSON=$(wget --header="Authorization: token ${GITHUB_TOKEN}" \
+                        --header="Accept: application/vnd.github.v3+json" \
+                        -q -O - "$DOWNLOAD_URL" 2>/dev/null)
     
-    if [ $WGET_EXIT -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
-        echo -e "${RED}Error: Failed to fetch release info${NC}"
-        echo "wget exit code: $WGET_EXIT"
-        echo "Response: $RELEASE_JSON"
-        echo ""
-        echo "Possible issues:"
-        echo "  - GitHub token may be invalid or expired"
-        echo "  - Token may not have 'repo' scope permissions"
-        echo "  - Network connectivity issue"
-        echo "  - No releases exist yet (create a release first)"
+    if [ $? -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
+        echo -e "${RED}Error: Failed to fetch release info (check token permissions)${NC}"
         exit 1
     fi
     
-    # Check if response is an error message
-    if echo "$RELEASE_JSON" | grep -q "Bad credentials\|Not Found\|rate limit"; then
-        echo -e "${RED}Error: GitHub API error${NC}"
-        echo "$RELEASE_JSON" | head -n 5
-        exit 1
+    # Extract download URL for the specific binary asset
+    # Try multiple patterns to handle different JSON formatting
+    ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    
+    # Fallback: try simpler pattern
+    if [ -z "$ASSET_URL" ]; then
+        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
     fi
     
-    # Extract asset ID using jq if available (more reliable), otherwise use grep/sed
-    ASSET_ID=""
-    ASSET_NAME=""
-    
-    # Check if jq is available for better JSON parsing
-    if command -v jq >/dev/null 2>&1; then
-        echo "  - Using jq for JSON parsing..."
-        # Use jq to extract asset ID - more reliable than grep/sed
-        ASSET_ID=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"spotfi-bridge-${BINARY_ARCH}\") | .id" 2>/dev/null)
-        ASSET_NAME=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"spotfi-bridge-${BINARY_ARCH}\") | .name" 2>/dev/null)
-    else
-        # Fallback to grep/sed parsing
-        echo "  - Parsing JSON with grep/sed (consider installing jq for better reliability)..."
-        ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 20 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
-        
-        if [ -n "$ASSET_BLOCK" ]; then
-            # Extract asset ID (must be numeric)
-            ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
-            # Extract asset name
-            ASSET_NAME=$(echo "$ASSET_BLOCK" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        fi
-        
-        # Fallback: try to extract from entire JSON if asset block method failed
-        if [ -z "$ASSET_ID" ]; then
-            ASSET_SECTION=$(echo "$RELEASE_JSON" | grep -B 10 -A 20 "spotfi-bridge-${BINARY_ARCH}")
-            ASSET_ID=$(echo "$ASSET_SECTION" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
-        fi
-    fi
-    
-    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
+    if [ -z "$ASSET_URL" ]; then
         echo -e "${RED}Error: Binary asset 'spotfi-bridge-${BINARY_ARCH}' not found in latest release${NC}"
-        echo ""
         echo "Available assets in release:"
-        if command -v jq >/dev/null 2>&1; then
-            echo "$RELEASE_JSON" | jq -r ".assets[].name" 2>/dev/null | head -n 10 || echo "Could not parse asset names"
-        else
-            echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
-        fi
-        echo ""
-        echo "Please ensure a release exists with the binary: spotfi-bridge-${BINARY_ARCH}"
+        echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 5 || echo "Could not parse asset names"
         exit 1
     fi
     
-    # Use the proven method: embed token in URL with --auth-no-challenge
-    # This is the method that works reliably with GitHub API
-    ASSET_URL="https://${GITHUB_TOKEN}:@api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
-    
-    if [ -n "$ASSET_NAME" ]; then
-        echo "  - Found asset: $ASSET_NAME (ID: $ASSET_ID)"
-    else
-        echo "  - Found asset ID: $ASSET_ID"
-    fi
-    echo "  - Downloading binary from GitHub API..."
-    
-    # Download using the proven method: --auth-no-challenge with token in URL
-    # This method works reliably with GitHub's API
-    if wget --auth-no-challenge \
-            --header="Accept: application/octet-stream" \
-            --progress=dot:giga \
-            -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
-        # Verify the file was downloaded and is not empty
-        if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
-            echo -e "${GREEN}✓ Download successful${NC}"
-        else
-            echo -e "${RED}Error: Downloaded file is empty or missing${NC}"
-            exit 1
-        fi
-    else
-        echo -e "${RED}Error: Failed to download binary${NC}"
-        echo "Asset URL: https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
-        echo "Asset ID: $ASSET_ID"
-        echo ""
-        echo "Please check:"
-        echo "  - Token has 'repo' scope (or 'Contents' read permission for fine-grained tokens)"
-        echo "  - Network connectivity"
-        echo "  - Binary exists in release"
-        echo "  - Token is valid and not expired"
+    # Download the binary asset with authentication
+    if ! wget --header="Authorization: token ${GITHUB_TOKEN}" \
+              --header="Accept: application/octet-stream" \
+              -q -O /tmp/spotfi-bridge "$ASSET_URL" 2>/dev/null; then
+        echo -e "${RED}Error: Failed to download binary (check token permissions)${NC}"
         exit 1
     fi
 else
     # Public repo: Direct download from releases
-    echo "  - Downloading from public GitHub releases..."
-    if ! wget --progress=dot:giga \
-              -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>&1; then
+    if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
         echo -e "${RED}Error: Failed to download binary${NC}"
-        echo "Download URL: $DOWNLOAD_URL"
-        echo ""
         echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
         echo "Or provide a GitHub token for private repository access"
         exit 1
