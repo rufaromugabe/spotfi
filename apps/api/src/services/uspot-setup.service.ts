@@ -283,7 +283,7 @@ export class UspotSetupService {
           // Try to extract meaningful error from stderr/stdout
           if (stderr) {
             // Extract error lines
-            const errorLines = stderr.split('\n').filter(line => 
+            const errorLines = stderr.split('\n').filter((line: string) => 
               line.includes('error') || 
               line.includes('Error') || 
               line.includes('failed') ||
