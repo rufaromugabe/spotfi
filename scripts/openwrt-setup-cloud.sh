@@ -281,8 +281,9 @@ if [ -n "$GITHUB_TOKEN" ]; then
     # Private repo: Use GitHub API to get release assets
     # First, get the latest release info
     echo "  - Fetching release information from GitHub API..."
-    RELEASE_JSON=$(wget --header="Authorization: token ${GITHUB_TOKEN}" \
-                        --header="Accept: application/vnd.github.v3+json" \
+    RELEASE_JSON=$(wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
+                        --header="Accept: application/vnd.github+json" \
+                        --header="X-GitHub-Api-Version: 2022-11-28" \
                         -O - "$DOWNLOAD_URL" 2>&1)
     WGET_EXIT=$?
     
@@ -306,27 +307,34 @@ if [ -n "$GITHUB_TOKEN" ]; then
         exit 1
     fi
     
-    # Extract asset ID and name for the specific binary asset
-    # When using GitHub API with token, we need to use the asset ID endpoint, not browser_download_url
+    # Extract asset ID, name, and browser_download_url for the specific binary asset
     ASSET_ID=""
     ASSET_NAME=""
+    BROWSER_URL=""
     
-    # Find the asset block for our binary
-    ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 15 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
+    # Find the asset block for our binary - search in the assets array
+    ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 20 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
     
     if [ -n "$ASSET_BLOCK" ]; then
-        # Extract asset ID
-        ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]*" | head -n 1 | grep -o "[0-9]*")
+        # Extract asset ID (must be numeric)
+        ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
+        # Extract asset name
         ASSET_NAME=$(echo "$ASSET_BLOCK" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        # Extract browser_download_url as fallback
+        BROWSER_URL=$(echo "$ASSET_BLOCK" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
     fi
     
     # Fallback: try to extract from entire JSON if asset block method failed
     if [ -z "$ASSET_ID" ]; then
-        # Try to find asset ID by searching for the binary name pattern
-        ASSET_ID=$(echo "$RELEASE_JSON" | grep -B 5 -A 10 "spotfi-bridge-${BINARY_ARCH}" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]*" | head -n 1 | grep -o "[0-9]*")
+        # Search more broadly for the binary name
+        ASSET_SECTION=$(echo "$RELEASE_JSON" | grep -B 10 -A 20 "spotfi-bridge-${BINARY_ARCH}")
+        ASSET_ID=$(echo "$ASSET_SECTION" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
+        if [ -z "$BROWSER_URL" ]; then
+            BROWSER_URL=$(echo "$ASSET_SECTION" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        fi
     fi
     
-    if [ -z "$ASSET_ID" ]; then
+    if [ -z "$ASSET_ID" ] && [ -z "$BROWSER_URL" ]; then
         echo -e "${RED}Error: Binary asset 'spotfi-bridge-${BINARY_ARCH}' not found in latest release${NC}"
         echo ""
         echo "Available assets in release:"
@@ -336,29 +344,66 @@ if [ -n "$GITHUB_TOKEN" ]; then
         exit 1
     fi
     
-    # Use GitHub API asset endpoint (required for authenticated downloads)
-    ASSET_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
+    # Use GitHub API asset endpoint (preferred for authenticated downloads)
+    DOWNLOAD_SUCCESS=0
     
-    if [ -n "$ASSET_NAME" ]; then
-        echo "  - Found asset: $ASSET_NAME (ID: $ASSET_ID)"
-    else
-        echo "  - Found asset ID: $ASSET_ID, downloading binary..."
+    if [ -n "$ASSET_ID" ]; then
+        ASSET_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
+        if [ -n "$ASSET_NAME" ]; then
+            echo "  - Found asset: $ASSET_NAME (ID: $ASSET_ID)"
+        else
+            echo "  - Found asset ID: $ASSET_ID"
+        fi
+        echo "  - Downloading from GitHub API endpoint..."
+        
+        # Download the binary asset using GitHub API endpoint with authentication
+        # GitHub API may return 302 redirect or 200 direct stream - wget -L handles both
+        if wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
+                --header="Accept: application/octet-stream" \
+                --header="X-GitHub-Api-Version: 2022-11-28" \
+                --progress=dot:giga \
+                -L \
+                -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
+            # Verify the file was downloaded and is not empty
+            if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
+                echo -e "${GREEN}✓ Download successful via API endpoint${NC}"
+                DOWNLOAD_SUCCESS=1
+            fi
+        fi
     fi
     
-    # Download the binary asset using GitHub API endpoint with authentication
-    # This is the correct way to download with a token (not browser_download_url)
-    if ! wget --header="Authorization: token ${GITHUB_TOKEN}" \
-              --header="Accept: application/octet-stream" \
-              --progress=dot:giga \
-              -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
-        echo -e "${RED}Error: Failed to download binary${NC}"
-        echo "Asset API URL: $ASSET_URL"
-        echo "Asset ID: $ASSET_ID"
+    # Fallback to browser_download_url if API endpoint failed or wasn't available
+    if [ $DOWNLOAD_SUCCESS -eq 0 ] && [ -n "$BROWSER_URL" ]; then
+        ASSET_URL="$BROWSER_URL"
+        echo "  - API endpoint failed, trying browser_download_url as fallback..."
+        echo "  - Using browser URL: ${BROWSER_URL%%\?*}"
+        if wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
+                --header="Accept: application/octet-stream" \
+                --progress=dot:giga \
+                -L \
+                -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
+            if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
+                echo -e "${GREEN}✓ Download successful via browser URL${NC}"
+                DOWNLOAD_SUCCESS=1
+            fi
+        fi
+    fi
+    
+    # Final check
+    if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
+        echo -e "${RED}Error: Failed to download binary from all available URLs${NC}"
+        if [ -n "$ASSET_ID" ]; then
+            echo "Tried API URL: https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
+        fi
+        if [ -n "$BROWSER_URL" ]; then
+            echo "Tried browser URL: $BROWSER_URL"
+        fi
         echo ""
         echo "Please check:"
-        echo "  - Token has 'repo' scope"
+        echo "  - Token has 'repo' scope (or 'Contents' read permission for fine-grained tokens)"
         echo "  - Network connectivity"
         echo "  - Binary exists in release"
+        echo "  - Token is valid and not expired"
         exit 1
     fi
 else
