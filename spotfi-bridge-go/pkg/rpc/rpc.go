@@ -28,29 +28,41 @@ func HandleRPC(msg map[string]interface{}, sendFunc func(interface{}) error) {
 
 	cmd := exec.Command("ubus", "call", req.Path, req.Method, argsStr)
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 
 	response := map[string]interface{}{
 		"type": "rpc-result",
 		"id":   req.ID,
 	}
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	
+	// Always try to parse output, even on error (ubus may return JSON with error details)
+	var result interface{}
+	if out.Len() > 0 {
+		if err := json.Unmarshal(out.Bytes(), &result); err == nil {
+			response["result"] = result
+		} else {
+			// If not JSON, return as string
+			response["result"] = out.String()
+		}
+	} else {
+		response["result"] = map[string]interface{}{}
+	}
+
+	if err != nil {
 		response["status"] = "error"
+		// Include the error message, but also include the result if available
+		// This allows us to see stderr/stdout from commands like opkg
 		response["error"] = err.Error()
+		// If we have stderr, include it
+		if stderr.Len() > 0 {
+			response["stderr"] = stderr.String()
+		}
 	} else {
 		response["status"] = "success"
-		var result interface{}
-		// Try parsing as JSON, if empty string or invalid, return raw or empty
-		if out.Len() > 0 {
-			if err := json.Unmarshal(out.Bytes(), &result); err == nil {
-				response["result"] = result
-			} else {
-				response["result"] = map[string]interface{}{}
-			}
-		} else {
-			response["result"] = map[string]interface{}{}
-		}
 	}
 
 	sendFunc(response)

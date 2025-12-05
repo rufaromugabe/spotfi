@@ -51,6 +51,13 @@ export class UspotSetupService {
     const steps: SetupStepResult[] = [];
 
     try {
+      // Step 0: Check repository configuration
+      const repoCheck = await this.checkRepositoryConfig(routerId);
+      if (repoCheck.status === 'error') {
+        steps.push(repoCheck);
+        return { steps, success: false, message: repoCheck.message || 'Repository configuration check failed' };
+      }
+
       // Step 1: Update packages
       steps.push(await this.updatePackages(routerId));
 
@@ -58,7 +65,7 @@ export class UspotSetupService {
       const installResult = await this.installPackages(routerId);
       steps.push(installResult);
       if (installResult.status === 'error') {
-        return { steps, success: false, message: 'Package installation failed' };
+        return { steps, success: false, message: installResult.message || 'Package installation failed' };
       }
 
       // Step 3: Configure wireless (optional)
@@ -105,16 +112,78 @@ export class UspotSetupService {
   }
 
   /**
+   * Check repository configuration
+   */
+  private async checkRepositoryConfig(routerId: string): Promise<SetupStepResult> {
+    try {
+      // Check if distfeeds.conf exists and has content
+      const result = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
+        command: 'test -f /etc/opkg/distfeeds.conf && grep -q "^src" /etc/opkg/distfeeds.conf && echo "OK" || echo "MISSING"'
+      }, 5000);
+      
+      const output = JSON.stringify(result);
+      if (output.includes('MISSING')) {
+        return {
+          step: 'repository_check',
+          status: 'error',
+          message: 'Package repositories not configured. Please configure /etc/opkg/distfeeds.conf on the router first.'
+        };
+      }
+      
+      return { step: 'repository_check', status: 'success' };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.warn(`[uSpot Setup] Repository check warning: ${message}`);
+      // Don't fail on check error, let opkg update handle it
+      return { step: 'repository_check', status: 'warning', message };
+    }
+  }
+
+  /**
    * Update package list
    */
   private async updatePackages(routerId: string): Promise<SetupStepResult> {
     try {
-      await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-        command: 'opkg update'
+      // Run opkg update and capture full output including stderr
+      // Use a wrapper to capture exit code and output separately
+      const result = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
+        command: 'opkg update 2>&1; echo "EXIT_CODE:$?"'
       }, 60000);
+      
+      // Log full result for debugging
+      this.logger.debug(`[uSpot Setup] opkg update result: ${JSON.stringify(result)}`);
+      
+      // Check result structure - system.exec returns {code, stdout, stderr} or just the output
+      const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+      
+      // Check for exit code in output
+      if (resultStr.includes('EXIT_CODE:253') || resultStr.includes('EXIT_CODE:1') || resultStr.includes('exit status 253')) {
+        const errorMsg = this.extractOpkgError(result);
+        this.logger.warn(`[uSpot Setup] Package update warning: ${errorMsg}`);
+        return { step: 'package_update', status: 'warning', message: errorMsg };
+      }
+      
+      // Check for opkg error messages
+      if (resultStr.includes('Collected errors') || resultStr.includes('wget returned') || resultStr.includes('Failed to download')) {
+        const errorMsg = this.extractOpkgError(result);
+        this.logger.warn(`[uSpot Setup] Package update warning: ${errorMsg}`);
+        return { step: 'package_update', status: 'warning', message: errorMsg };
+      }
+      
       return { step: 'package_update', status: 'success' };
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      // If error is thrown, try to extract more info
+      const errorObj = error as any;
+      let message = error instanceof Error ? error.message : 'Unknown error';
+      
+      // Check if error contains result with code/stderr
+      if (errorObj?.result) {
+        const errorMsg = this.extractOpkgError(errorObj.result);
+        if (errorMsg && errorMsg !== message) {
+          message = errorMsg;
+        }
+      }
+      
       this.logger.warn(`[uSpot Setup] Package update warning: ${message}`);
       return { step: 'package_update', status: 'warning', message };
     }
@@ -125,15 +194,45 @@ export class UspotSetupService {
    */
   private async installPackages(routerId: string): Promise<SetupStepResult> {
     try {
-      // Install main packages
-      await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-        command: `opkg install ${this.REQUIRED_PACKAGES.join(' ')}`
+      // First, try to get diagnostic info about what packages are available
+      try {
+        const diagResult = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
+          command: 'opkg list | head -5 2>&1 || echo "DIAG: opkg list failed"'
+        }, 10000);
+        this.logger.debug(`[uSpot Setup] Package diagnostic: ${JSON.stringify(diagResult)}`);
+      } catch {
+        // Ignore diagnostic failures
+      }
+
+      // Install main packages with stderr capture and exit code
+      const installResult = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
+        command: `opkg install ${this.REQUIRED_PACKAGES.join(' ')} 2>&1; echo "EXIT_CODE:$?"`
       }, 120000);
+
+      // Log full result for debugging
+      this.logger.debug(`[uSpot Setup] opkg install result: ${JSON.stringify(installResult)}`);
+
+      // Check result structure
+      const output = typeof installResult === 'string' ? installResult : JSON.stringify(installResult);
+      
+      // Check for exit codes
+      if (output.includes('EXIT_CODE:253') || output.includes('EXIT_CODE:1') || output.includes('exit status 253')) {
+        const errorMsg = this.extractOpkgError(installResult);
+        this.logger.error(`[uSpot Setup] Package installation failed: ${errorMsg}`);
+        return { step: 'package_install', status: 'error', message: errorMsg };
+      }
+
+      // Check for opkg error messages
+      if (output.includes('Collected errors') || output.includes('Cannot find package') || output.includes('Unknown package')) {
+        const errorMsg = this.extractOpkgError(installResult);
+        this.logger.error(`[uSpot Setup] Package installation failed: ${errorMsg}`);
+        return { step: 'package_install', status: 'error', message: errorMsg };
+      }
 
       // Install openssl-util if not present
       try {
         await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-          command: 'command -v openssl >/dev/null 2>&1 || opkg install openssl-util'
+          command: 'command -v openssl >/dev/null 2>&1 || opkg install openssl-util 2>&1'
         }, 60000);
       } catch {
         // Ignore if already installed
@@ -141,10 +240,105 @@ export class UspotSetupService {
 
       return { step: 'package_install', status: 'success' };
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      // If error is thrown, try to extract more info from error object
+      const errorObj = error as any;
+      let message = error instanceof Error ? error.message : 'Unknown error';
+      
+      // Check if error contains result with code/stderr
+      if (errorObj?.result) {
+        const errorMsg = this.extractOpkgError(errorObj.result);
+        if (errorMsg && errorMsg !== message) {
+          message = errorMsg;
+        }
+      }
+      
+      // Provide helpful message for exit 253
+      if (message.includes('exit status 253')) {
+        message = 'Package installation failed (exit 253). This usually means: 1) Package repositories not configured (/etc/opkg/distfeeds.conf missing or empty), 2) Network connectivity issues, or 3) Package not found in repositories. Please check router logs or configure repositories first.';
+      }
+      
       this.logger.error(`[uSpot Setup] Package installation failed: ${message}`);
       return { step: 'package_install', status: 'error', message };
     }
+  }
+
+  /**
+   * Extract opkg error message from result
+   */
+  private extractOpkgError(result: any): string {
+    // Handle different result formats
+    let resultStr: string;
+    
+    if (typeof result === 'string') {
+      resultStr = result;
+    } else if (result && typeof result === 'object') {
+      // Check for OpenWrt system.exec result format: {code, stdout, stderr}
+      if (result.code !== undefined) {
+        const code = result.code;
+        const stderr = result.stderr || '';
+        const stdout = result.stdout || '';
+        const combined = `${stdout}${stderr}`;
+        
+        if (code === 253 || code !== 0) {
+          // Try to extract meaningful error from stderr/stdout
+          if (stderr) {
+            // Extract error lines
+            const errorLines = stderr.split('\n').filter(line => 
+              line.includes('error') || 
+              line.includes('Error') || 
+              line.includes('failed') ||
+              line.includes('Cannot') ||
+              line.includes('Collected')
+            );
+            if (errorLines.length > 0) {
+              return errorLines.join('; ').substring(0, 300);
+            }
+          }
+          if (combined) {
+            return combined.substring(0, 300);
+          }
+          return `Command failed with exit code ${code}`;
+        }
+      }
+      resultStr = JSON.stringify(result);
+    } else {
+      resultStr = String(result);
+    }
+    
+    // Try to extract error messages from string
+    if (resultStr.includes('Collected errors')) {
+      const match = resultStr.match(/Collected errors[^\n]*\n([^\n]+)/);
+      if (match) return match[1].substring(0, 300);
+    }
+    
+    if (resultStr.includes('Cannot find package')) {
+      const match = resultStr.match(/Cannot find package[^\n]*\n?([^\n]+)/);
+      if (match) return `Package not found: ${match[1].substring(0, 200)}`;
+    }
+    
+    if (resultStr.includes('Unknown package')) {
+      const match = resultStr.match(/Unknown package[^\n]*\n?([^\n]+)/);
+      if (match) return `Unknown package: ${match[1].substring(0, 200)}`;
+    }
+    
+    if (resultStr.includes('wget returned')) {
+      const match = resultStr.match(/wget returned[^\n]*\n?([^\n]+)/);
+      if (match) return `Download failed: ${match[1].substring(0, 200)}`;
+    }
+    
+    if (resultStr.includes('exit status 253') || resultStr.includes('EXIT_CODE:253')) {
+      // Try to find context around the error
+      const lines = resultStr.split('\n');
+      const errorLine = lines.find(line => line.includes('error') || line.includes('Error') || line.includes('failed'));
+      if (errorLine) {
+        return `Package operation failed: ${errorLine.substring(0, 200)}`;
+      }
+      return 'Package operation failed (exit 253). Check repository configuration and network connectivity.';
+    }
+    
+    // Return meaningful portion of result
+    const meaningful = resultStr.replace(/\s+/g, ' ').substring(0, 300);
+    return meaningful || 'Unknown error occurred';
   }
 
   /**
