@@ -249,13 +249,34 @@ if [ -n "$GITHUB_TOKEN" ]; then
         exit 1
     fi
     
-    # Extract download URL for the specific binary asset
-    # Try multiple patterns to handle different JSON formatting
-    ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    # Extract asset ID and URL for the specific binary asset
+    # For authenticated downloads, we need to use the GitHub API asset URL (not browser_download_url)
+    # The API URL format is: https://api.github.com/repos/{owner}/{repo}/releases/assets/{asset_id}
     
-    # Fallback: try simpler pattern
-    if [ -z "$ASSET_URL" ]; then
-        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
+    # Try to find the asset block for our binary
+    # GitHub API returns assets as an array, each asset has: id, name, browser_download_url, etc.
+    ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 10 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
+    
+    if [ -n "$ASSET_BLOCK" ]; then
+        # Extract asset ID from the asset block
+        ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]*" | head -n 1 | grep -o "[0-9]*")
+        
+        # If we found an asset ID, use the GitHub API URL (more reliable for authenticated downloads)
+        if [ -n "$ASSET_ID" ]; then
+            ASSET_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
+            echo "  - Found asset ID: $ASSET_ID, using GitHub API URL"
+        else
+            # Fallback: extract browser_download_url from the asset block
+            ASSET_URL=$(echo "$ASSET_BLOCK" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        fi
+    else
+        # Fallback: try to extract browser_download_url from entire JSON (works for public repos)
+        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        
+        # Another fallback: try simpler pattern
+        if [ -z "$ASSET_URL" ]; then
+            ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
+        fi
     fi
     
     if [ -z "$ASSET_URL" ]; then
@@ -264,13 +285,18 @@ if [ -n "$GITHUB_TOKEN" ]; then
         echo "Available assets in release:"
         echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
         echo ""
+        echo "Looking for: spotfi-bridge-${BINARY_ARCH}"
         echo "Please ensure a release exists with the binary: spotfi-bridge-${BINARY_ARCH}"
         exit 1
     fi
     
+    # Debug: show what we found (but don't show full URL if it contains token)
+    echo "  - Using asset URL: ${ASSET_URL%%\?*}"
+    
     echo "  - Found asset URL, downloading binary..."
     # Download the binary asset with authentication
-    # Use -L to follow redirects, -f to fail on HTTP errors, -# for progress bar
+    # For GitHub API asset URLs, we must use "Accept: application/octet-stream" header
+    # Use -L to follow redirects, -f to fail on HTTP errors
     if ! curl -Lf \
               -H "Authorization: token ${GITHUB_TOKEN}" \
               -H "Accept: application/octet-stream" \
