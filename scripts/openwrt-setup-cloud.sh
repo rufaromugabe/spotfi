@@ -307,97 +307,77 @@ if [ -n "$GITHUB_TOKEN" ]; then
         exit 1
     fi
     
-    # Extract asset ID, name, and browser_download_url for the specific binary asset
+    # Extract asset ID using jq if available (more reliable), otherwise use grep/sed
     ASSET_ID=""
     ASSET_NAME=""
-    BROWSER_URL=""
     
-    # Find the asset block for our binary - search in the assets array
-    ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 20 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
-    
-    if [ -n "$ASSET_BLOCK" ]; then
-        # Extract asset ID (must be numeric)
-        ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
-        # Extract asset name
-        ASSET_NAME=$(echo "$ASSET_BLOCK" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        # Extract browser_download_url as fallback
-        BROWSER_URL=$(echo "$ASSET_BLOCK" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    fi
-    
-    # Fallback: try to extract from entire JSON if asset block method failed
-    if [ -z "$ASSET_ID" ]; then
-        # Search more broadly for the binary name
-        ASSET_SECTION=$(echo "$RELEASE_JSON" | grep -B 10 -A 20 "spotfi-bridge-${BINARY_ARCH}")
-        ASSET_ID=$(echo "$ASSET_SECTION" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
-        if [ -z "$BROWSER_URL" ]; then
-            BROWSER_URL=$(echo "$ASSET_SECTION" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    # Check if jq is available for better JSON parsing
+    if command -v jq >/dev/null 2>&1; then
+        echo "  - Using jq for JSON parsing..."
+        # Use jq to extract asset ID - more reliable than grep/sed
+        ASSET_ID=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"spotfi-bridge-${BINARY_ARCH}\") | .id" 2>/dev/null)
+        ASSET_NAME=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"spotfi-bridge-${BINARY_ARCH}\") | .name" 2>/dev/null)
+    else
+        # Fallback to grep/sed parsing
+        echo "  - Parsing JSON with grep/sed (consider installing jq for better reliability)..."
+        ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 20 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
+        
+        if [ -n "$ASSET_BLOCK" ]; then
+            # Extract asset ID (must be numeric)
+            ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
+            # Extract asset name
+            ASSET_NAME=$(echo "$ASSET_BLOCK" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        fi
+        
+        # Fallback: try to extract from entire JSON if asset block method failed
+        if [ -z "$ASSET_ID" ]; then
+            ASSET_SECTION=$(echo "$RELEASE_JSON" | grep -B 10 -A 20 "spotfi-bridge-${BINARY_ARCH}")
+            ASSET_ID=$(echo "$ASSET_SECTION" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]\+" | head -n 1 | grep -o "[0-9]\+")
         fi
     fi
     
-    if [ -z "$ASSET_ID" ] && [ -z "$BROWSER_URL" ]; then
+    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
         echo -e "${RED}Error: Binary asset 'spotfi-bridge-${BINARY_ARCH}' not found in latest release${NC}"
         echo ""
         echo "Available assets in release:"
-        echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
+        if command -v jq >/dev/null 2>&1; then
+            echo "$RELEASE_JSON" | jq -r ".assets[].name" 2>/dev/null | head -n 10 || echo "Could not parse asset names"
+        else
+            echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
+        fi
         echo ""
         echo "Please ensure a release exists with the binary: spotfi-bridge-${BINARY_ARCH}"
         exit 1
     fi
     
-    # Use GitHub API asset endpoint (preferred for authenticated downloads)
-    DOWNLOAD_SUCCESS=0
+    # Use the proven method: embed token in URL with --auth-no-challenge
+    # This is the method that works reliably with GitHub API
+    ASSET_URL="https://${GITHUB_TOKEN}:@api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
     
-    if [ -n "$ASSET_ID" ]; then
-        ASSET_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
-        if [ -n "$ASSET_NAME" ]; then
-            echo "  - Found asset: $ASSET_NAME (ID: $ASSET_ID)"
+    if [ -n "$ASSET_NAME" ]; then
+        echo "  - Found asset: $ASSET_NAME (ID: $ASSET_ID)"
+    else
+        echo "  - Found asset ID: $ASSET_ID"
+    fi
+    echo "  - Downloading binary from GitHub API..."
+    
+    # Download using the proven method: --auth-no-challenge with token in URL
+    # This method works reliably with GitHub's API
+    if wget --auth-no-challenge \
+            --header="Accept: application/octet-stream" \
+            --progress=dot:giga \
+            -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
+        # Verify the file was downloaded and is not empty
+        if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
+            echo -e "${GREEN}✓ Download successful${NC}"
         else
-            echo "  - Found asset ID: $ASSET_ID"
+            echo -e "${RED}Error: Downloaded file is empty or missing${NC}"
+            exit 1
         fi
-        echo "  - Downloading from GitHub API endpoint..."
-        
-        # Download the binary asset using GitHub API endpoint with authentication
-        # GitHub API may return 302 redirect or 200 direct stream - wget -L handles both
-        if wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
-                --header="Accept: application/octet-stream" \
-                --header="X-GitHub-Api-Version: 2022-11-28" \
-                --progress=dot:giga \
-                -L \
-                -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
-            # Verify the file was downloaded and is not empty
-            if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
-                echo -e "${GREEN}✓ Download successful via API endpoint${NC}"
-                DOWNLOAD_SUCCESS=1
-            fi
-        fi
-    fi
-    
-    # Fallback to browser_download_url if API endpoint failed or wasn't available
-    if [ $DOWNLOAD_SUCCESS -eq 0 ] && [ -n "$BROWSER_URL" ]; then
-        ASSET_URL="$BROWSER_URL"
-        echo "  - API endpoint failed, trying browser_download_url as fallback..."
-        echo "  - Using browser URL: ${BROWSER_URL%%\?*}"
-        if wget --header="Authorization: Bearer ${GITHUB_TOKEN}" \
-                --header="Accept: application/octet-stream" \
-                --progress=dot:giga \
-                -L \
-                -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
-            if [ -f /tmp/spotfi-bridge ] && [ -s /tmp/spotfi-bridge ]; then
-                echo -e "${GREEN}✓ Download successful via browser URL${NC}"
-                DOWNLOAD_SUCCESS=1
-            fi
-        fi
-    fi
-    
-    # Final check
-    if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
-        echo -e "${RED}Error: Failed to download binary from all available URLs${NC}"
-        if [ -n "$ASSET_ID" ]; then
-            echo "Tried API URL: https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
-        fi
-        if [ -n "$BROWSER_URL" ]; then
-            echo "Tried browser URL: $BROWSER_URL"
-        fi
+    else
+        echo -e "${RED}Error: Failed to download binary${NC}"
+        echo "Asset URL: https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
+        echo "Asset ID: $ASSET_ID"
         echo ""
         echo "Please check:"
         echo "  - Token has 'repo' scope (or 'Contents' read permission for fine-grained tokens)"
