@@ -168,7 +168,7 @@ sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_you
 **Example:**
 ```bash
 # Using token from Step 1
-sh /tmp/openwrt-setup-cloud.sh a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+sh /tmp/openwrt-setup-cloud.sh test-router-token-123
 ```
 
 **What the script does:**

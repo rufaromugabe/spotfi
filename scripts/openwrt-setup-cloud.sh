@@ -222,12 +222,30 @@ echo "  - Downloading binary for $ARCH_STRING..."
 if [ -n "$GITHUB_TOKEN" ]; then
     # Private repo: Use GitHub API to get release assets
     # First, get the latest release info
-    RELEASE_JSON=$(wget --header="Authorization: token ${GITHUB_TOKEN}" \
-                        --header="Accept: application/vnd.github.v3+json" \
-                        -q -O - "$DOWNLOAD_URL" 2>/dev/null)
+    echo "  - Fetching release information from GitHub API..."
+    RELEASE_JSON=$(curl -sSf \
+                        -H "Authorization: token ${GITHUB_TOKEN}" \
+                        -H "Accept: application/vnd.github.v3+json" \
+                        "$DOWNLOAD_URL" 2>&1)
+    CURL_EXIT=$?
     
-    if [ $? -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
-        echo -e "${RED}Error: Failed to fetch release info (check token permissions)${NC}"
+    if [ $CURL_EXIT -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
+        echo -e "${RED}Error: Failed to fetch release info${NC}"
+        echo "curl exit code: $CURL_EXIT"
+        echo "Response: $RELEASE_JSON"
+        echo ""
+        echo "Possible issues:"
+        echo "  - GitHub token may be invalid or expired"
+        echo "  - Token may not have 'repo' scope permissions"
+        echo "  - Network connectivity issue"
+        echo "  - No releases exist yet (create a release first)"
+        exit 1
+    fi
+    
+    # Check if response is an error message
+    if echo "$RELEASE_JSON" | grep -q "Bad credentials\|Not Found\|rate limit"; then
+        echo -e "${RED}Error: GitHub API error${NC}"
+        echo "$RELEASE_JSON" | head -n 5
         exit 1
     fi
     
@@ -242,22 +260,42 @@ if [ -n "$GITHUB_TOKEN" ]; then
     
     if [ -z "$ASSET_URL" ]; then
         echo -e "${RED}Error: Binary asset 'spotfi-bridge-${BINARY_ARCH}' not found in latest release${NC}"
+        echo ""
         echo "Available assets in release:"
-        echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 5 || echo "Could not parse asset names"
+        echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
+        echo ""
+        echo "Please ensure a release exists with the binary: spotfi-bridge-${BINARY_ARCH}"
         exit 1
     fi
     
+    echo "  - Found asset URL, downloading binary..."
     # Download the binary asset with authentication
-    if ! wget --header="Authorization: token ${GITHUB_TOKEN}" \
-              --header="Accept: application/octet-stream" \
-              -q -O /tmp/spotfi-bridge "$ASSET_URL" 2>/dev/null; then
-        echo -e "${RED}Error: Failed to download binary (check token permissions)${NC}"
+    # Use -L to follow redirects, -f to fail on HTTP errors, -# for progress bar
+    if ! curl -Lf \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              --progress-bar \
+              -o /tmp/spotfi-bridge \
+              "$ASSET_URL" 2>&1; then
+        echo -e "${RED}Error: Failed to download binary${NC}"
+        echo "Asset URL: $ASSET_URL"
+        echo "Please check:"
+        echo "  - Token has 'repo' scope"
+        echo "  - Network connectivity"
+        echo "  - Binary exists in release"
         exit 1
     fi
 else
     # Public repo: Direct download from releases
-    if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
+    echo "  - Downloading from public GitHub releases..."
+    # Use -L to follow redirects, -f to fail on HTTP errors, -# for progress bar
+    if ! curl -Lf \
+              --progress-bar \
+              -o /tmp/spotfi-bridge \
+              "$DOWNLOAD_URL" 2>&1; then
         echo -e "${RED}Error: Failed to download binary${NC}"
+        echo "Download URL: $DOWNLOAD_URL"
+        echo ""
         echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
         echo "Or provide a GitHub token for private repository access"
         exit 1
