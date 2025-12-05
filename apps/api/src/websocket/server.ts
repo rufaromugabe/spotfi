@@ -30,20 +30,41 @@ export function setupWebSocket(fastify: FastifyInstance) {
       const routerId = url.searchParams.get('id');
       const token = url.searchParams.get('token');
       const routerName = url.searchParams.get('name'); // Optional router name from setup script
+      const macAddress = url.searchParams.get('mac'); // Optional MAC address
 
-      if (!routerId || !token) {
-        connection.close(1008, 'Missing credentials');
+      if (!token) {
+        connection.close(1008, 'Missing token');
         return;
       }
 
-      // Verify router credentials
-      const router = await prisma.router.findFirst({
-        where: { id: routerId, token }
-      });
+      // Token-only mode: Look up router by token
+      // If routerId is provided, verify it matches the token (legacy mode)
+      let router;
+      if (routerId) {
+        // Legacy mode: verify both ID and token match
+        router = await prisma.router.findFirst({
+          where: { id: routerId, token }
+        });
+      } else {
+        // Token-only mode: find router by token only
+        router = await prisma.router.findFirst({
+          where: { token }
+        });
+      }
 
       if (!router) {
-        connection.close(1008, 'Invalid credentials');
+        connection.close(1008, 'Invalid token');
         return;
+      }
+
+      // Update router MAC address if provided and different
+      if (macAddress && router.macAddress !== macAddress) {
+        await prisma.router.update({
+          where: { id: router.id },
+          data: { macAddress }
+        }).catch((err) => {
+          fastify.log.warn(`Failed to update MAC address for router ${router.id}: ${err}`);
+        });
       }
 
       // Extract client IP
@@ -65,19 +86,20 @@ export function setupWebSocket(fastify: FastifyInstance) {
           commandManager.setLogger(fastify.log);
         }
 
-        const handler = new RouterConnectionHandler(routerId, connection, fastify.log);
+        // Use router.id from database (supports both legacy and token-only modes)
+        const handler = new RouterConnectionHandler(router.id, connection, fastify.log);
         await handler.initialize(clientIp, routerName || undefined);
         handler.setupMessageHandlers();
         handler.sendWelcome();
-        activeConnections.set(routerId, connection);
+        activeConnections.set(router.id, connection);
 
         // Clean up on disconnect
         connection.on('close', () => {
-          activeConnections.delete(routerId);
+          activeConnections.delete(router.id);
         });
 
         connection.on('error', () => {
-          activeConnections.delete(routerId);
+          activeConnections.delete(router.id);
         });
       } catch (error) {
         fastify.log.error(`Connection setup failed: ${error}`);

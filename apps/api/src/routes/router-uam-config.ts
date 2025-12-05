@@ -2,9 +2,55 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { AuthenticatedUser } from '../types/fastify.js';
 import { routerRpcService } from '../services/router-rpc.service.js';
 import { routerAccessService } from '../services/router-access.service.js';
+import { UspotSetupService } from '../services/uspot-setup.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
 
 export async function routerUamConfigRoutes(fastify: FastifyInstance) {
+  // Full uSpot setup endpoint - installs packages and configures everything
+  fastify.post('/api/routers/:id/uspot/setup', {
+    preHandler: [fastify.authenticate, requireAdmin],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Complete uSpot setup (packages, network, firewall, portal)',
+      security: [{ bearerAuth: [] }],
+      description: 'Admin only - Installs uSpot packages and configures network, firewall, and portal remotely',
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    assertAuthenticated(request);
+    const { id } = request.params as { id: string };
+
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    try {
+      const setupService = new UspotSetupService(fastify.log);
+      const result = await setupService.setup(id);
+
+      if (!result.success) {
+        return reply.code(503).send({
+          routerId: id,
+          success: false,
+          message: result.message,
+          results: result
+        });
+      }
+
+      return {
+        routerId: id,
+        success: true,
+        message: result.message,
+        results: result
+      };
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`[uSpot Setup] Failed: ${errorMessage}`);
+      return reply.code(503).send({ error: errorMessage });
+    }
+  });
+
   fastify.post('/api/routers/:id/uam/configure', {
     preHandler: [fastify.authenticate, requireAdmin],
     schema: {

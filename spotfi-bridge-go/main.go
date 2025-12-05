@@ -18,6 +18,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // Global state
 var (
 	cfg            config.Config
@@ -45,10 +53,16 @@ func connect() error {
 	}
 
 	// Add Query Params
+	// Token-only mode: if RouterID is not set, connect with just token
 	q := u.Query()
-	q.Set("id", cfg.RouterID)
 	q.Set("token", cfg.Token)
-	q.Set("mac", cfg.Mac)
+	if cfg.RouterID != "" {
+		// Legacy mode: include router ID
+		q.Set("id", cfg.RouterID)
+	}
+	if cfg.Mac != "" {
+		q.Set("mac", cfg.Mac)
+	}
 	if cfg.RouterName != "" {
 		q.Set("name", cfg.RouterName)
 	}
@@ -109,10 +123,6 @@ func main() {
 		case "--test", "-t":
 			fmt.Fprintln(os.Stdout, "Testing configuration...")
 			cfg = config.LoadEnv()
-			if cfg.RouterID == "" {
-				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_ROUTER_ID")
-				os.Exit(1)
-			}
 			if cfg.Token == "" {
 				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_TOKEN")
 				os.Exit(1)
@@ -122,9 +132,16 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Fprintln(os.Stdout, "Configuration OK:")
-			fmt.Fprintf(os.Stdout, "  Router ID: %s\n", cfg.RouterID)
+			if cfg.RouterID != "" {
+				fmt.Fprintf(os.Stdout, "  Router ID: %s\n", cfg.RouterID)
+			} else {
+				fmt.Fprintln(os.Stdout, "  Mode: Token-only (cloud will identify router)")
+			}
+			fmt.Fprintf(os.Stdout, "  Token: %s...\n", cfg.Token[:min(8, len(cfg.Token))])
 			fmt.Fprintf(os.Stdout, "  WebSocket URL: %s\n", cfg.WsURL)
-			fmt.Fprintf(os.Stdout, "  MAC Address: %s\n", cfg.Mac)
+			if cfg.Mac != "" {
+				fmt.Fprintf(os.Stdout, "  MAC Address: %s\n", cfg.Mac)
+			}
 			os.Exit(0)
 		case "--help", "-h":
 			fmt.Fprintln(os.Stdout, "Usage: spotfi-bridge [--version|--test|--help]")
@@ -137,8 +154,16 @@ func main() {
 
 	// If we get here, try to load env and start
 	cfg = config.LoadEnv()
+	if cfg.Token == "" {
+		log.Fatal("Missing configuration: SPOTFI_TOKEN not set")
+	}
+	if cfg.WsURL == "" {
+		log.Fatal("Missing configuration: SPOTFI_WS_URL not set")
+	}
+	
+	// Token-only mode is supported (RouterID optional)
 	if cfg.RouterID == "" {
-		log.Fatal("Missing configuration: SPOTFI_ROUTER_ID not set")
+		log.Println("Token-only mode: Router will be identified by token from cloud")
 	}
 
 	// Initialize Session Manager

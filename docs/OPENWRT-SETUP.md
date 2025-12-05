@@ -35,11 +35,22 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 
 ---
 
-## 🚀 Quick Setup (15 Minutes)
+## 🚀 Quick Setup (5 Minutes)
 
-### Step 1: Get Router Information from SpotFi
+### Step 1: Create Router in SpotFi Dashboard
 
-**Option A: Create New Router via API:**
+**Option A: Create via Dashboard (Recommended)**
+1. Log in to SpotFi dashboard as Admin
+2. Navigate to **Routers** → **Add Router**
+3. Fill in router details:
+   - **Name**: e.g., "Main Office Router"
+   - **Host**: Select the host user
+   - **MAC Address**: Router's MAC address (auto-detected if router connects first)
+   - **Location**: Optional location description
+4. Click **Create Router**
+5. **Copy the Router Token** - you'll need this for Step 2
+
+**Option B: Create via API:**
 ```bash
 curl -X POST http://192.168.56.1:8080/api/routers \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
@@ -52,302 +63,162 @@ curl -X POST http://192.168.56.1:8080/api/routers \
   }'
 ```
 
-**Option B: Get Existing Router via API:**
-```bash
-curl -X GET http://192.168.56.1:8080/api/routers \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
 **Example Response:**
 ```json
 {
-  "routers": [
-    {
-      "id": "cmichrwmz0003zijqm53zfpdr",
-      "name": "Main Office Router",
-      "hostId": "cmichrwmh0001zijqnyac16rj",
-      "token": "test-router-token-123",
-      "radiusSecret": "4e314bb12afc2d2be771429a6d14d6d7",
-      "status": "OFFLINE",
-      "lastSeen": "2025-11-24T18:55:32.701Z",
-      "totalUsage": 0,
-      "nasipaddress": "172.18.0.1",
-      "macAddress": "00:11:22:33:44:55",
-      "location": "Main Office - Floor 1",
-      "createdAt": "2025-11-24T01:52:21.751Z",
-      "updatedAt": "2025-11-24T18:56:05.985Z",
-      "host": {
-        "id": "cmichrwmh0001zijqnyac16rj",
-        "email": "host@spotfi.com"
-      }
-    }
-  ],
-  "pagination": {
-    "page": 1,
-    "limit": 50,
-    "total": 1,
-    "totalPages": 1,
-    "hasMore": false
+  "router": {
+    "id": "cmichrwmz0003zijqm53zfpdr",
+    "name": "Main Office Router",
+    "token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+    "status": "OFFLINE",
+    "macAddress": "00:11:22:33:44:55"
   }
 }
 ```
 
-**Extract the following values from the response:**
-- `id` → **ROUTER_ID**: `cmichrwmz0003zijqm53zfpdr`
-- `token` → **TOKEN**: `test-router-token-123`
-- `macAddress` → **MAC_ADDRESS**: `00:11:22:33:44:55`
-
-**Construct WebSocket URL:**
-The WebSocket URL format is: `ws://SERVER_IP:PORT/ws?id=ROUTER_ID&token=TOKEN`
-
-**Example:**
-- Server IP: `192.168.56.1`
-- Server Port: `8080`
-- Router ID: `cmichrwmz0003zijqm53zfpdr`
-- Token: `test-router-token-123`
-
-**WebSocket URL:** `ws://192.168.56.1:8080/ws?id=cmichrwmz0003zijqm53zfpdr&token=test-router-token-123`
-
-**Note:** For production with HTTPS, use `wss://` instead of `ws://`
+**Important:** Save the `token` value - this is all you need for setup!
 
 ---
 
-### Step 2: Download and Run Setup Scripts
+### Step 2: Install SpotFi Bridge on Router
 
 SSH into your OpenWRT router:
 
 ```bash
-ssh root@192.168.56.10
+ssh root@192.168.1.1
 ```
 
-**📦 Downloading Scripts from Private Repository**
+**📦 Download Setup Script**
 
-If your SpotFi repository is private, you'll need a GitHub Personal Access Token to download scripts and binaries.
+**Script and binaries are publicly accessible - no token needed!**
 
-**Option 1: Using GitHub Token (Recommended)**
-
-Create a GitHub Personal Access Token:
-1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Generate new token with `repo` scope (full control of private repositories)
-3. Copy the token (starts with `ghp_`)
-
-**Download script with token:**
 ```bash
-# Set token as environment variable
-export GITHUB_TOKEN="ghp_your_token_here"
-
-# Download script from private repo using GitHub API
-wget --header="Authorization: token ${GITHUB_TOKEN}" \
-     --header="Accept: application/vnd.github.v3.raw" \
-     -O /tmp/openwrt-setup-cloud.sh \
-     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
-
-chmod +x /tmp/openwrt-setup-cloud.sh
-```
-
-**Or store token securely on router (one-time setup):**
-```bash
-# Store token in secure file
-echo "ghp_your_token_here" > /etc/github_token
-chmod 600 /etc/github_token
-
-# Scripts will automatically use this token if present
-```
-
-**Option 2: Using Public Repository**
-
-If your repository is public, use the standard download method:
-```bash
+# Download setup script (public repository)
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
 chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
-**Choose your setup option:**
-
-#### Option A: WebSocket Bridge Only (Cloud Monitoring)
-
-For routers that only need real-time monitoring and remote control (no captive portal):
-
-**Using the example values from Step 1:**
-
+**One-liner (download and run):**
 ```bash
-# For private repo: Download script with GitHub token (if not already downloaded)
-# Skip this if you already downloaded the script in Step 2
-export GITHUB_TOKEN="ghp_your_token_here"  # Or use /etc/github_token
-wget --header="Authorization: token ${GITHUB_TOKEN}" \
-     --header="Accept: application/vnd.github.v3.raw" \
-     -O /tmp/openwrt-setup-cloud.sh \
-     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
-chmod +x /tmp/openwrt-setup-cloud.sh
-
-# Run the cloud setup script
-# Pass GitHub token as 6th parameter (optional if using env var or /etc/github_token)
-sh /tmp/openwrt-setup-cloud.sh \
-  cmichrwmz0003zijqm53zfpdr \
-  test-router-token-123 \
-  00:11:22:33:44:55 \
-  ws://192.168.56.1:8080/ws \
-  "" \
-  "$GITHUB_TOKEN"
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 ```
 
-**Or with WSS (HTTPS) for production:**
+**Note:** If your repository is private, you'll need a GitHub token. See troubleshooting section below.
+
+---
+
+### Step 3: Run Setup Script (Token-Only)
+
+**Cloudflare Tunnel-like Setup - Just provide your token!**
+
 ```bash
-sh /tmp/openwrt-setup-cloud.sh \
-  cmichrwmz0003zijqm53zfpdr \
-  test-router-token-123 \
-  00:11:22:33:44:55 \
-  wss://api.spotfi.com/ws
+# Basic usage (uses default server: wss://api.spotfi.com/ws)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
+
+# With custom server (for self-hosting)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws
+
+# With GitHub token (only needed for private repositories)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_your_token_here
 ```
 
-**Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems. If you prefer, you can also use `chmod +x` and run directly, but `sh` is more reliable.
+**Example:**
+```bash
+# Using token from Step 1
+sh /tmp/openwrt-setup-cloud.sh a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+```
 
-**Parameters:**
-- `ROUTER_ID` - Router ID from Step 1 (e.g., `cmichrwmz0003zijqm53zfpdr`)
-- `TOKEN` - Router token from Step 1 (e.g., `test-router-token-123`)
-- `MAC_ADDRESS` - Router MAC address from Step 1 (e.g., `00:11:22:33:44:55`)
-- `SERVER_DOMAIN` - (Optional) SpotFi server WebSocket URL
-  - For local development: `ws://192.168.56.1:8080/ws`
-  - For production: `wss://api.spotfi.com/ws` (default if omitted)
-- `ROUTER_NAME` - (Optional) Router name to set in SpotFi dashboard
-- `GITHUB_TOKEN` - (Optional) GitHub Personal Access Token for private repos
-  - Can also be set via `GITHUB_TOKEN` environment variable
-  - Or stored in `/etc/github_token` file (recommended for security)
+**What the script does:**
+- ✅ Detects router architecture automatically
+- ✅ Downloads and installs SpotFi bridge binary
+- ✅ Auto-detects MAC address
+- ✅ Creates minimal config with just token
+- ✅ Sets up init scripts and starts service
 
 **Environment Variables Created:**
 
 The script creates `/etc/spotfi.env` with:
 ```bash
-SPOTFI_ROUTER_ID="cmichrwmz0003zijqm53zfpdr"
-SPOTFI_TOKEN="test-router-token-123"
-SPOTFI_MAC="00:11:22:33:44:55"
-SPOTFI_WS_URL="ws://192.168.56.1:8080/ws"
-SPOTFI_ROUTER_NAME="Main Office Router"
+SPOTFI_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+SPOTFI_WS_URL="wss://api.spotfi.com/ws"
+SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 ```
 
-**Note:** The server domain is optional and will default to `wss://api.spotfi.com/ws`. If you're self-hosting SpotFi, specify your server WebSocket URL:
+**Note:** The router will connect with just the token. The cloud identifies the router and provides all configuration.
+
+---
+
+### Step 4: Configure uSpot from Cloud (Optional)
+
+If you need captive portal functionality, configure uSpot remotely from the SpotFi dashboard:
+
+**Option A: Via Dashboard (Recommended)**
+1. Wait for router to appear as **ONLINE** in dashboard (30-60 seconds)
+2. Navigate to router settings
+3. Click **Setup uSpot** or **Configure Captive Portal**
+4. The cloud will remotely install packages and configure everything
+
+**Option B: Via API:**
 ```bash
-sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS ws://your-server-ip:8080/ws
+# Setup uSpot remotely (installs packages, configures network, firewall, portal)
+curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+
+# Then configure UAM/RADIUS
+curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uamServerUrl": "https://api.spotfi.com/uam/login",
+    "radiusServer": "YOUR_RADIUS_IP",
+    "radiusSecret": "YOUR_RADIUS_SECRET"
+  }'
 ```
 
-**Troubleshooting "not found" error:**
+**What happens:**
+- ✅ Installs uSpot packages remotely
+- ✅ Configures network interfaces (LAN + hotspot)
+- ✅ Sets up firewall rules
+- ✅ Configures HTTPS portal
+- ✅ Restarts services
 
-If you get an error like `-ash: /tmp/openwrt-setup-cloud.sh: not found` after downloading the script, use one of these solutions:
-
-**Quick fix (recommended):** Run the script with `sh` explicitly:
-```bash
-sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
-```
-
-**Alternative fix:** The issue is often due to Windows line endings (CRLF). Fix it with:
-```bash
-# Convert line endings from CRLF to LF using tr (more reliable on BusyBox)
-tr -d '\r' < /tmp/openwrt-setup-cloud.sh > /tmp/openwrt-setup-cloud-fixed.sh
-mv /tmp/openwrt-setup-cloud-fixed.sh /tmp/openwrt-setup-cloud.sh
-chmod +x /tmp/openwrt-setup-cloud.sh
-
-# Then run the script
-/tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
-```
-
-**One-liner with sh (easiest):**
-```bash
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
-```
-
-#### Option B: Uspot/RADIUS Only (Captive Portal)
-
-For routers that only need captive portal with RADIUS authentication (no WebSocket bridge):
-
-```bash
-# Download and run the Uspot setup script (replace with your actual values)
-# Portal URL is optional - defaults to https://api.spotfi.com
-# For private repo: Download script with GitHub token
-export GITHUB_TOKEN="ghp_your_token_here"  # Or use /etc/github_token
-wget --header="Authorization: token ${GITHUB_TOKEN}" \
-     --header="Accept: application/vnd.github.v3.raw" \
-     -O /tmp/openwrt-setup-uspot.sh \
-     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-uspot.sh" && \
-chmod +x /tmp/openwrt-setup-uspot.sh && \
-sh /tmp/openwrt-setup-uspot.sh \
-  cmhujj1f6000112soujpo0noz \
-  5d62856936faa4919a8ab07671b04103 \
-  08:00:27:BA:FE:8D \
-  62.72.19.27 \
-  https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
-```
-
-# For private repo: Download with token
-export GITHUB_TOKEN="ghp_your_token_here"
-wget --header="Authorization: token ${GITHUB_TOKEN}" \
-     --header="Accept: application/vnd.github.v3.raw" \
-     -O /tmp/openwrt-setup-uspot.sh \
-     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-uspot.sh" && \
-chmod +x /tmp/openwrt-setup-uspot.sh && \
-sh /tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa4919a8ab07671b04103 08:00:27:BA:FE:8D 62.72.19.27 https://c40g8skkog0g0ws44wo0c40s.62.72.19.27.sslip.io
-
-
-
-**Note:** Using `sh` explicitly avoids potential "not found" errors on some OpenWrt systems.
-
-**Parameters:**
-- `ROUTER_ID` - Router ID from Step 1
-- `RADIUS_SECRET` - RADIUS secret from Step 1
-- `MAC_ADDRESS` - Router MAC address
-- `RADIUS_IP` - RADIUS server IP
-- `PORTAL_URL` - (Optional) Captive portal URL (defaults to `https://api.spotfi.com`)
-
-**Note:** The portal URL is optional and will default to `https://api.spotfi.com`. If you're self-hosting SpotFi, specify your portal URL:
-```bash
-/tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP https://your-portal.com
-```
-
-#### Option C: Both (Run Both Scripts)
-
-If you need both WebSocket bridge AND Uspot, run both scripts in order:
-
-```bash
-# First, install WebSocket bridge
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
-chmod +x /tmp/openwrt-setup-cloud.sh
-/tmp/openwrt-setup-cloud.sh cmhujj1f6000112soujpo0noz e26b8c19afa977... 08:00:27:BA:FE:8D
-
-# Then, install Uspot
-wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh
-chmod +x /tmp/openwrt-setup-uspot.sh
-/tmp/openwrt-setup-uspot.sh cmhujj1f6000112soujpo0noz 5d62856936faa... 08:00:27:BA:FE:8D 62.72.19.27 https://your-portal.com
-```
-
-**Note:** If you need to specify a custom server WebSocket URL, add it as the 4th parameter:
-```bash
-/tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS wss://your-server.com/ws
-/tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP https://your-portal.com
-```
+**No manual configuration needed!** Everything is done from the cloud.
 
 
 ---
 
-### Step 3: Verify Setup
+### Step 5: Verify Setup
 
-After running the script(s), verify everything is working:
+After running the script, verify everything is working:
 
+**On Router:**
 ```bash
-# Check WebSocket bridge (if installed)
-ps | grep bridge.py
+# Check SpotFi bridge is running
+ps | grep spotfi-bridge
 /etc/init.d/spotfi-bridge status
 
-# Check uspot (if installed)
-/etc/init.d/uspot status
-ubus call uspot client_list
+# Check service logs
+logread | grep spotfi-bridge
 
-# View logs
-logread | tail -n 50
+# View configuration
+cat /etc/spotfi.env
 ```
 
-Check in SpotFi dashboard:
-- Router should show as **ONLINE** (if WebSocket bridge is installed)
-- Status should update within 60 seconds
+**In SpotFi Dashboard:**
+- Router should show as **ONLINE** within 30-60 seconds
+- You can now configure router remotely from dashboard
+- If uSpot was configured, check captive portal functionality
+
+**Test Remote Configuration:**
+```bash
+# From dashboard or API, you can now:
+# - View router metrics
+# - Execute commands
+# - Configure network
+# - Setup uSpot (if not done yet)
+# - View active sessions
+```
 
 ---
 
@@ -423,21 +294,63 @@ ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
 
 ## 🔍 Troubleshooting
 
+### Problem: "Failed to download binary"
+
+**If you see:**
+```
+Error: Failed to download binary
+Please ensure a GitHub release exists with the binary for architecture: ...
+```
+
+**Solutions:**
+
+1. **Check if release exists:**
+   ```bash
+   # Visit in browser or check via API
+   curl -s https://api.github.com/repos/rufaromugabe/spotfi/releases/latest | grep tag_name
+   ```
+
+2. **Verify architecture is supported:**
+   - Check available binaries at: https://github.com/rufaromugabe/spotfi/releases
+   - Supported architectures: mips, mipsle, mips64, mips64le, arm64, arm, amd64, 386, riscv64
+
+3. **If repository is private:**
+   ```bash
+   # Store GitHub token
+   echo "ghp_your_token_here" > /etc/github_token
+   chmod 600 /etc/github_token
+   
+   # Re-run setup script (it will use the token automatically)
+   sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
+   ```
+
+4. **Network connectivity:**
+   ```bash
+   # Test GitHub access
+   ping github.com
+   wget -O /dev/null https://github.com/rufaromugabe/spotfi/releases/latest
+   ```
+
+---
+
 ### Problem: "Router shows OFFLINE"
 
 **Check:**
 ```bash
 # Check if bridge is running
-ps | grep bridge.py
+ps | grep spotfi-bridge
+
+# Check bridge service status
+/etc/init.d/spotfi-bridge status
 
 # Check bridge logs
-logread | grep spotfi
+logread | grep spotfi-bridge
+
+# View configuration
+cat /etc/spotfi.env
 
 # Test network connectivity
-ping 192.168.42.181
-
-# Manually test WebSocket bridge
-/root/spotfi-bridge/bridge.py
+ping api.spotfi.com
 ```
 
 **Fix:**
@@ -463,33 +376,13 @@ File "/root/spotfi-bridge/bridge.py", line 260, in handle_x_start
 This error indicates your router is running an **old version** of `bridge.py` that still uses `preexec_fn`, which is not supported on OpenWrt/BusyBox systems.
 
 **Fix:**
-Re-run the setup script to update `bridge.py` with the latest version:
+Re-run the setup script with your token:
 
 ```bash
-# For cloud setup (WebSocket bridge only)
+# Download and run setup script with your router token
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh \
-  YOUR_ROUTER_ID \
-  YOUR_TOKEN \
-  YOUR_MAC_ADDRESS \
-  wss://your-server.com/ws
-
-# Or for Uspot setup (captive portal)
-wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh && \
-sh /tmp/openwrt-setup-uspot.sh \
-  YOUR_ROUTER_ID \
-  YOUR_RADIUS_SECRET \
-  YOUR_MAC_ADDRESS \
-  YOUR_RADIUS_IP \
-  https://your-portal-url.com
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 ```
-
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh \
-  cmhujj1f6000112soujpo0noz \
-  5d62856936faa4919a8ab07671b04103 \
-  08:00:27:BA:FE:8D \
-  62.72.19.27
 
 **Alternative: Quick Update (Bridge Only)**
 If you only need to update the bridge.py file:
@@ -699,15 +592,16 @@ sysupgrade -b /tmp/backup.tar.gz
 
 ## ✅ Setup Checklist
 
-- [ ] Router created in SpotFi (got ID, token, secret)
-- [ ] Downloaded setup script(s) from GitHub
-- [ ] Ran setup script(s) with correct parameters
-- [ ] WebSocket bridge running (if using cloud script)
-- [ ] Uspot running (if using uspot script)
-- [ ] Router shows ONLINE in SpotFi dashboard
-- [ ] Test authentication successful (if using uspot)
-- [ ] Test user can connect and browse internet (if using uspot)
-- [ ] Sessions appear in SpotFi dashboard (if using uspot)
+- [ ] Router created in SpotFi dashboard (got token)
+- [ ] Downloaded setup script from GitHub
+- [ ] Ran setup script with router token
+- [ ] SpotFi bridge running and service enabled
+- [ ] Router shows ONLINE in SpotFi dashboard (30-60 seconds)
+- [ ] Can access router remotely from dashboard
+- [ ] (Optional) uSpot configured from cloud
+- [ ] (Optional) Test authentication successful
+- [ ] (Optional) Test user can connect and browse internet
+- [ ] (Optional) Sessions appear in SpotFi dashboard
 
 ---
 
@@ -823,46 +717,57 @@ passwd
    wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
    chmod +x /tmp/openwrt-setup-cloud.sh
    
-   # Run script (replace with your actual values)
-   /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS
+   # Run script with your router token
+   sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
    ```
 
 2. **Verify it works:**
    ```bash
-   # Check WebSocket bridge is running
-   ps | grep bridge.py
+   # Check SpotFi bridge is running
+   ps | grep spotfi-bridge
    
    # Check service status
    /etc/init.d/spotfi-bridge status
    
    # View logs
-   logread | tail -n 50
+   logread | grep spotfi-bridge
+   
+   # Check configuration
+   cat /etc/spotfi.env
    ```
 
 3. **Check SpotFi dashboard:**
-   - Router should appear as ONLINE
-   - Metrics should be updating
+   - Router should appear as ONLINE within 30-60 seconds
+   - You can now configure router remotely from dashboard
 
-### Step 6: Test Uspot Script (Optional)
+### Step 6: Configure uSpot from Cloud (Optional)
 
-**Note:** In a VM, there's no WiFi, but uspot will use the LAN bridge.
+**Note:** uSpot setup is now done remotely from the cloud, not via script.
 
-1. **Download and run uspot script:**
+1. **Via Dashboard:**
+   - Wait for router to show ONLINE
+   - Navigate to router settings
+   - Click **Setup uSpot** or **Configure Captive Portal**
+   - Cloud will remotely install and configure everything
+
+2. **Via API:**
    ```bash
-   # Download script
-   wget -O /tmp/openwrt-setup-uspot.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-uspot.sh
-   chmod +x /tmp/openwrt-setup-uspot.sh
+   # Setup uSpot remotely
+   curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
+     -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
    
-   # Run script (replace with your actual values)
-   sh /tmp/openwrt-setup-uspot.sh ROUTER_ID RADIUS_SECRET MAC_ADDRESS RADIUS_IP PORTAL_URL
+   # Configure UAM/RADIUS
+   curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
+     -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "uamServerUrl": "https://api.spotfi.com/uam/login",
+       "radiusServer": "YOUR_RADIUS_IP",
+       "radiusSecret": "YOUR_RADIUS_SECRET"
+     }'
    ```
 
-2. **Expected behavior in VM:**
-   - WiFi configuration will be skipped (normal for VMs)
-   - Uspot will use LAN bridge (`br-lan`)
-   - Script will configure hotspot interface on LAN bridge
-
-3. **Test captive portal:**
+3. **Verify uSpot:**
    ```bash
    # Check uspot status
    /etc/init.d/uspot status

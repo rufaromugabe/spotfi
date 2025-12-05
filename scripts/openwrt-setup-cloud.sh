@@ -2,10 +2,10 @@
 #
 # SpotFi OpenWRT Router Auto-Setup Script - Cloud Mode
 # 
-# This script configures an OpenWRT router for SpotFi cloud monitoring only
-# WebSocket bridge for real-time monitoring and remote control
+# Cloudflare Tunnel-like setup: Just install and provide token
+# All configuration (including uSpot setup) is done from the cloud
 #
-# Usage: ./openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME]
+# Usage: ./openwrt-setup-cloud.sh TOKEN [SERVER_DOMAIN] [GITHUB_TOKEN]
 #
 
 set -e
@@ -23,32 +23,29 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 3 ] || [ "$#" -gt 6 ]; then
-    echo "Usage: $0 ROUTER_ID TOKEN MAC_ADDRESS [SERVER_DOMAIN] [ROUTER_NAME] [GITHUB_TOKEN]"
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: $0 TOKEN [SERVER_DOMAIN] [GITHUB_TOKEN]"
     echo ""
-    echo "This script sets up SpotFi WebSocket bridge only (cloud monitoring)."
-    echo "For CoovaChilli setup, use: openwrt-setup-chilli.sh"
+    echo "Cloudflare Tunnel-like setup: Just provide your router token."
+    echo "All configuration (including uSpot setup) will be done from the cloud."
     echo ""
     echo "Arguments:"
-    echo "  ROUTER_ID     - Router ID from SpotFi dashboard"
-    echo "  TOKEN         - Router token from SpotFi dashboard"
-    echo "  MAC_ADDRESS   - Router MAC address"
+    echo "  TOKEN         - Router token from SpotFi dashboard (required)"
     echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
-    echo "  ROUTER_NAME   - (Optional) Router name to set in SpotFi dashboard"
-    echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
+    echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token (only needed for private repos)"
     echo ""
-    echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
-    echo "      or stored in /etc/github_token file"
+    echo "Note: Script and binaries are publicly accessible by default."
+    echo "      GitHub token is only needed if repository is private."
+    echo ""
+    echo "Example:"
+    echo "  $0 your-router-token-here"
     echo ""
     exit 1
 fi
 
-ROUTER_ID="$1"
-TOKEN="$2"
-MAC_ADDRESS="$3"
-WS_URL="${4:-wss://api.spotfi.com/ws}"
-ROUTER_NAME="${5:-}"
-GITHUB_TOKEN_PARAM="${6:-}"
+TOKEN="$1"
+WS_URL="${2:-wss://api.spotfi.com/ws}"
+GITHUB_TOKEN_PARAM="${3:-}"
 
 # Get GitHub token from multiple sources (priority: parameter > env var > file)
 if [ -n "$GITHUB_TOKEN_PARAM" ]; then
@@ -72,12 +69,10 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}SpotFi OpenWRT Router Setup - Cloud Mode${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Router ID: $ROUTER_ID"
-echo "MAC Address: $MAC_ADDRESS"
+echo "Token: ${TOKEN:0:8}... (hidden)"
 echo "WebSocket: $WS_URL"
-if [ -n "$ROUTER_NAME" ]; then
-    echo "Router Name: $ROUTER_NAME"
-fi
+echo ""
+echo "This will install SpotFi bridge. All configuration will be done from the cloud."
 echo ""
 
 TOTAL_STEPS=6
@@ -97,17 +92,8 @@ uci commit system
 export TZ='CAT-2'
 echo -e "${GREEN}✓ Timezone configured to Harare (CAT, UTC+2)${NC}"
 
-# Configure hostname from router name, or use default
-if [ -n "$ROUTER_NAME" ]; then
-    # Sanitize router name for hostname (lowercase, replace spaces/special chars with hyphens, limit length)
-    HOSTNAME=$(echo "$ROUTER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g' | cut -c1-63)
-    # Ensure hostname is not empty after sanitization
-    if [ -z "$HOSTNAME" ]; then
-        HOSTNAME="spotfi-router"
-    fi
-else
-    HOSTNAME="spotfi-router"
-fi
+# Configure default hostname (router name will be set from cloud)
+HOSTNAME="spotfi-router"
 echo "  - Setting hostname to: $HOSTNAME"
 uci set system.@system[0].hostname="$HOSTNAME"
 uci commit system
@@ -211,19 +197,21 @@ fi
 echo "  - Mapped to binary: spotfi-bridge-$BINARY_ARCH"
 
 # Set download URL and binary name
-# Use GitHub Releases (supports both public and private repos with token)
+# Use GitHub Releases (public repository - no token needed)
 GITHUB_REPO="rufaromugabe/spotfi"
 BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
-# Build download URL - use token if available for private repos
+# Build download URL - public access by default
 if [ -n "$GITHUB_TOKEN" ]; then
+    # Private repo: Use GitHub API with token
     DOWNLOAD_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
     echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
     echo "  - Using GitHub token for private repository access"
 else
+    # Public repo: Direct download (default)
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/spotfi-bridge-${BINARY_ARCH}"
     echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
-    echo "  - Using public repository access"
+    echo "  - Downloading from public repository"
 fi
 
 # Step 4: Install WebSocket bridge (Go binary)
@@ -272,8 +260,14 @@ else
     # Public repo: Direct download from releases
     if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
         echo -e "${RED}Error: Failed to download binary${NC}"
-        echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
-        echo "Or provide a GitHub token for private repository access"
+        echo ""
+        echo "Possible causes:"
+        echo "  1. No release found for architecture: $BINARY_ARCH"
+        echo "  2. Network connectivity issue"
+        echo "  3. GitHub repository is private (provide GITHUB_TOKEN if needed)"
+        echo ""
+        echo "Check available releases at:"
+        echo "  https://github.com/${GITHUB_REPO}/releases"
         exit 1
     fi
 fi
@@ -300,21 +294,49 @@ fi
 
 echo -e "${GREEN}✓ SpotFi Bridge binary installed${NC}"
 
-# Create environment file
+# Auto-detect MAC address from router's primary interface
+# Try to get MAC from br-lan (most common), or first non-loopback interface
+MAC_ADDRESS=""
+if [ -d /sys/class/net/br-lan ]; then
+    MAC_ADDRESS=$(cat /sys/class/net/br-lan/address 2>/dev/null || echo "")
+fi
+
+# Fallback: get first non-loopback interface MAC
+if [ -z "$MAC_ADDRESS" ]; then
+    for iface in /sys/class/net/*; do
+        ifname=$(basename "$iface")
+        if [ "$ifname" != "lo" ] && [ -f "$iface/address" ]; then
+            MAC_ADDRESS=$(cat "$iface/address" 2>/dev/null || echo "")
+            if [ -n "$MAC_ADDRESS" ]; then
+                break
+            fi
+        fi
+    done
+fi
+
+if [ -z "$MAC_ADDRESS" ]; then
+    echo -e "${YELLOW}Warning: Could not auto-detect MAC address${NC}"
+    echo "  The router will connect with token-only authentication"
+    MAC_ADDRESS=""
+fi
+
+# Create environment file (token-only mode)
 cat > /etc/spotfi.env << EOF
-SPOTFI_ROUTER_ID="$ROUTER_ID"
 SPOTFI_TOKEN="$TOKEN"
-SPOTFI_MAC="$MAC_ADDRESS"
 SPOTFI_WS_URL="$WS_URL"
-SPOTFI_ROUTER_NAME="$ROUTER_NAME"
 EOF
+
+# Add MAC if detected (optional, cloud can detect it)
+if [ -n "$MAC_ADDRESS" ]; then
+    echo "SPOTFI_MAC=\"$MAC_ADDRESS\"" >> /etc/spotfi.env
+fi
 
 chmod 600 /etc/spotfi.env
 
-# Test binary configuration
+# Test binary configuration (token is minimum requirement)
 if ! /usr/bin/spotfi-bridge --test >/dev/null 2>&1; then
-    echo -e "${RED}Error: Binary test failed - check /etc/spotfi.env configuration${NC}"
-    exit 1
+    echo -e "${YELLOW}Warning: Binary test failed, but continuing...${NC}"
+    echo "  The bridge will connect with token-only authentication"
 fi
 
 echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
@@ -367,19 +389,23 @@ echo -e "${GREEN}Setup Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Router Status:"
-echo "  - Mode: Cloud (WebSocket bridge only)"
-echo "  - Router ID: $ROUTER_ID"
+echo "  - Mode: Cloud (token-only authentication)"
+echo "  - Token: ${TOKEN:0:8}... (hidden)"
 echo "  - WebSocket: $WS_URL"
-if [ -n "$ROUTER_NAME" ]; then
-    echo "  - Router Name: $ROUTER_NAME"
+if [ -n "$MAC_ADDRESS" ]; then
+    echo "  - MAC Address: $MAC_ADDRESS (auto-detected)"
 fi
+echo ""
+echo "Next Steps:"
+echo "  1. Router will connect to cloud automatically"
+echo "  2. Go to SpotFi dashboard to configure router"
+echo "  3. All setup (including uSpot) can be done from the cloud"
 echo ""
 echo "Verification:"
 echo "  1. Check process: ps | grep spotfi-bridge"
 echo "  2. Check service: /etc/init.d/spotfi-bridge status"
 echo "  3. View logs: logread | grep spotfi-bridge"
-echo "  4. Test binary manually: /usr/bin/spotfi-bridge"
-echo "  5. Check SpotFi dashboard - router should show ONLINE"
+echo "  4. Check SpotFi dashboard - router should show ONLINE"
 echo ""
 echo "Troubleshooting:"
 echo "  - If service crashes, check: cat /etc/spotfi.env"
@@ -388,4 +414,5 @@ echo "  - Test binary: /usr/bin/spotfi-bridge (should try to connect)"
 echo "  - Restart service: /etc/init.d/spotfi-bridge restart"
 echo ""
 echo -e "${YELLOW}Note: It may take 30-60 seconds for the router to appear as ONLINE${NC}"
+echo -e "${YELLOW}      Once online, configure router from the SpotFi dashboard${NC}"
 echo ""
