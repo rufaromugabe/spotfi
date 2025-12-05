@@ -32,10 +32,10 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo "Arguments:"
     echo "  TOKEN         - Router token from SpotFi dashboard (required)"
     echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
-    echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token (only needed for private repos)"
+    echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
     echo ""
-    echo "Note: Script and binaries are publicly accessible by default."
-    echo "      GitHub token is only needed if repository is private."
+    echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
+    echo "      or stored in /etc/github_token file"
     echo ""
     echo "Example:"
     echo "  $0 your-router-token-here"
@@ -197,21 +197,19 @@ fi
 echo "  - Mapped to binary: spotfi-bridge-$BINARY_ARCH"
 
 # Set download URL and binary name
-# Use GitHub Releases (public repository - no token needed)
+# Use GitHub Releases (supports both public and private repos with token)
 GITHUB_REPO="rufaromugabe/spotfi"
 BINARY_NAME="spotfi-bridge-$BINARY_ARCH"
 
-# Build download URL - public access by default
+# Build download URL - use token if available for private repos
 if [ -n "$GITHUB_TOKEN" ]; then
-    # Private repo: Use GitHub API with token
     DOWNLOAD_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
     echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
     echo "  - Using GitHub token for private repository access"
 else
-    # Public repo: Direct download (default)
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/spotfi-bridge-${BINARY_ARCH}"
     echo -e "${GREEN}✓ Architecture detected: $ARCH_STRING → $BINARY_ARCH${NC}"
-    echo "  - Downloading from public repository"
+    echo "  - Using public repository access"
 fi
 
 # Step 4: Install WebSocket bridge (Go binary)
@@ -260,14 +258,8 @@ else
     # Public repo: Direct download from releases
     if ! wget -q -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>/dev/null; then
         echo -e "${RED}Error: Failed to download binary${NC}"
-        echo ""
-        echo "Possible causes:"
-        echo "  1. No release found for architecture: $BINARY_ARCH"
-        echo "  2. Network connectivity issue"
-        echo "  3. GitHub repository is private (provide GITHUB_TOKEN if needed)"
-        echo ""
-        echo "Check available releases at:"
-        echo "  https://github.com/${GITHUB_REPO}/releases"
+        echo "Please ensure a GitHub release exists with the binary for architecture: $BINARY_ARCH"
+        echo "Or provide a GitHub token for private repository access"
         exit 1
     fi
 fi

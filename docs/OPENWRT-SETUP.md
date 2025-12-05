@@ -90,21 +90,42 @@ ssh root@192.168.1.1
 
 **📦 Download Setup Script**
 
-**Script and binaries are publicly accessible - no token needed!**
-
+**For Public Repository:**
 ```bash
-# Download setup script (public repository)
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
 chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
-**One-liner (download and run):**
+**For Private Repository (with GitHub Token):**
+
+Create a GitHub Personal Access Token:
+1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Generate new token with `repo` scope
+3. Copy the token (starts with `ghp_`)
+
+**Option 1: Store token on router (recommended):**
 ```bash
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
+# Store token securely
+echo "ghp_your_token_here" > /etc/github_token
+chmod 600 /etc/github_token
+
+# Download script
+wget --header="Authorization: token $(cat /etc/github_token)" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
-**Note:** If your repository is private, you'll need a GitHub token. See troubleshooting section below.
+**Option 2: Use environment variable:**
+```bash
+export GITHUB_TOKEN="ghp_your_token_here"
+wget --header="Authorization: token ${GITHUB_TOKEN}" \
+     --header="Accept: application/vnd.github.v3.raw" \
+     -O /tmp/openwrt-setup-cloud.sh \
+     "https://api.github.com/repos/rufaromugabe/spotfi/contents/scripts/openwrt-setup-cloud.sh"
+chmod +x /tmp/openwrt-setup-cloud.sh
+```
 
 ---
 
@@ -117,9 +138,9 @@ sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
 # With custom server (for self-hosting)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wvgss://your-server.com/ws
 
-# With GitHub token (only needed for private repositories)
+# With GitHub token (if not stored in /etc/github_token)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_your_token_here
 ```
 
@@ -293,45 +314,6 @@ ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
 ---
 
 ## 🔍 Troubleshooting
-
-### Problem: "Failed to download binary"
-
-**If you see:**
-```
-Error: Failed to download binary
-Please ensure a GitHub release exists with the binary for architecture: ...
-```
-
-**Solutions:**
-
-1. **Check if release exists:**
-   ```bash
-   # Visit in browser or check via API
-   curl -s https://api.github.com/repos/rufaromugabe/spotfi/releases/latest | grep tag_name
-   ```
-
-2. **Verify architecture is supported:**
-   - Check available binaries at: https://github.com/rufaromugabe/spotfi/releases
-   - Supported architectures: mips, mipsle, mips64, mips64le, arm64, arm, amd64, 386, riscv64
-
-3. **If repository is private:**
-   ```bash
-   # Store GitHub token
-   echo "ghp_your_token_here" > /etc/github_token
-   chmod 600 /etc/github_token
-   
-   # Re-run setup script (it will use the token automatically)
-   sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
-   ```
-
-4. **Network connectivity:**
-   ```bash
-   # Test GitHub access
-   ping github.com
-   wget -O /dev/null https://github.com/rufaromugabe/spotfi/releases/latest
-   ```
-
----
 
 ### Problem: "Router shows OFFLINE"
 

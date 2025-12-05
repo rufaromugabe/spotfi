@@ -123,14 +123,7 @@ jobs:
             
             ```bash
             wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
-            sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
-            ```
-            
-            ### Binary Download URLs
-            
-            Binaries are publicly available at:
-            ```
-            https://github.com/rufaromugabe/spotfi/releases/latest/download/spotfi-bridge-{ARCH}
+            sh /tmp/openwrt-setup-cloud.sh ROUTER_ID TOKEN MAC_ADDRESS WS_URL
             ```
             
             ### Binary Sizes
@@ -152,7 +145,6 @@ jobs:
             release-binaries/spotfi-bridge-binaries.tar.gz
           draft: false
           prerelease: false
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       

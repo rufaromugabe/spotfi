@@ -43,8 +43,8 @@ export function setupWebSocket(fastify: FastifyInstance) {
       if (routerId) {
         // Legacy mode: verify both ID and token match
         router = await prisma.router.findFirst({
-          where: { id: routerId, token }
-        });
+        where: { id: routerId, token }
+      });
       } else {
         // Token-only mode: find router by token only
         router = await prisma.router.findFirst({
