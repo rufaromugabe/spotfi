@@ -77,10 +77,68 @@ echo ""
 
 TOTAL_STEPS=6
 
-# Step 1: Update package list
+# Step 1: Update package list and ensure wget is installed
 STEP_NUM=1
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Updating package list...${NC}"
 opkg update
+
+# Ensure wget with full features (SSL/TLS and headers) is installed
+WGET_NEEDED=0
+WGET_FULL=0
+
+# Check if wget exists
+if ! command -v wget >/dev/null 2>&1; then
+    WGET_NEEDED=1
+else
+    # Check if wget supports required features (headers and HTTPS)
+    if ! wget --help 2>&1 | grep -qE "header|https"; then
+        echo "  - Current wget lacks required features, upgrading to full version..."
+        WGET_NEEDED=1
+    else
+        # Test if it's the SSL-enabled version (wget-ssl)
+        if wget --version 2>&1 | grep -qi "ssl\|gnutls\|openssl"; then
+            WGET_FULL=1
+            echo -e "${GREEN}✓ wget (full version with SSL) already installed${NC}"
+        else
+            echo "  - Upgrading to wget-ssl for full features..."
+            WGET_NEEDED=1
+        fi
+    fi
+fi
+
+# Install or upgrade wget if needed
+if [ $WGET_NEEDED -eq 1 ]; then
+    echo "  - Installing wget (full version with SSL/TLS and header support)..."
+    # Remove basic wget if present
+    opkg remove wget wget-nossl 2>/dev/null || true
+    
+    # Try to install wget-ssl (full-featured version with SSL/TLS)
+    if opkg install wget-ssl 2>/dev/null; then
+        echo -e "${GREEN}✓ wget-ssl installed (full version with SSL/TLS)${NC}"
+        WGET_FULL=1
+    elif opkg install wget; then
+        echo -e "${GREEN}✓ wget installed${NC}"
+        # Verify it has the features we need
+        if ! wget --help 2>&1 | grep -qE "header|https"; then
+            echo -e "${YELLOW}Warning: Installed wget may have limited features${NC}"
+        else
+            WGET_FULL=1
+        fi
+    else
+        echo -e "${RED}Error: Failed to install wget${NC}"
+        echo "Please install wget manually: opkg install wget-ssl (or opkg install wget)"
+        exit 1
+    fi
+fi
+
+# Final verification
+if [ $WGET_FULL -eq 0 ]; then
+    if wget --help 2>&1 | grep -qE "header"; then
+        echo -e "${GREEN}✓ wget supports custom headers${NC}"
+    else
+        echo -e "${YELLOW}Warning: wget may not support all required features${NC}"
+    fi
+fi
 
 # Step 2: Configure timezone to Harare (CAT, UTC+2)
 STEP_NUM=$((STEP_NUM + 1))
@@ -223,15 +281,14 @@ if [ -n "$GITHUB_TOKEN" ]; then
     # Private repo: Use GitHub API to get release assets
     # First, get the latest release info
     echo "  - Fetching release information from GitHub API..."
-    RELEASE_JSON=$(curl -sSf \
-                        -H "Authorization: token ${GITHUB_TOKEN}" \
-                        -H "Accept: application/vnd.github.v3+json" \
-                        "$DOWNLOAD_URL" 2>&1)
-    CURL_EXIT=$?
+    RELEASE_JSON=$(wget --header="Authorization: token ${GITHUB_TOKEN}" \
+                        --header="Accept: application/vnd.github.v3+json" \
+                        -O - "$DOWNLOAD_URL" 2>&1)
+    WGET_EXIT=$?
     
-    if [ $CURL_EXIT -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
+    if [ $WGET_EXIT -ne 0 ] || [ -z "$RELEASE_JSON" ]; then
         echo -e "${RED}Error: Failed to fetch release info${NC}"
-        echo "curl exit code: $CURL_EXIT"
+        echo "wget exit code: $WGET_EXIT"
         echo "Response: $RELEASE_JSON"
         echo ""
         echo "Possible issues:"
@@ -249,34 +306,13 @@ if [ -n "$GITHUB_TOKEN" ]; then
         exit 1
     fi
     
-    # Extract asset ID and URL for the specific binary asset
-    # For authenticated downloads, we need to use the GitHub API asset URL (not browser_download_url)
-    # The API URL format is: https://api.github.com/repos/{owner}/{repo}/releases/assets/{asset_id}
+    # Extract download URL for the specific binary asset
+    # Try multiple patterns to handle different JSON formatting
+    ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
     
-    # Try to find the asset block for our binary
-    # GitHub API returns assets as an array, each asset has: id, name, browser_download_url, etc.
-    ASSET_BLOCK=$(echo "$RELEASE_JSON" | grep -A 10 "\"name\"[[:space:]]*:[[:space:]]*\"spotfi-bridge-${BINARY_ARCH}\"")
-    
-    if [ -n "$ASSET_BLOCK" ]; then
-        # Extract asset ID from the asset block
-        ASSET_ID=$(echo "$ASSET_BLOCK" | grep -o "\"id\"[[:space:]]*:[[:space:]]*[0-9]*" | head -n 1 | grep -o "[0-9]*")
-        
-        # If we found an asset ID, use the GitHub API URL (more reliable for authenticated downloads)
-        if [ -n "$ASSET_ID" ]; then
-            ASSET_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}"
-            echo "  - Found asset ID: $ASSET_ID, using GitHub API URL"
-        else
-            # Fallback: extract browser_download_url from the asset block
-            ASSET_URL=$(echo "$ASSET_BLOCK" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n 1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        fi
-    else
-        # Fallback: try to extract browser_download_url from entire JSON (works for public repos)
-        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*\"" | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        
-        # Another fallback: try simpler pattern
-        if [ -z "$ASSET_URL" ]; then
-            ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
-        fi
+    # Fallback: try simpler pattern
+    if [ -z "$ASSET_URL" ]; then
+        ASSET_URL=$(echo "$RELEASE_JSON" | grep -o "https://[^\"]*spotfi-bridge-${BINARY_ARCH}[^\"]*" | head -n 1)
     fi
     
     if [ -z "$ASSET_URL" ]; then
@@ -285,24 +321,16 @@ if [ -n "$GITHUB_TOKEN" ]; then
         echo "Available assets in release:"
         echo "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -n 10 || echo "Could not parse asset names"
         echo ""
-        echo "Looking for: spotfi-bridge-${BINARY_ARCH}"
         echo "Please ensure a release exists with the binary: spotfi-bridge-${BINARY_ARCH}"
         exit 1
     fi
     
-    # Debug: show what we found (but don't show full URL if it contains token)
-    echo "  - Using asset URL: ${ASSET_URL%%\?*}"
-    
     echo "  - Found asset URL, downloading binary..."
     # Download the binary asset with authentication
-    # For GitHub API asset URLs, we must use "Accept: application/octet-stream" header
-    # Use -L to follow redirects, -f to fail on HTTP errors
-    if ! curl -Lf \
-              -H "Authorization: token ${GITHUB_TOKEN}" \
-              -H "Accept: application/octet-stream" \
-              --progress-bar \
-              -o /tmp/spotfi-bridge \
-              "$ASSET_URL" 2>&1; then
+    if ! wget --header="Authorization: token ${GITHUB_TOKEN}" \
+              --header="Accept: application/octet-stream" \
+              --progress=dot:giga \
+              -O /tmp/spotfi-bridge "$ASSET_URL" 2>&1; then
         echo -e "${RED}Error: Failed to download binary${NC}"
         echo "Asset URL: $ASSET_URL"
         echo "Please check:"
@@ -314,11 +342,8 @@ if [ -n "$GITHUB_TOKEN" ]; then
 else
     # Public repo: Direct download from releases
     echo "  - Downloading from public GitHub releases..."
-    # Use -L to follow redirects, -f to fail on HTTP errors, -# for progress bar
-    if ! curl -Lf \
-              --progress-bar \
-              -o /tmp/spotfi-bridge \
-              "$DOWNLOAD_URL" 2>&1; then
+    if ! wget --progress=dot:giga \
+              -O /tmp/spotfi-bridge "$DOWNLOAD_URL" 2>&1; then
         echo -e "${RED}Error: Failed to download binary${NC}"
         echo "Download URL: $DOWNLOAD_URL"
         echo ""
