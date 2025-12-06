@@ -2,26 +2,22 @@ import { routerRpcService } from './router-rpc.service.js';
 import { FastifyBaseLogger } from 'fastify';
 
 /**
- * Setup step result
+ * Enhanced Setup Result Interface
  */
 export interface SetupStepResult {
   step: string;
   status: 'success' | 'warning' | 'error' | 'skipped';
   message?: string;
+  details?: any;
 }
 
-/**
- * Complete setup result
- */
 export interface SetupResult {
   steps: SetupStepResult[];
   success: boolean;
   message: string;
+  results?: any;
 }
 
-/**
- * UCI configuration helper
- */
 interface UciConfig {
   config: string;
   section: string;
@@ -30,11 +26,11 @@ interface UciConfig {
 }
 
 /**
- * uSpot Setup Service
- * Handles complete uSpot installation and configuration remotely
+ * Robust uSpot Setup Service
+ * Implements "Verify -> Remediate -> Execute" pattern
  */
 export class UspotSetupService {
-  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter', 'ca-bundle', 'ca-certificates'];
+  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter', 'ca-bundle', 'ca-certificates', 'openssl-util'];
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
@@ -45,54 +41,75 @@ export class UspotSetupService {
   constructor(private logger: FastifyBaseLogger) {}
 
   /**
-   * Execute complete uSpot setup
+   * Execute complete setup with diagnostics and auto-remediation
    */
   async setup(routerId: string): Promise<SetupResult> {
     const steps: SetupStepResult[] = [];
 
     try {
-      // Step 0: Check repository configuration
-      const repoCheck = await this.checkRepositoryConfig(routerId);
-      if (repoCheck.status === 'error') {
-        steps.push(repoCheck);
-        return { steps, success: false, message: repoCheck.message || 'Repository configuration check failed' };
+      // --- PHASE 1: PRE-FLIGHT VALIDATION ---
+      
+      // 1. Check System Resources (Disk/RAM)
+      const resourceCheck = await this.checkResources(routerId);
+      steps.push(resourceCheck);
+      if (resourceCheck.status === 'error') {
+        return this.fail(steps, `Resource check failed: ${resourceCheck.message}`);
       }
 
-      // Step 1: Update packages
-      steps.push(await this.updatePackages(routerId));
+      // 2. Check & Fix System Time (Crucial for SSL)
+      steps.push(await this.ensureSystemTime(routerId));
 
-      // Step 2: Install packages
+      // 3. Network & DNS Diagnostics + Remediation
+      const netCheck = await this.ensureConnectivity(routerId);
+      steps.push(netCheck);
+      if (netCheck.status === 'error') {
+        return this.fail(steps, `Network failure: ${netCheck.message}`);
+      }
+
+      // 4. Repository Configuration Check + Protocol Downgrade (if needed)
+      const repoCheck = await this.prepareRepositories(routerId);
+      steps.push(repoCheck);
+      if (repoCheck.status === 'error') {
+        return this.fail(steps, `Repo setup failed: ${repoCheck.message}`);
+      }
+
+      // --- PHASE 2: PACKAGE INSTALLATION ---
+
+      // 5. Update Packages
+      const updateResult = await this.updatePackages(routerId);
+      steps.push(updateResult);
+      if (updateResult.status === 'error') {
+        return this.fail(steps, `Package update failed. Check router logs.`);
+      }
+
+      // 6. Install Packages
       const installResult = await this.installPackages(routerId);
       steps.push(installResult);
       if (installResult.status === 'error') {
-        return { steps, success: false, message: installResult.message || 'Package installation failed' };
+        return this.fail(steps, `Package install failed: ${installResult.message}`);
       }
 
-      // Step 3: Configure wireless (optional)
+      // --- PHASE 3: CONFIGURATION ---
+
+      // 7. Wireless Setup
       steps.push(await this.configureWireless(routerId));
 
-      // Step 4: Configure network
-      const networkResult = await this.configureNetwork(routerId);
-      steps.push(networkResult);
-      if (networkResult.status === 'error') {
-        return { steps, success: false, message: 'Network configuration failed' };
-      }
+      // 8. Network Interfaces
+      const netConfig = await this.configureNetwork(routerId);
+      steps.push(netConfig);
+      if (netConfig.status === 'error') return this.fail(steps, 'Network config failed');
 
-      // Step 5: Configure firewall
-      const firewallResult = await this.configureFirewall(routerId);
-      steps.push(firewallResult);
-      if (firewallResult.status === 'error') {
-        return { steps, success: false, message: 'Firewall configuration failed' };
-      }
+      // 9. Firewall
+      const fwConfig = await this.configureFirewall(routerId);
+      steps.push(fwConfig);
+      if (fwConfig.status === 'error') return this.fail(steps, 'Firewall config failed');
 
-      // Step 6: Configure portal
-      const portalResult = await this.configurePortal(routerId);
-      steps.push(portalResult);
-      if (portalResult.status === 'error') {
-        return { steps, success: false, message: 'Portal configuration failed' };
-      }
+      // 10. Portal & Certificates
+      const portalConfig = await this.configurePortal(routerId);
+      steps.push(portalConfig);
+      if (portalConfig.status === 'error') return this.fail(steps, 'Portal config failed');
 
-      // Step 7: Restart services
+      // 11. Final Restart
       steps.push(await this.restartServices(routerId));
 
       return {
@@ -100,618 +117,374 @@ export class UspotSetupService {
         success: true,
         message: 'uSpot setup completed successfully'
       };
+
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`[uSpot Setup] Fatal error: ${errorMessage}`);
-      return {
-        steps,
-        success: false,
-        message: errorMessage
-      };
+      return this.fail(steps, `Fatal error: ${errorMessage}`);
     }
   }
 
+  private fail(steps: SetupStepResult[], message: string): SetupResult {
+    return { steps, success: false, message };
+  }
+
+  // --- DIAGNOSTIC & REMEDIATION METHODS ---
+
   /**
-   * Check repository configuration
+   * Check Disk Space and Memory
+   * Prevents installing on full routers which causes corruption
    */
-  private async checkRepositoryConfig(routerId: string): Promise<SetupStepResult> {
+  private async checkResources(routerId: string): Promise<SetupStepResult> {
     try {
-      // Check if distfeeds.conf exists and has content
-      const result = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-        command: 'test -f /etc/opkg/distfeeds.conf && grep -q "^src" /etc/opkg/distfeeds.conf && echo "OK" || echo "MISSING"'
-      }, 5000);
-      
-      const output = JSON.stringify(result);
-      if (output.includes('MISSING')) {
-        return {
-          step: 'repository_check',
-          status: 'error',
-          message: 'Package repositories not configured. Please configure /etc/opkg/distfeeds.conf on the router first.'
+      // Check Overlay Space (where packages go)
+      const df = await this.exec(routerId, 'df -k /overlay | tail -1 | awk \'{print $4}\'');
+      const freeSpaceKb = parseInt(df.trim());
+
+      if (isNaN(freeSpaceKb) || freeSpaceKb < 2048) { // Require 2MB
+        return { 
+          step: 'resource_check', 
+          status: 'error', 
+          message: `Insufficient disk space. Free: ${Math.round(freeSpaceKb/1024)}MB. Required: 2MB.` 
         };
       }
-      
-      return { step: 'repository_check', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.warn(`[uSpot Setup] Repository check warning: ${message}`);
-      // Don't fail on check error, let opkg update handle it
-      return { step: 'repository_check', status: 'warning', message };
+
+      return { step: 'resource_check', status: 'success', message: `Disk OK (${Math.round(freeSpaceKb/1024)}MB free)` };
+    } catch (e: any) {
+      // If /overlay doesn't exist (x86 or unusual setup), try root
+      return { step: 'resource_check', status: 'warning', message: 'Could not verify disk space, proceeding anyway.' };
     }
   }
 
   /**
-   * Update package list
+   * Ensure Connectivity & Fix DNS
+   * Verifies network connectivity and fixes DNS if needed
    */
+  private async ensureConnectivity(routerId: string): Promise<SetupStepResult> {
+    try {
+      // 1. Check WAN IP (Google DNS Ping)
+      // We use 'ping -c 1 -W 2' to timeout quickly
+      try {
+        await this.exec(routerId, 'ping -c 1 -W 2 8.8.8.8');
+      } catch (e) {
+        return { step: 'connectivity_check', status: 'error', message: 'No Internet Access. Router cannot ping 8.8.8.8.' };
+      }
+
+      // 2. Check DNS Resolution
+      let dnsWorks = false;
+      try {
+        await this.exec(routerId, 'nslookup downloads.openwrt.org');
+        dnsWorks = true;
+      } catch (e) {
+        this.logger.warn(`[Setup] DNS check failed, attempting auto-fix...`);
+      }
+
+      // 3. Auto-Remediate DNS if needed
+      if (!dnsWorks) {
+        try {
+          // Force Google DNS
+          await this.exec(routerId, 'echo "nameserver 8.8.8.8" > /tmp/resolv.conf.auto');
+          await this.exec(routerId, 'cp /tmp/resolv.conf.auto /etc/resolv.conf');
+          
+          // Verify fix
+          await this.exec(routerId, 'nslookup google.com');
+          return { step: 'connectivity_check', status: 'warning', message: 'DNS was broken, applied Google DNS fix (8.8.8.8)' };
+        } catch (e) {
+          return { step: 'connectivity_check', status: 'error', message: 'DNS Resolution failed and auto-fix failed.' };
+        }
+      }
+
+      return { step: 'connectivity_check', status: 'success', message: 'Network OK' };
+    } catch (e: any) {
+      return { step: 'connectivity_check', status: 'error', message: `Network check error: ${e.message}` };
+    }
+  }
+
+  /**
+   * Prepare Repositories
+   * Handles "HTTPS not supported" bootstrap problem
+   */
+  private async prepareRepositories(routerId: string): Promise<SetupStepResult> {
+    try {
+      // Check if ca-certificates is installed
+      let hasSsl = false;
+      try {
+        await this.exec(routerId, 'opkg list-installed | grep ca-certificates');
+        hasSsl = true;
+      } catch {}
+
+      if (!hasSsl) {
+        // Downgrade repos to HTTP to bootstrap installation
+        // This fixes SSL certificate issues on fresh installs
+        await this.exec(routerId, 'sed -i "s/https:/http:/g" /etc/opkg/distfeeds.conf');
+        return { step: 'repo_check', status: 'warning', message: 'Downgraded repos to HTTP to bootstrap SSL support' };
+      }
+
+      return { step: 'repo_check', status: 'success' };
+    } catch (e: any) {
+      return { step: 'repo_check', status: 'warning', message: `Repo check skipped: ${e.message}` };
+    }
+  }
+
+  /**
+   * Time Sync
+   * Fixes SSL validation errors
+   */
+  private async ensureSystemTime(routerId: string): Promise<SetupStepResult> {
+    try {
+      const dateOut = await this.exec(routerId, 'date +%Y');
+      const year = parseInt(dateOut.trim());
+      
+      if (year < 2023) {
+        this.logger.info(`[Setup] Time sync triggered (Year: ${year})`);
+        await this.exec(routerId, 'ntpd -q -n -p pool.ntp.org');
+        return { step: 'time_sync', status: 'warning', message: 'System time corrected via NTP' };
+      }
+      return { step: 'time_sync', status: 'success' };
+    } catch {
+      return { step: 'time_sync', status: 'skipped' };
+    }
+  }
+
+  // --- PACKAGE MANAGEMENT ---
+
   private async updatePackages(routerId: string): Promise<SetupStepResult> {
     try {
-      // Run opkg update and capture full output including stderr
-      // Use a wrapper to capture exit code and output separately
-      const result = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-        command: 'opkg update 2>&1; echo "EXIT_CODE:$?"'
-      }, 60000);
-      
-      // Log full result for debugging
-      this.logger.debug(`[uSpot Setup] opkg update result: ${JSON.stringify(result)}`);
-      
-      // Check result structure - system.exec returns {code, stdout, stderr} or just the output
-      const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-      
-      // Check for exit code in output
-      if (resultStr.includes('EXIT_CODE:253') || resultStr.includes('EXIT_CODE:1') || resultStr.includes('exit status 253')) {
-        const errorMsg = this.extractOpkgError(result);
-        this.logger.warn(`[uSpot Setup] Package update warning: ${errorMsg}`);
-        return { step: 'package_update', status: 'warning', message: errorMsg };
-      }
-      
-      // Check for opkg error messages
-      if (resultStr.includes('Collected errors') || resultStr.includes('wget returned') || resultStr.includes('Failed to download')) {
-        const errorMsg = this.extractOpkgError(result);
-        this.logger.warn(`[uSpot Setup] Package update warning: ${errorMsg}`);
-        return { step: 'package_update', status: 'warning', message: errorMsg };
-      }
-      
+      // Try update
+      await this.exec(routerId, 'opkg update');
       return { step: 'package_update', status: 'success' };
-    } catch (error: unknown) {
-      // If error is thrown, try to extract more info
-      const errorObj = error as any;
-      let message = error instanceof Error ? error.message : 'Unknown error';
-      
-      // Check if error contains result with code/stderr
-      if (errorObj?.result) {
-        const errorMsg = this.extractOpkgError(errorObj.result);
-        if (errorMsg && errorMsg !== message) {
-          message = errorMsg;
-        }
+    } catch (e: any) {
+      // If update fails, try one more time with no-check-certificate
+      try {
+        await this.exec(routerId, 'opkg update --no-check-certificate');
+        return { step: 'package_update', status: 'warning', message: 'Update succeeded with --no-check-certificate' };
+      } catch (e2: any) {
+        const msg = this.parseOpkgError(e.message || e2.message);
+        return { step: 'package_update', status: 'error', message: msg };
       }
-      
-      this.logger.warn(`[uSpot Setup] Package update warning: ${message}`);
-      return { step: 'package_update', status: 'warning', message };
     }
   }
 
-  /**
-   * Install required packages
-   */
   private async installPackages(routerId: string): Promise<SetupStepResult> {
     try {
-      // First, try to get diagnostic info about what packages are available
-      try {
-        const diagResult = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-          command: 'opkg list | head -5 2>&1 || echo "DIAG: opkg list failed"'
-        }, 10000);
-        this.logger.debug(`[uSpot Setup] Package diagnostic: ${JSON.stringify(diagResult)}`);
-      } catch {
-        // Ignore diagnostic failures
-      }
-
-      // Install main packages with stderr capture and exit code
-      const installResult = await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-        command: `opkg install ${this.REQUIRED_PACKAGES.join(' ')} 2>&1; echo "EXIT_CODE:$?"`
-      }, 120000);
-
-      // Log full result for debugging
-      this.logger.debug(`[uSpot Setup] opkg install result: ${JSON.stringify(installResult)}`);
-
-      // Check result structure
-      const output = typeof installResult === 'string' ? installResult : JSON.stringify(installResult);
-      
-      // Check for exit codes
-      if (output.includes('EXIT_CODE:253') || output.includes('EXIT_CODE:1') || output.includes('exit status 253')) {
-        const errorMsg = this.extractOpkgError(installResult);
-        this.logger.error(`[uSpot Setup] Package installation failed: ${errorMsg}`);
-        return { step: 'package_install', status: 'error', message: errorMsg };
-      }
-
-      // Check for opkg error messages
-      if (output.includes('Collected errors') || output.includes('Cannot find package') || output.includes('Unknown package')) {
-        const errorMsg = this.extractOpkgError(installResult);
-        this.logger.error(`[uSpot Setup] Package installation failed: ${errorMsg}`);
-        return { step: 'package_install', status: 'error', message: errorMsg };
-      }
-
-      // Install openssl-util if not present
-      try {
-        await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-          command: 'command -v openssl >/dev/null 2>&1 || opkg install openssl-util 2>&1'
-        }, 60000);
-      } catch {
-        // Ignore if already installed
-      }
-
+      const cmd = `opkg install ${this.REQUIRED_PACKAGES.join(' ')}`;
+      await this.exec(routerId, cmd);
       return { step: 'package_install', status: 'success' };
-    } catch (error: unknown) {
-      // If error is thrown, try to extract more info from error object
-      const errorObj = error as any;
-      let message = error instanceof Error ? error.message : 'Unknown error';
-      
-      // Check if error contains result with code/stderr
-      if (errorObj?.result) {
-        const errorMsg = this.extractOpkgError(errorObj.result);
-        if (errorMsg && errorMsg !== message) {
-          message = errorMsg;
-        }
+    } catch (e: any) {
+      // Retry with no-check-certificate
+      try {
+        const cmdRetry = `opkg install ${this.REQUIRED_PACKAGES.join(' ')} --no-check-certificate`;
+        await this.exec(routerId, cmdRetry);
+        return { step: 'package_install', status: 'warning', message: 'Installed with --no-check-certificate' };
+      } catch (e2: any) {
+        return { step: 'package_install', status: 'error', message: this.parseOpkgError(e2.message) };
       }
-      
-      // Provide helpful message for exit 253
-      if (message.includes('exit status 253')) {
-        message = 'Package installation failed (exit 253). This usually means: 1) Package repositories not configured (/etc/opkg/distfeeds.conf missing or empty), 2) Network connectivity issues, or 3) Package not found in repositories. Please check router logs or configure repositories first.';
-      }
-      
-      this.logger.error(`[uSpot Setup] Package installation failed: ${message}`);
-      return { step: 'package_install', status: 'error', message };
     }
   }
 
-  /**
-   * Extract opkg error message from result
-   */
-  private extractOpkgError(result: any): string {
-    // Handle different result formats
-    let resultStr: string;
-    
-    if (typeof result === 'string') {
-      resultStr = result;
-    } else if (result && typeof result === 'object') {
-      // Check for OpenWrt system.exec result format: {code, stdout, stderr}
-      if (result.code !== undefined) {
-        const code = result.code;
-        const stderr = result.stderr || '';
-        const stdout = result.stdout || '';
-        const combined = `${stdout}${stderr}`;
-        
-        if (code === 253 || code !== 0) {
-          // Try to extract meaningful error from stderr/stdout
-          if (stderr) {
-            // Extract error lines
-            const errorLines = stderr.split('\n').filter((line: string) => 
-              line.includes('error') || 
-              line.includes('Error') || 
-              line.includes('failed') ||
-              line.includes('Cannot') ||
-              line.includes('Collected')
-            );
-            if (errorLines.length > 0) {
-              return errorLines.join('; ').substring(0, 300);
-            }
-          }
-          if (combined) {
-            return combined.substring(0, 300);
-          }
-          return `Command failed with exit code ${code}`;
-        }
-      }
-      resultStr = JSON.stringify(result);
-    } else {
-      resultStr = String(result);
-    }
-    
-    // Try to extract error messages from string
-    if (resultStr.includes('Collected errors')) {
-      const match = resultStr.match(/Collected errors[^\n]*\n([^\n]+)/);
-      if (match) return match[1].substring(0, 300);
-    }
-    
-    if (resultStr.includes('Cannot find package')) {
-      const match = resultStr.match(/Cannot find package[^\n]*\n?([^\n]+)/);
-      if (match) return `Package not found: ${match[1].substring(0, 200)}`;
-    }
-    
-    if (resultStr.includes('Unknown package')) {
-      const match = resultStr.match(/Unknown package[^\n]*\n?([^\n]+)/);
-      if (match) return `Unknown package: ${match[1].substring(0, 200)}`;
-    }
-    
-    if (resultStr.includes('wget returned')) {
-      const match = resultStr.match(/wget returned[^\n]*\n?([^\n]+)/);
-      if (match) return `Download failed: ${match[1].substring(0, 200)}`;
-    }
-    
-    if (resultStr.includes('exit status 253') || resultStr.includes('EXIT_CODE:253')) {
-      // Try to find context around the error
-      const lines = resultStr.split('\n');
-      const errorLine = lines.find(line => line.includes('error') || line.includes('Error') || line.includes('failed'));
-      if (errorLine) {
-        return `Package operation failed: ${errorLine.substring(0, 200)}`;
-      }
-      return 'Package operation failed (exit 253). Check repository configuration and network connectivity.';
-    }
-    
-    // Return meaningful portion of result
-    const meaningful = resultStr.replace(/\s+/g, ' ').substring(0, 300);
-    return meaningful || 'Unknown error occurred';
-  }
+  // --- CONFIGURATION HELPERS ---
 
-  /**
-   * Configure wireless interfaces
-   */
   private async configureWireless(routerId: string): Promise<SetupStepResult> {
     try {
-      const wirelessConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'wireless' });
-      if (!wirelessConfig) {
-        return { step: 'wireless_config', status: 'skipped', message: 'No wireless configuration found' };
+      // Check if wireless config exists
+      try { await this.exec(routerId, 'uci get wireless'); } catch {
+        return { step: 'wireless_config', status: 'skipped', message: 'No wireless radio found' };
       }
 
-      // Enable all wireless devices
-      await this.configureWirelessDevices(routerId);
+      // Enable devices
+      let idx = 0;
+      while(idx < 5) {
+        try {
+          await this.exec(routerId, `uci set wireless.@wifi-device[${idx}].disabled='0'`);
+          idx++;
+        } catch { break; }
+      }
 
-      // Configure all wireless interfaces
-      await this.configureWirelessInterfaces(routerId);
+      // Configure interfaces
+      idx = 0;
+      while(idx < 5) {
+        try {
+          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].network='lan'`);
+          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].mode='ap'`);
+          idx++;
+        } catch { break; }
+      }
 
-      await routerRpcService.rpcCall(routerId, 'uci', 'commit', { config: 'wireless' });
+      await this.exec(routerId, 'uci commit wireless');
       return { step: 'wireless_config', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.warn(`[uSpot Setup] Wireless config warning: ${message}`);
-      return { step: 'wireless_config', status: 'skipped', message };
+    } catch (e: any) {
+      return { step: 'wireless_config', status: 'warning', message: e.message };
     }
   }
 
-  /**
-   * Enable all wireless devices
-   */
-  private async configureWirelessDevices(routerId: string): Promise<void> {
-    let deviceIndex = 0;
-    while (true) {
-      try {
-        const device = await routerRpcService.rpcCall(routerId, 'uci', 'get', {
-          config: 'wireless',
-          section: `@wifi-device[${deviceIndex}]`
-        });
-        if (!device) break;
-
-        await this.setUciOption(routerId, {
-          config: 'wireless',
-          section: `@wifi-device[${deviceIndex}]`,
-          option: 'disabled',
-          value: '0'
-        });
-        deviceIndex++;
-      } catch {
-        break;
-      }
-    }
-  }
-
-  /**
-   * Configure all wireless interfaces
-   */
-  private async configureWirelessInterfaces(routerId: string): Promise<void> {
-    let ifaceIndex = 0;
-    while (true) {
-      try {
-        const iface = await routerRpcService.rpcCall(routerId, 'uci', 'get', {
-          config: 'wireless',
-          section: `@wifi-iface[${ifaceIndex}]`
-        });
-        if (!iface) break;
-
-        await this.setUciOption(routerId, {
-          config: 'wireless',
-          section: `@wifi-iface[${ifaceIndex}]`,
-          option: 'network',
-          value: 'lan'
-        });
-        await this.setUciOption(routerId, {
-          config: 'wireless',
-          section: `@wifi-iface[${ifaceIndex}]`,
-          option: 'mode',
-          value: 'ap'
-        });
-        ifaceIndex++;
-      } catch {
-        break;
-      }
-    }
-  }
-
-  /**
-   * Configure network interfaces
-   */
   private async configureNetwork(routerId: string): Promise<SetupStepResult> {
     try {
-      // Ensure LAN interface exists
-      await this.ensureUciSection(routerId, 'network', 'lan', 'interface');
+      // LAN
+      await this.exec(routerId, 'uci set network.lan=interface');
+      await this.exec(routerId, 'uci set network.lan.proto="static"');
+      await this.exec(routerId, 'uci set network.lan.type="bridge"');
+      await this.exec(routerId, `uci set network.lan.ipaddr="${this.LAN_IP}"`);
+      await this.exec(routerId, `uci set network.lan.netmask="${this.LAN_NETMASK}"`);
 
-      // Configure LAN interface
-      await this.setUciOptions(routerId, 'network', 'lan', [
-        { option: 'proto', value: 'static' },
-        { option: 'type', value: 'bridge' },
-        { option: 'ipaddr', value: this.LAN_IP },
-        { option: 'netmask', value: this.LAN_NETMASK }
-      ]);
+      // Get Bridge
+      let bridge = this.DEFAULT_BRIDGE;
+      try {
+        const out = await this.exec(routerId, 'uci get network.lan.ifname');
+        if (out) bridge = out.split(' ')[0];
+      } catch {}
 
-      // Get bridge name
-      const bridgeName = await this.getBridgeName(routerId);
+      // Hotspot
+      await this.exec(routerId, 'uci set network.hotspot=interface');
+      await this.exec(routerId, 'uci set network.hotspot.proto="static"');
+      await this.exec(routerId, `uci set network.hotspot.ipaddr="${this.HOTSPOT_IP}"`);
+      await this.exec(routerId, `uci set network.hotspot.netmask="${this.HOTSPOT_NETMASK}"`);
+      await this.exec(routerId, `uci set network.hotspot.device="${bridge}"`);
 
-      // Ensure hotspot interface exists
-      await this.ensureUciSection(routerId, 'network', 'hotspot', 'interface');
-
-      // Configure hotspot interface
-      await this.setUciOptions(routerId, 'network', 'hotspot', [
-        { option: 'proto', value: 'static' },
-        { option: 'ipaddr', value: this.HOTSPOT_IP },
-        { option: 'netmask', value: this.HOTSPOT_NETMASK },
-        { option: 'device', value: bridgeName }
-      ]);
-
-      await routerRpcService.rpcCall(routerId, 'uci', 'commit', { config: 'network' });
+      await this.exec(routerId, 'uci commit network');
       return { step: 'network_config', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`[uSpot Setup] Network config failed: ${message}`);
-      return { step: 'network_config', status: 'error', message };
+    } catch (e: any) {
+      return { step: 'network_config', status: 'error', message: e.message };
     }
   }
 
-  /**
-   * Get bridge name from LAN interface
-   */
-  private async getBridgeName(routerId: string): Promise<string> {
-    try {
-      const ifname = await routerRpcService.rpcCall(routerId, 'uci', 'get', {
-        config: 'network',
-        section: 'lan',
-        option: 'ifname'
-      });
-      if (ifname && typeof ifname === 'string') {
-        return ifname.split(' ')[0] || this.DEFAULT_BRIDGE;
-      }
-    } catch {
-      // Use default
-    }
-    return this.DEFAULT_BRIDGE;
-  }
-
-  /**
-   * Configure firewall rules
-   */
   private async configureFirewall(routerId: string): Promise<SetupStepResult> {
     try {
-      // Create hotspot zone if it doesn't exist
-      if (!(await this.firewallZoneExists(routerId, 'hotspot'))) {
-        await this.createFirewallZone(routerId, 'hotspot');
+      // Check if hotspot zone exists by trying to find it in config
+      const zones = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'firewall' });
+      const zonesStr = JSON.stringify(zones);
+      const hotspotZoneExists = zonesStr.includes('"name":"hotspot"') || zonesStr.includes("name='hotspot'");
+
+      if (!hotspotZoneExists) {
+        await this.exec(routerId, 'uci add firewall zone');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].name="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].input="REJECT"');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].output="ACCEPT"');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].forward="REJECT"');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].network="hotspot"');
       }
 
-      // Create forwarding rule if it doesn't exist
-      if (!(await this.firewallForwardingExists(routerId, 'hotspot', 'wan'))) {
-        await this.createFirewallForwarding(routerId, 'hotspot', 'wan');
+      // Check if forwarding exists
+      const hotspotForwardExists = zonesStr.includes('"src":"hotspot"') && zonesStr.includes('"dest":"wan"');
+      if (!hotspotForwardExists) {
+        await this.exec(routerId, 'uci add firewall forwarding');
+        await this.exec(routerId, 'uci set firewall.@forwarding[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@forwarding[-1].dest="wan"');
       }
 
-      // Add RADIUS firewall rules
+      // Add RADIUS rules (check and create if not exists)
       for (const port of this.RADIUS_PORTS) {
-        if (!(await this.firewallRuleExists(routerId, `Allow-RADIUS-${port}`))) {
-          await this.createFirewallRule(routerId, {
-            name: `Allow-RADIUS-${port}`,
-            src: 'wan',
-            dest_port: port,
-            proto: 'udp',
-            target: 'ACCEPT'
-          });
+        const ruleName = `Allow-RADIUS-${port}`;
+        if (!zonesStr.includes(ruleName)) {
+          await this.exec(routerId, 'uci add firewall rule');
+          await this.exec(routerId, `uci set firewall.@rule[-1].name="${ruleName}"`);
+          await this.exec(routerId, 'uci set firewall.@rule[-1].src="wan"');
+          await this.exec(routerId, `uci set firewall.@rule[-1].dest_port="${port}"`);
+          await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
+          await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
         }
       }
 
-      await routerRpcService.rpcCall(routerId, 'uci', 'commit', { config: 'firewall' });
+      await this.exec(routerId, 'uci commit firewall');
       return { step: 'firewall_config', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`[uSpot Setup] Firewall config failed: ${message}`);
-      return { step: 'firewall_config', status: 'error', message };
+    } catch (e: any) {
+      return { step: 'firewall_config', status: 'error', message: e.message };
     }
   }
 
-  /**
-   * Check if firewall zone exists
-   */
-  private async firewallZoneExists(routerId: string, zoneName: string): Promise<boolean> {
-    try {
-      const zones = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'firewall' });
-      if (zones) {
-        const zonesStr = JSON.stringify(zones);
-        return zonesStr.includes(`name='${zoneName}'`) || zonesStr.includes(`"name":"${zoneName}"`);
-      }
-    } catch {
-      // Continue to create zone
-    }
-    return false;
-  }
-
-  /**
-   * Create firewall zone
-   */
-  private async createFirewallZone(routerId: string, zoneName: string): Promise<void> {
-    await routerRpcService.rpcCall(routerId, 'uci', 'add', { config: 'firewall', section: 'zone' });
-    await this.setUciOptions(routerId, 'firewall', '@zone[-1]', [
-      { option: 'name', value: zoneName },
-      { option: 'input', value: 'REJECT' },
-      { option: 'output', value: 'ACCEPT' },
-      { option: 'forward', value: 'REJECT' },
-      { option: 'network', value: zoneName }
-    ]);
-  }
-
-  /**
-   * Check if firewall forwarding exists
-   */
-  private async firewallForwardingExists(routerId: string, src: string, dest: string): Promise<boolean> {
-    try {
-      const forwardings = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'firewall' });
-      if (forwardings) {
-        const forwardingsStr = JSON.stringify(forwardings);
-        return forwardingsStr.includes(`src='${src}'`) && forwardingsStr.includes(`dest='${dest}'`);
-      }
-    } catch {
-      // Continue to create forwarding
-    }
-    return false;
-  }
-
-  /**
-   * Create firewall forwarding rule
-   */
-  private async createFirewallForwarding(routerId: string, src: string, dest: string): Promise<void> {
-    await routerRpcService.rpcCall(routerId, 'uci', 'add', { config: 'firewall', section: 'forwarding' });
-    await this.setUciOptions(routerId, 'firewall', '@forwarding[-1]', [
-      { option: 'src', value: src },
-      { option: 'dest', value: dest }
-    ]);
-  }
-
-  /**
-   * Check if firewall rule exists
-   */
-  private async firewallRuleExists(routerId: string, ruleName: string): Promise<boolean> {
-    try {
-      const rules = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'firewall' });
-      if (rules) {
-        const rulesStr = JSON.stringify(rules);
-        return rulesStr.includes(ruleName);
-      }
-    } catch {
-      // Continue to create rule
-    }
-    return false;
-  }
-
-  /**
-   * Create firewall rule
-   */
-  private async createFirewallRule(
-    routerId: string,
-    rule: { name: string; src: string; dest_port: number; proto: string; target: string }
-  ): Promise<void> {
-    await routerRpcService.rpcCall(routerId, 'uci', 'add', { config: 'firewall', section: 'rule' });
-    await this.setUciOptions(routerId, 'firewall', '@rule[-1]', [
-      { option: 'name', value: rule.name },
-      { option: 'src', value: rule.src },
-      { option: 'dest_port', value: rule.dest_port.toString() },
-      { option: 'proto', value: rule.proto },
-      { option: 'target', value: rule.target }
-    ]);
-  }
-
-  /**
-   * Configure HTTPS portal
-   */
   private async configurePortal(routerId: string): Promise<SetupStepResult> {
     try {
-      // Generate certificate if it doesn't exist
+      // Certs
       try {
-        await routerRpcService.rpcCall(routerId, 'system', 'exec', {
-          command: 'openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/uhttpd.key -out /etc/uhttpd.crt -subj "/C=US/ST=State/L=City/O=SpotFi/CN=router" 2>/dev/null || true'
-        }, 30000);
-      } catch {
-        // Certificate may already exist, continue
-      }
+        await this.exec(routerId, 'openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/uhttpd.key -out /etc/uhttpd.crt -subj "/CN=router" 2>/dev/null');
+      } catch {}
 
-      // Configure uhttpd
-      await this.setUciOptions(routerId, 'uhttpd', 'main', [
-        { option: 'listen_https', value: '443' },
-        { option: 'cert', value: '/etc/uhttpd.crt' },
-        { option: 'key', value: '/etc/uhttpd.key' },
-        { option: 'redirect_https', value: '0' },
-        { option: 'listen_http', value: `${this.HOTSPOT_IP}:80` }
-      ]);
-
-      await routerRpcService.rpcCall(routerId, 'uci', 'commit', { config: 'uhttpd' });
+      // uHTTPd
+      await this.exec(routerId, 'uci set uhttpd.main.listen_https="443"');
+      await this.exec(routerId, 'uci set uhttpd.main.cert="/etc/uhttpd.crt"');
+      await this.exec(routerId, 'uci set uhttpd.main.key="/etc/uhttpd.key"');
+      await this.exec(routerId, 'uci set uhttpd.main.redirect_https="0"');
+      await this.exec(routerId, `uci set uhttpd.main.listen_http="${this.HOTSPOT_IP}:80"`);
+      
+      await this.exec(routerId, 'uci commit uhttpd');
       return { step: 'portal_config', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`[uSpot Setup] Portal config failed: ${message}`);
-      return { step: 'portal_config', status: 'error', message };
+    } catch (e: any) {
+      return { step: 'portal_config', status: 'error', message: e.message };
     }
   }
 
-  /**
-   * Restart required services
-   */
   private async restartServices(routerId: string): Promise<SetupStepResult> {
     try {
-      await routerRpcService.rpcCall(routerId, 'service', 'restart', { name: 'network' });
-      await this.sleep(2000);
-
-      await routerRpcService.rpcCall(routerId, 'service', 'restart', { name: 'firewall' });
-      await this.sleep(2000);
-
-      // Wireless service may not exist on wired-only routers
-      try {
-        await routerRpcService.rpcCall(routerId, 'service', 'restart', { name: 'wireless' });
-      } catch {
-        // Ignore
-      }
-
-      await routerRpcService.rpcCall(routerId, 'service', 'enable', { name: 'uhttpd' });
-      await routerRpcService.rpcCall(routerId, 'service', 'restart', { name: 'uhttpd' });
-
+      await this.exec(routerId, '/etc/init.d/network restart');
+      await this.sleep(3000);
+      await this.exec(routerId, '/etc/init.d/firewall restart');
+      try { await this.exec(routerId, '/etc/init.d/wireless restart'); } catch {}
+      await this.exec(routerId, '/etc/init.d/uhttpd enable');
+      await this.exec(routerId, '/etc/init.d/uhttpd restart');
       return { step: 'services_restart', status: 'success' };
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.warn(`[uSpot Setup] Service restart warning: ${message}`);
-      return { step: 'services_restart', status: 'warning', message };
+    } catch (e: any) {
+      return { step: 'services_restart', status: 'warning', message: e.message };
     }
   }
 
+  // --- UTILS ---
+
   /**
-   * Helper: Ensure UCI section exists
+   * Safe Executor
+   * Uses file.exec instead of system.exec (which doesn't exist in OpenWrt by default)
+   * Wraps routerRpcService to return stdout string or Throw Error with stderr/code
    */
-  private async ensureUciSection(routerId: string, config: string, section: string, type: string): Promise<void> {
-    try {
-      await routerRpcService.rpcCall(routerId, 'uci', 'get', { config, section });
-    } catch {
-      await routerRpcService.rpcCall(routerId, 'uci', 'set', {
-        config,
-        section,
-        option: type,
-        value: ''
-      });
+  private async exec(routerId: string, command: string, timeout = 30000): Promise<string> {
+    // Check if command contains shell operators (pipes, redirects, etc.)
+    // If so, wrap in sh -c
+    const hasShellOps = /[|&;<>`$(){}[\]"'\\]/.test(command);
+    
+    let execCmd: string;
+    let execParams: string[];
+    
+    if (hasShellOps || command.includes(' ') && !command.startsWith('opkg') && !command.startsWith('uci')) {
+      // Shell command - wrap in sh -c
+      execCmd = 'sh';
+      execParams = ['-c', command];
+    } else {
+      // Simple command - parse into command and params
+      const parts = command.split(/\s+/);
+      execCmd = parts[0];
+      execParams = parts.slice(1);
     }
-  }
+    
+    // Execute via file.exec (standard OpenWrt method)
+    // routerRpcService returns response.result || response, so result is the direct file.exec response
+    const result = await routerRpcService.rpcCall(routerId, 'file', 'exec', { 
+      command: execCmd, 
+      params: execParams 
+    }, timeout);
+    
+    // Result object from ubus file.exec is { code: int, stdout: string }
+    const code = result.code ?? result.result?.code ?? 0;
+    const stdout = result.stdout ?? result.result?.stdout ?? '';
+    const stderr = result.stderr ?? result.result?.stderr ?? '';
 
-  /**
-   * Helper: Set single UCI option
-   */
-  private async setUciOption(routerId: string, uci: UciConfig): Promise<void> {
-    await routerRpcService.rpcCall(routerId, 'uci', 'set', uci);
-  }
-
-  /**
-   * Helper: Set multiple UCI options
-   */
-  private async setUciOptions(
-    routerId: string,
-    config: string,
-    section: string,
-    options: Array<{ option: string; value: string }>
-  ): Promise<void> {
-    for (const opt of options) {
-      await this.setUciOption(routerId, { config, section, option: opt.option, value: opt.value });
+    if (code !== 0) {
+      const errParts: string[] = [];
+      errParts.push(`Code ${code}`);
+      if (stderr) errParts.push(stderr.trim());
+      if (stdout) errParts.push(stdout.trim()); // Sometimes error is in stdout
+      
+      throw new Error(errParts.join(': ') || `Command failed: ${command}`);
     }
+
+    return stdout;
   }
 
-  /**
-   * Helper: Sleep utility
-   */
+  private parseOpkgError(msg: string): string {
+    if (msg.includes('Download failed') || msg.includes('wget returned')) return 'Download failed (Check DNS/Internet)';
+    if (msg.includes('No space')) return 'Disk full';
+    if (msg.includes('lock')) return 'Package manager locked';
+    if (msg.includes('Cannot find package')) return 'Package not found in repositories';
+    return msg.substring(0, 100);
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
-

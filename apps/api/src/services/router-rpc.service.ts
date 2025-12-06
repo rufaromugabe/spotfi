@@ -27,14 +27,26 @@ export class RouterRpcService {
     }
 
     // Send as 'rpc' type (bridge.py handles this generically)
-    const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
-      path,
-      method,
-      args
-    }, timeout);
+    try {
+      const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
+        path,
+        method,
+        args
+      }, timeout);
 
-    // Extract result from response (bridge.py sends 'result' field)
-    return response.result || response;
+      // Extract result from response (bridge.py sends 'result' field)
+      return response.result || response;
+    } catch (error: any) {
+      // Log the error before re-throwing so we can see what we're getting
+      console.error(`[RouterRPC] Error in rpcCall ${path}.${method}:`, {
+        message: error?.message,
+        hasResponse: !!error?.response,
+        hasResult: !!error?.result,
+        hasStderr: !!error?.stderr,
+        errorKeys: Object.keys(error || {})
+      });
+      throw error;
+    }
   }
 
   // Wrapper methods become one-liners - leveraging ubus native capabilities

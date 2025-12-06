@@ -91,7 +91,12 @@ class CommandManager {
 
     // Check for errors
     if (response.type === 'error' || response.status === 'error') {
-      pending.reject(new Error(response.error || response.message || 'Command failed'));
+      // Create error with full response attached so we can access result/stderr
+      const error = new Error(response.error || response.message || 'Command failed') as any;
+      error.response = response; // Attach full response for error inspection
+      error.result = response.result; // Also attach result directly for convenience
+      error.stderr = response.stderr; // Attach stderr if available
+      pending.reject(error);
       return;
     }
 

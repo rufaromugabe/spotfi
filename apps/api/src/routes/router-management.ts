@@ -119,9 +119,26 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Execute shell command via ubus system.exec
-      const result = await routerRpcService.rpcCall(id, 'system', 'exec', {
-        command: body.command
+      // Execute shell command via ubus file.exec (standard OpenWrt method)
+      // Parse command string into command and params array
+      const hasShellOps = /[|&;<>`$(){}[\]"'\\]/.test(body.command);
+      let execCmd: string;
+      let execParams: string[];
+      
+      if (hasShellOps || (body.command.includes(' ') && !body.command.startsWith('opkg') && !body.command.startsWith('uci'))) {
+        // Shell command - wrap in sh -c
+        execCmd = 'sh';
+        execParams = ['-c', body.command];
+      } else {
+        // Simple command - parse into command and params
+        const parts = body.command.split(/\s+/);
+        execCmd = parts[0];
+        execParams = parts.slice(1);
+      }
+      
+      const result = await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: execCmd,
+        params: execParams
       }, body.timeout || 10000);
 
       return { routerId: id, command: body.command, result: result.result || result };
