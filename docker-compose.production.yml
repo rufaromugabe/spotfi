@@ -82,15 +82,15 @@ services:
       - .env
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      PORT: ${PORT:-8080}
+      PORT: ${PORT:-8090}
       HOST: ${HOST:-0.0.0.0}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-spotfi}?schema=public
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-secret-key}
       # API_URL defaults to localhost for local Docker, override in .env for production
-      # For local: http://localhost:8080
-      # For production: https://api.spotfi.com or http://your-ip:8080
-      API_URL: ${API_URL:-http://localhost:8080}
+      # For local: http://localhost:8090
+      # For production: https://api.spotfi.com or http://your-ip:8090
+      API_URL: ${API_URL:-http://localhost:8090}
       # UAM Server Configuration
       UAM_SERVER_URL: ${UAM_SERVER_URL:-https://radar-bridge-pink-arrive.trycloudflare.com/uam/login}
       # RADIUS Server Configuration
@@ -105,7 +105,7 @@ services:
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
-      - "${API_PORT:-8080}:${PORT:-8080}"
+      - "${API_PORT:-8090}:${PORT:-8090}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,7 +114,7 @@ services:
     networks:
       - spotfi-network
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\" || exit 1"]
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8090/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
