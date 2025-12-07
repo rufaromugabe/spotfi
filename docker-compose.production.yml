@@ -8,7 +8,7 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --port 6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -102,8 +102,8 @@ services:
       RADIUS_PORT: ${RADIUS_PORT:-1812}
       # Redis Configuration
       REDIS_HOST: ${REDIS_HOST:-redis}
-      REDIS_PORT: ${REDIS_PORT:-6379}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PORT: 6379
+      REDIS_URL: redis://${REDIS_HOST:-redis}:6379
     ports:
       - "${API_PORT:-8090}:${PORT:-8090}"
     depends_on:
