@@ -52,8 +52,9 @@ COPY --from=deps /app/packages/prisma ./packages/prisma
 COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
 
 # Ensure migrations directory is explicitly copied (in case it was missed or filtered)
-COPY packages/prisma/migrations ./packages/prisma/migrations
-COPY packages/prisma/manual-migrations ./packages/prisma/manual-migrations
+# Use COPY --from=deps if the files were available in the deps stage, or copy from source if not
+COPY --from=deps /app/packages/prisma/migrations ./packages/prisma/migrations
+COPY --from=deps /app/packages/prisma/manual-migrations ./packages/prisma/manual-migrations
 
 EXPOSE 8080
 
