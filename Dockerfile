@@ -67,11 +67,11 @@ RUN mkdir -p /app/scripts && \
     echo '' >> /app/scripts/docker-entrypoint.sh && \
     echo '# Step 1: Run Prisma migrations (create tables)' >> /app/scripts/docker-entrypoint.sh && \
     echo 'echo "📦 Running Prisma migrations..."' >> /app/scripts/docker-entrypoint.sh && \
-    echo 'npm run prisma:migrate:deploy' >> /app/scripts/docker-entrypoint.sh && \
+    echo 'npm run prisma:migrate:deploy || echo "⚠️  Prisma migrations failed (continuing to manual migrations)..."' >> /app/scripts/docker-entrypoint.sh && \
     echo '' >> /app/scripts/docker-entrypoint.sh && \
     echo '# Step 2: Run manual SQL migrations (triggers, functions, partial indexes)' >> /app/scripts/docker-entrypoint.sh && \
     echo 'echo "🔧 Running manual SQL migrations (using pg Client directly)..."' >> /app/scripts/docker-entrypoint.sh && \
-    echo 'cd packages/prisma && npx tsx scripts/run-manual-migrations.ts' >> /app/scripts/docker-entrypoint.sh && \
+    echo 'cd packages/prisma && npx tsx scripts/run-manual-migrations.ts || echo "⚠️  Manual migrations failed (continuing startup)..."' >> /app/scripts/docker-entrypoint.sh && \
     echo 'cd ../..' >> /app/scripts/docker-entrypoint.sh && \
     echo '' >> /app/scripts/docker-entrypoint.sh && \
     echo 'echo "✨ Starting API server..."' >> /app/scripts/docker-entrypoint.sh && \
