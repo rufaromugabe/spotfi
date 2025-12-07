@@ -1,8 +1,8 @@
 FROM node:20-slim AS base
 WORKDIR /app
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates openssl \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ca-certificates openssl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 FROM base AS deps
@@ -13,7 +13,8 @@ COPY packages/shared/package.json packages/shared/package.json
 
 # Install workspace dependencies
 # Try npm ci first (faster, reproducible), fallback to npm install if lock file is out of sync
-RUN npm ci || (echo "Warning: package-lock.json out of sync, using npm install..." && npm install)
+# Force NODE_ENV=development to ensure devDependencies (like typescript) are installed
+RUN NODE_ENV=development npm ci || (echo "Warning: package-lock.json out of sync, using npm install..." && NODE_ENV=development npm install)
 
 # Copy the rest of the source
 COPY . .
@@ -24,8 +25,8 @@ ENV DATABASE_URL=${DATABASE_URL}
 
 # Build shared library and API, then prune dev dependencies
 RUN npm run prisma:generate \
- && npm run build \
- && npm prune --omit=dev
+    && npm run build \
+    && npm prune --omit=dev
 
 # Runtime image
 FROM base AS runner
@@ -34,9 +35,9 @@ WORKDIR /app
 
 # Install curl for health checks and tsx for running TypeScript migration scripts
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
- && rm -rf /var/lib/apt/lists/* \
- && npm install -g tsx
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g tsx
 
 # Copy package metadata and node_modules from build stage
 COPY package.json package-lock.json ./
