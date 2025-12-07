@@ -51,6 +51,10 @@ COPY --from=deps /app/packages/shared/dist ./packages/shared/dist
 COPY --from=deps /app/packages/prisma ./packages/prisma
 COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
 
+# Ensure migrations directory is explicitly copied (in case it was missed or filtered)
+COPY packages/prisma/migrations ./packages/prisma/migrations
+COPY packages/prisma/manual-migrations ./packages/prisma/manual-migrations
+
 EXPOSE 8080
 
 # Create entrypoint script that runs migrations before starting
