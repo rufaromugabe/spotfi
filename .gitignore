@@ -28,7 +28,7 @@ build/
 Thumbs.db
 
 # Prisma
-packages/prisma/migrations/
+# packages/prisma/migrations/
 
 # SpotFi Bridge Binaries (built by CI/CD, not committed)
 spotfi-bridge-go/spotfi-bridge-*
