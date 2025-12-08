@@ -87,16 +87,10 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Clean up all instances using shell commands
+      // Ensure at least one instance exists (create if missing, reuse if exists)
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
-        params: ['-c', 'uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci commit uspot']
-      });
-
-      // Create fresh instance
-      await routerRpcService.rpcCall(id, 'file', 'exec', {
-        command: 'sh',
-        params: ['-c', 'uci add uspot instance && uci set uspot.@instance[0].enabled=1 && uci set uspot.@instance[0].interface=hotspot && uci commit uspot']
+        params: ['-c', 'uci -q show uspot.@instance[0] || (uci add uspot instance && uci set uspot.@instance[0].enabled=1 && uci set uspot.@instance[0].interface=hotspot && uci commit uspot)']
       });
 
       // Build UCI commands
