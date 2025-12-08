@@ -334,7 +334,6 @@ export class UspotSetupService {
 
       await this.exec(routerId, 'uci set network.lan=interface');
       await this.exec(routerId, 'uci set network.lan.proto="static"');
-      await this.exec(routerId, 'uci set network.lan.type="bridge"');
 
       if (currentLanIp && currentLanIp.length > 0) {
         this.logger.info(`[Setup] Preserving existing LAN IP: ${currentLanIp}`);
@@ -349,11 +348,11 @@ export class UspotSetupService {
         await this.exec(routerId, `uci set network.lan.netmask="${this.LAN_NETMASK}"`);
       }
 
-      // Get Bridge
+      // Get device for hotspot (OpenWrt 23+)
       let bridge = this.DEFAULT_BRIDGE;
       try {
-        const out = await this.exec(routerId, 'uci get network.lan.ifname');
-        if (out) bridge = out.split(' ')[0];
+        const out = await this.exec(routerId, 'uci get network.lan.device');
+        if (out && out.trim()) bridge = out.trim().split(' ')[0];
       } catch {}
 
       // Hotspot
