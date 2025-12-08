@@ -95,34 +95,30 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
         configExists = true;
         instanceExists = !!(uspotConfig?.['@instance[0]'] || uspotConfig?.values?.['@instance[0]']);
-      } catch (error: any) {
-        fastify.log.warn(`[UAM Config] uspot config check failed: ${error.message || error}`);
+      } catch {
+        // Config doesn't exist yet
       }
 
-      // If config doesn't exist at all, create it via file.exec
+      // Create config file if it doesn't exist
       if (!configExists) {
         try {
-          fastify.log.info(`[UAM Config] Creating uspot config file`);
-          // Touch the config file to create it
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
             params: ['-c', 'touch /etc/config/uspot']
           });
         } catch (e: any) {
-          fastify.log.error(`[UAM Config] Failed to create config file: ${e.message}`);
+          throw new Error(`Failed to create uspot config: ${e.message}`);
         }
       }
 
-      // If no instance exists, create one
+      // Create instance if it doesn't exist
       if (!instanceExists) {
         try {
-          fastify.log.info(`[UAM Config] Creating uspot instance`);
           await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
           await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'enabled', value: '1' });
           await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'interface', value: 'hotspot' });
         } catch (e: any) {
-          fastify.log.error(`[UAM Config] Failed to create uspot instance: ${e.message}`);
-          throw new Error('Failed to create uspot instance. Ensure uspot package is installed.');
+          throw new Error(`Failed to create uspot instance: ${e.message}`);
         }
       }
 
@@ -173,7 +169,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'dhcp' });
         }
       } catch {
-        fastify.log.warn(`[UAM Config] Could not configure DHCP Option 114 (dhcp.captive may not exist)`);
+        // DHCP captive section doesn't exist, skip Option 114
       }
 
       return {
