@@ -89,21 +89,39 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     try {
       // Check if uspot config exists and has an instance
       let instanceExists = false;
+      let configExists = false;
+      
       try {
         const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
+        configExists = true;
         instanceExists = !!(uspotConfig?.['@instance[0]'] || uspotConfig?.values?.['@instance[0]']);
-      } catch {
-        fastify.log.warn(`[UAM Config] uspot config not found, attempting to create instance`);
+      } catch (error: any) {
+        fastify.log.warn(`[UAM Config] uspot config check failed: ${error.message || error}`);
+      }
+
+      // If config doesn't exist at all, create it via file.exec
+      if (!configExists) {
+        try {
+          fastify.log.info(`[UAM Config] Creating uspot config file`);
+          // Touch the config file to create it
+          await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', 'touch /etc/config/uspot']
+          });
+        } catch (e: any) {
+          fastify.log.error(`[UAM Config] Failed to create config file: ${e.message}`);
+        }
       }
 
       // If no instance exists, create one
       if (!instanceExists) {
         try {
+          fastify.log.info(`[UAM Config] Creating uspot instance`);
           await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
           await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'enabled', value: '1' });
-        } catch (e) {
-          fastify.log.error(`[UAM Config] Failed to create uspot instance: ${e}`);
-          throw new Error('uspot package may not be installed. Run /api/routers/:id/uspot/setup first');
+        } catch (e: any) {
+          fastify.log.error(`[UAM Config] Failed to create uspot instance: ${e.message}`);
+          throw new Error('Failed to create uspot instance. Ensure uspot package is installed.');
         }
       }
 
