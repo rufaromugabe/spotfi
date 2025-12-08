@@ -87,40 +87,33 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Check if uspot config exists and has an instance
-      let instanceExists = false;
-      let configExists = false;
-      
+      // Remove all existing instances and create a fresh one
       try {
-        const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
-        configExists = true;
-        instanceExists = !!(uspotConfig?.['@instance[0]'] || uspotConfig?.values?.['@instance[0]']);
-      } catch {
-        // Config doesn't exist yet
-      }
-
-      // Create config file if it doesn't exist
-      if (!configExists) {
-        try {
+        await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
+        
+        // Delete all instances
+        let deleted = true;
+        while (deleted) {
+          try {
+            await routerRpcService.rpcCall(id, 'uci', 'delete', { config: 'uspot', section: '@instance[0]' });
+          } catch {
+            deleted = false;
+          }
+        }
+      } catch (e: any) {
+        // Config doesn't exist, create it
+        if (e.message?.includes('Entry not found') || e.message?.includes('not found')) {
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
             params: ['-c', 'touch /etc/config/uspot']
           });
-        } catch (e: any) {
-          throw new Error(`Failed to create uspot config: ${e.message}`);
         }
       }
 
-      // Create instance if it doesn't exist
-      if (!instanceExists) {
-        try {
-          await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
-          await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'enabled', value: '1' });
-          await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'interface', value: 'hotspot' });
-        } catch (e: any) {
-          throw new Error(`Failed to create uspot instance: ${e.message}`);
-        }
-      }
+      // Create fresh instance
+      await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
+      await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[0]', option: 'enabled', value: '1' });
+      await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[0]', option: 'interface', value: 'hotspot' });
 
       const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
 
