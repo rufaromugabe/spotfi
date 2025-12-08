@@ -87,61 +87,43 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Remove all existing instances and create a fresh one
-      try {
-        await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
-        
-        // Delete all instances
-        let deleted = true;
-        while (deleted) {
-          try {
-            await routerRpcService.rpcCall(id, 'uci', 'delete', { config: 'uspot', section: '@instance[0]' });
-          } catch {
-            deleted = false;
-          }
-        }
-      } catch (e: any) {
-        // Config doesn't exist, create it
-        if (e.message?.includes('Entry not found') || e.message?.includes('not found')) {
-          await routerRpcService.rpcCall(id, 'file', 'exec', {
-            command: 'sh',
-            params: ['-c', 'touch /etc/config/uspot']
-          });
-        }
-      }
+      // Clean up all instances using shell commands
+      await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: 'sh',
+        params: ['-c', 'uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci -q delete uspot.@instance[0]; uci commit uspot']
+      });
 
       // Create fresh instance
-      await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
-      await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[0]', option: 'enabled', value: '1' });
-      await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[0]', option: 'interface', value: 'hotspot' });
+      await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: 'sh',
+        params: ['-c', 'uci add uspot instance && uci set uspot.@instance[0].enabled=1 && uci set uspot.@instance[0].interface=hotspot && uci commit uspot']
+      });
 
-      const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
-
-      // Set portal URL
-      changes.push({ config: 'uspot', section: '@instance[0]', option: 'portal_url', value: body.uamServerUrl });
-      
-      // Set RADIUS auth server (strip port if included, as uspot uses separate port config)
+      // Build UCI commands
       const radiusHost = body.radiusServer.split(':')[0];
       const radiusPort = body.radiusServer.split(':')[1] || '1812';
-      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_auth_server', value: radiusHost });
-      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_auth_port', value: radiusPort });
       
-      // Set RADIUS secret
-      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_secret', value: body.radiusSecret });
+      let uciCommands = [
+        `uci set uspot.@instance[0].portal_url='${body.uamServerUrl}'`,
+        `uci set uspot.@instance[0].radius_auth_server='${radiusHost}'`,
+        `uci set uspot.@instance[0].radius_auth_port='${radiusPort}'`,
+        `uci set uspot.@instance[0].radius_secret='${body.radiusSecret}'`
+      ];
 
-      // Set accounting server if provided
       if (body.radiusServer2) {
         const acctHost = body.radiusServer2.split(':')[0];
         const acctPort = body.radiusServer2.split(':')[1] || '1813';
-        changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_server', value: acctHost });
-        changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_port', value: acctPort });
+        uciCommands.push(`uci set uspot.@instance[0].radius_acct_server='${acctHost}'`);
+        uciCommands.push(`uci set uspot.@instance[0].radius_acct_port='${acctPort}'`);
       }
 
-      for (const change of changes) {
-        await routerRpcService.rpcCall(id, 'uci', 'set', change);
-      }
+      uciCommands.push('uci commit uspot');
 
-      await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'uspot' });
+      // Execute all UCI commands in one shell call
+      await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: 'sh',
+        params: ['-c', uciCommands.join(' && ')]
+      });
 
       if (body.restartUspot) {
         await routerRpcService.rpcCall(id, 'service', 'restart', { name: 'uspot' });
