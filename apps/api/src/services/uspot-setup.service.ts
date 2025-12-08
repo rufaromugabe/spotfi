@@ -389,11 +389,12 @@ export class UspotSetupService {
           
           if (options.combinedSSID && options.ssid) {
              await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].ssid='${options.ssid}'`);
-             if (options.password) {
+             if (options.password && options.password !== 'none') {
                await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='psk2+ccmp'`);
                await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].key='${options.password}'`);
              } else {
                await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='none'`);
+               try { await this.exec(routerId, `uci delete wireless.@wifi-iface[${idx}].key`); } catch {}
              }
           }
           

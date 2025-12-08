@@ -18,8 +18,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         type: 'object',
         properties: {
           combinedSSID: { type: 'boolean', description: 'Create combined 2.4GHz and 5GHz wireless network' },
-          ssid: { type: 'string', description: 'SSID for the wireless network' },
-          password: { type: 'string', description: 'Password for the wireless network' }
+          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
+          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
         }
       }
     }
@@ -27,6 +27,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as { combinedSSID?: boolean, ssid?: string, password?: string } || {};
+
+    if (body.combinedSSID) {
+      body.ssid = body.ssid || 'SpotFi';
+      body.password = body.password || 'none';
+    }
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
@@ -77,8 +82,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           radiusServer2: { type: 'string', description: 'Secondary RADIUS server (optional)' },
           restartUspot: { type: 'boolean', default: true, description: 'Restart uspot service after configuration' },
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
-          ssid: { type: 'string', description: 'SSID for the wireless network' },
-          password: { type: 'string', description: 'Password for the wireless network' }
+          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
+          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
         }
       }
     }
@@ -95,6 +100,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       ssid?: string;
       password?: string;
     };
+
+    if (body.combinedSSID) {
+      body.ssid = body.ssid || 'SpotFi';
+      body.password = body.password || 'none';
+    }
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {

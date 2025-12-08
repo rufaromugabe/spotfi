@@ -93,7 +93,7 @@ export TZ='CAT-2'
 echo -e "${GREEN}✓ Timezone configured to Harare (CAT, UTC+2)${NC}"
 
 # Configure default hostname (router name will be set from cloud)
-HOSTNAME="spotfi-router"
+HOSTNAME="SpotFi"
 echo "  - Setting hostname to: $HOSTNAME"
 uci set system.@system[0].hostname="$HOSTNAME"
 uci commit system
