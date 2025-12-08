@@ -240,6 +240,9 @@ After running the script, verify everything is working:
 ps | grep spotfi-bridge
 /etc/init.d/spotfi-bridge status
 
+# Restart the bridge 
+/etc/init.d/spotfi-bridge restart
+
 # Check service logs
 logread | grep spotfi-bridge
 
