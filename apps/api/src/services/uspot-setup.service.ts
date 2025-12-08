@@ -320,11 +320,34 @@ export class UspotSetupService {
   private async configureNetwork(routerId: string): Promise<SetupStepResult> {
     try {
       // LAN
+      // CRITICAL FIX: Preserve existing LAN IP to prevent locking out the controller
+      let currentLanIp = '';
+      let currentNetmask = '';
+
+      try {
+        currentLanIp = (await this.exec(routerId, 'uci get network.lan.ipaddr')).trim();
+      } catch {}
+
+      try {
+        currentNetmask = (await this.exec(routerId, 'uci get network.lan.netmask')).trim();
+      } catch {}
+
       await this.exec(routerId, 'uci set network.lan=interface');
       await this.exec(routerId, 'uci set network.lan.proto="static"');
       await this.exec(routerId, 'uci set network.lan.type="bridge"');
-      await this.exec(routerId, `uci set network.lan.ipaddr="${this.LAN_IP}"`);
-      await this.exec(routerId, `uci set network.lan.netmask="${this.LAN_NETMASK}"`);
+
+      if (currentLanIp && currentLanIp.length > 0) {
+        this.logger.info(`[Setup] Preserving existing LAN IP: ${currentLanIp}`);
+        await this.exec(routerId, `uci set network.lan.ipaddr="${currentLanIp}"`);
+      } else {
+        await this.exec(routerId, `uci set network.lan.ipaddr="${this.LAN_IP}"`);
+      }
+
+      if (currentNetmask && currentNetmask.length > 0) {
+        await this.exec(routerId, `uci set network.lan.netmask="${currentNetmask}"`);
+      } else {
+        await this.exec(routerId, `uci set network.lan.netmask="${this.LAN_NETMASK}"`);
+      }
 
       // Get Bridge
       let bridge = this.DEFAULT_BRIDGE;
