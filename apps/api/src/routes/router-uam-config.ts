@@ -180,7 +180,17 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
 
     try {
       const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
-      const instance = uspotConfig?.values?.['@instance[0]'] || uspotConfig?.['@instance[0]'] || {};
+      const values = uspotConfig?.values || uspotConfig || {};
+      
+      // Find the first section of type 'instance'
+      // UCI dump returns sections by ID (e.g. cfg123456), not by @type[index]
+      const instanceKey = Object.keys(values).find(key => 
+        values[key]['.type'] === 'instance' || 
+        values[key]['type'] === 'instance' ||
+        key === '@instance[0]'
+      );
+      
+      const instance = instanceKey ? values[instanceKey] : {};
 
       return {
         routerId: id,
