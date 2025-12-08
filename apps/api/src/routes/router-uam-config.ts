@@ -120,7 +120,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       });
 
       if (body.restartUspot) {
-        await routerRpcService.rpcCall(id, 'service', 'restart', { name: 'uspot' });
+        // Use file.exec for reliable service restart
+        await routerRpcService.rpcCall(id, 'file', 'exec', {
+          command: 'sh',
+          params: ['-c', '/etc/init.d/uspot restart']
+        });
       }
 
       // Extract base URL from UAM server URL for RFC8908 API endpoint
