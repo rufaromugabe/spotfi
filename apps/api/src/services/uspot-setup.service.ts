@@ -429,13 +429,12 @@ export class UspotSetupService {
         if (currentLan) lanIp = currentLan;
       } catch {}
 
-      await this.exec(routerId, 'uci set uhttpd.main.listen_https="0.0.0.0:443"');
+      await this.exec(routerId, `uci set uhttpd.main.listen_https="${lanIp}:443"`);
       await this.exec(routerId, 'uci set uhttpd.main.cert="/etc/uhttpd.crt"');
       await this.exec(routerId, 'uci set uhttpd.main.key="/etc/uhttpd.key"');
       await this.exec(routerId, 'uci set uhttpd.main.redirect_https="0"');
-      // Listen on both LAN (for LuCI management) and Hotspot (for captive portal)
-      await this.exec(routerId, `uci add_list uhttpd.main.listen_http="${lanIp}:80"`);
-      await this.exec(routerId, `uci add_list uhttpd.main.listen_http="${this.HOTSPOT_IP}:80"`);
+      // Listen only on LAN for LuCI management (not on hotspot)
+      await this.exec(routerId, `uci set uhttpd.main.listen_http="${lanIp}:80"`);
       
       await this.exec(routerId, 'uci commit uhttpd');
       return { step: 'portal_config', status: 'success' };
@@ -460,11 +459,7 @@ export class UspotSetupService {
 
   // --- UTILS ---
 
-  /**
-   * Safe Executor
-   * Uses file.exec instead of system.exec (which doesn't exist in OpenWrt by default)
-   * Wraps routerRpcService to return stdout string or Throw Error with stderr/code
-   */
+
   private async exec(routerId: string, command: string, timeout = 30000): Promise<string> {
     // Check if command contains shell operators (pipes, redirects, etc.)
     // If so, wrap in sh -c
