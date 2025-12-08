@@ -119,6 +119,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           fastify.log.info(`[UAM Config] Creating uspot instance`);
           await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
           await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'enabled', value: '1' });
+          await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'interface', value: 'hotspot' });
         } catch (e: any) {
           fastify.log.error(`[UAM Config] Failed to create uspot instance: ${e.message}`);
           throw new Error('Failed to create uspot instance. Ensure uspot package is installed.');
@@ -127,14 +128,24 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
 
       const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
 
-      changes.push(
-        { config: 'uspot', section: '@instance[0]', option: 'portal_url', value: body.uamServerUrl },
-        { config: 'uspot', section: '@instance[0]', option: 'radius_auth_server', value: body.radiusServer },
-        { config: 'uspot', section: '@instance[0]', option: 'radius_secret', value: body.radiusSecret }
-      );
+      // Set portal URL
+      changes.push({ config: 'uspot', section: '@instance[0]', option: 'portal_url', value: body.uamServerUrl });
+      
+      // Set RADIUS auth server (strip port if included, as uspot uses separate port config)
+      const radiusHost = body.radiusServer.split(':')[0];
+      const radiusPort = body.radiusServer.split(':')[1] || '1812';
+      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_auth_server', value: radiusHost });
+      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_auth_port', value: radiusPort });
+      
+      // Set RADIUS secret
+      changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_secret', value: body.radiusSecret });
 
+      // Set accounting server if provided
       if (body.radiusServer2) {
-        changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_server', value: body.radiusServer2 });
+        const acctHost = body.radiusServer2.split(':')[0];
+        const acctPort = body.radiusServer2.split(':')[1] || '1813';
+        changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_server', value: acctHost });
+        changes.push({ config: 'uspot', section: '@instance[0]', option: 'radius_acct_port', value: acctPort });
       }
 
       for (const change of changes) {
