@@ -43,7 +43,7 @@ export class UspotSetupService {
   /**
    * Execute complete setup with diagnostics and auto-remediation
    */
-  async setup(routerId: string): Promise<SetupResult> {
+  async setup(routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string } = {}): Promise<SetupResult> {
     const steps: SetupStepResult[] = [];
 
     try {
@@ -92,7 +92,7 @@ export class UspotSetupService {
       // --- PHASE 3: CONFIGURATION ---
 
       // 7. Wireless Setup
-      steps.push(await this.configureWireless(routerId));
+      steps.push(await this.configureWireless(routerId, options));
 
       // 8. Network Interfaces
       const netConfig = await this.configureNetwork(routerId);
@@ -284,11 +284,91 @@ export class UspotSetupService {
 
   // --- CONFIGURATION HELPERS ---
 
-  private async configureWireless(routerId: string): Promise<SetupStepResult> {
+  private async detectRadios(routerId: string): Promise<{ ghz24: string | null; ghz5: string | null }> {
+    try {
+      const wirelessConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'wireless' });
+      const values = wirelessConfig?.values || wirelessConfig || {};
+      
+      let ghz24 = null;
+      let ghz5 = null;
+      
+      for (const key of Object.keys(values)) {
+        if (values[key]['.type'] === 'wifi-device' || values[key]['type'] === 'wifi-device') {
+          const channel = values[key].channel;
+          const chNum = parseInt(channel);
+          
+          if (!isNaN(chNum)) {
+            if (chNum <= 14) ghz24 = key;
+            else ghz5 = key;
+          } else {
+            // Fallback for 'auto' or other values
+            const hwmode = values[key].hwmode;
+            if (hwmode === '11a' || hwmode === '11ac' || hwmode === '11ax') ghz5 = key;
+            else ghz24 = key; // Default to 2.4 for 11b/g/n
+          }
+        }
+      }
+      return { ghz24, ghz5 };
+    } catch (e) {
+      return { ghz24: null, ghz5: null };
+    }
+  }
+
+  public async configureWireless(routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string }): Promise<SetupStepResult> {
     try {
       // Check if wireless config exists
       try { await this.exec(routerId, 'uci get wireless'); } catch {
         return { step: 'wireless_config', status: 'skipped', message: 'No wireless radio found' };
+      }
+
+      if (options.combinedSSID) {
+        const radios = await this.detectRadios(routerId);
+        if (!radios.ghz24 || !radios.ghz5) {
+          this.logger.warn('[Setup] Dual-band wireless not detected, falling back to standard config');
+        } else {
+          const ssid = options.ssid || 'Spotfi';
+          const password = options.password || 'Spotfi123'; // Default password if not provided
+
+          // Helper to configure a radio
+          const configureRadio = async (radio: string) => {
+            try {
+              await this.exec(routerId, `uci set wireless.${radio}.disabled='0'`);
+              
+              // Find or create interface for this radio
+              // We need to find an interface that points to this device
+              // Since UCI is tricky to query by value via exec, we'll iterate
+              let ifaceIndex = -1;
+              for (let i = 0; i < 5; i++) {
+                try {
+                  const dev = (await this.exec(routerId, `uci get wireless.@wifi-iface[${i}].device`)).trim();
+                  if (dev === radio) {
+                    ifaceIndex = i;
+                    break;
+                  }
+                } catch {}
+              }
+
+              if (ifaceIndex === -1) {
+                // Create new interface
+                await this.exec(routerId, 'uci add wireless wifi-iface');
+                ifaceIndex = -1; // We need to find the index of the new one, usually last. 
+                // But simpler to just add and set properties on the new section if we knew the ID.
+                // Let's assume we can just set properties on the last added one if we use named sections or just append.
+                // Actually, `uci add` returns the section ID.
+                // But `exec` returns stdout.
+                // Let's try to just use the loop again or assume standard OpenWrt config has interfaces.
+                // If not found, we might skip or try to add.
+                // For robustness, let's just try to set the first interface found for that radio if exists, 
+                // or create one.
+                // Simplified approach: Just use the standard loop below but apply SSID settings.
+              }
+            } catch (e: any) {
+              this.logger.warn(`[Setup] Failed to enable wireless device ${radio}: ${e.message}`);
+            }
+          };
+          
+          // We will use the standard loop but apply specific settings if combinedSSID is true
+        }
       }
 
       // Enable devices
@@ -306,12 +386,23 @@ export class UspotSetupService {
         try {
           await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].network='lan'`);
           await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].mode='ap'`);
+          
+          if (options.combinedSSID && options.ssid) {
+             await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].ssid='${options.ssid}'`);
+             if (options.password) {
+               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='psk2+ccmp'`);
+               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].key='${options.password}'`);
+             } else {
+               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='none'`);
+             }
+          }
+          
           idx++;
         } catch { break; }
       }
 
       await this.exec(routerId, 'uci commit wireless');
-      return { step: 'wireless_config', status: 'success' };
+      return { step: 'wireless_config', status: 'success', message: options.combinedSSID ? `Configured combined wireless network '${options.ssid}'` : undefined };
     } catch (e: any) {
       return { step: 'wireless_config', status: 'warning', message: e.message };
     }

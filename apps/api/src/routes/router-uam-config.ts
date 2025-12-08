@@ -14,10 +14,19 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       summary: 'Complete uSpot setup (packages, network, firewall, portal)',
       security: [{ bearerAuth: [] }],
       description: 'Admin only - Installs uSpot packages and configures network, firewall, and portal remotely',
+      body: {
+        type: 'object',
+        properties: {
+          combinedSSID: { type: 'boolean', description: 'Create combined 2.4GHz and 5GHz wireless network' },
+          ssid: { type: 'string', description: 'SSID for the wireless network' },
+          password: { type: 'string', description: 'Password for the wireless network' }
+        }
+      }
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
+    const body = request.body as { combinedSSID?: boolean, ssid?: string, password?: string } || {};
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
@@ -26,7 +35,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
 
     try {
       const setupService = new UspotSetupService(fastify.log);
-      const result = await setupService.setup(id);
+      const result = await setupService.setup(id, body);
 
       if (!result.success) {
         return reply.code(503).send({
@@ -66,7 +75,10 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           radiusServer: { type: 'string', description: 'RADIUS server IP or hostname' },
           radiusSecret: { type: 'string', description: 'RADIUS secret' },
           radiusServer2: { type: 'string', description: 'Secondary RADIUS server (optional)' },
-          restartUspot: { type: 'boolean', default: true, description: 'Restart uspot service after configuration' }
+          restartUspot: { type: 'boolean', default: true, description: 'Restart uspot service after configuration' },
+          combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
+          ssid: { type: 'string', description: 'SSID for the wireless network' },
+          password: { type: 'string', description: 'Password for the wireless network' }
         }
       }
     }
@@ -79,6 +91,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       radiusSecret: string;
       radiusServer2?: string;
       restartUspot?: boolean;
+      combinedSSID?: boolean;
+      ssid?: string;
+      password?: string;
     };
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
@@ -87,6 +102,17 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
+      // If wireless settings are provided, update them
+      if (body.combinedSSID) {
+        const setupService = new UspotSetupService(fastify.log);
+        await setupService.configureWireless(id, {
+          combinedSSID: body.combinedSSID,
+          ssid: body.ssid,
+          password: body.password
+        });
+      }
+
+      // Check if uspot instance exists, create if needed
       // Ensure at least one instance exists (create if missing, reuse if exists)
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
