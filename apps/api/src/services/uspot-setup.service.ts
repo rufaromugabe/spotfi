@@ -34,7 +34,7 @@ export class UspotSetupService {
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
-  private readonly LAN_IP = '192.168.1.1';
+  private readonly LAN_IP = '192.168.56.10';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
 
@@ -394,13 +394,14 @@ export class UspotSetupService {
         await this.exec(routerId, 'uci set firewall.@forwarding[-1].dest="wan"');
       }
 
-      // Add RADIUS rules (check and create if not exists)
+      // Add RADIUS rules to allow hotspot clients to reach external RADIUS server
       for (const port of this.RADIUS_PORTS) {
-        const ruleName = `Allow-RADIUS-${port}`;
+        const ruleName = `Allow-RADIUS-Out-${port}`;
         if (!zonesStr.includes(ruleName)) {
           await this.exec(routerId, 'uci add firewall rule');
           await this.exec(routerId, `uci set firewall.@rule[-1].name="${ruleName}"`);
-          await this.exec(routerId, 'uci set firewall.@rule[-1].src="wan"');
+          await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+          await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
           await this.exec(routerId, `uci set firewall.@rule[-1].dest_port="${port}"`);
           await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
           await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
@@ -421,12 +422,21 @@ export class UspotSetupService {
         await this.exec(routerId, 'openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/uhttpd.key -out /etc/uhttpd.crt -subj "/CN=router" 2>/dev/null');
       } catch {}
 
-      // uHTTPd
-      await this.exec(routerId, 'uci set uhttpd.main.listen_https="443"');
+      // uHTTPd - Listen on both LAN and Hotspot networks
+      // Get current LAN IP for LuCI access
+      let lanIp = this.LAN_IP;
+      try {
+        const currentLan = (await this.exec(routerId, 'uci get network.lan.ipaddr')).trim();
+        if (currentLan) lanIp = currentLan;
+      } catch {}
+
+      await this.exec(routerId, 'uci set uhttpd.main.listen_https="0.0.0.0:443"');
       await this.exec(routerId, 'uci set uhttpd.main.cert="/etc/uhttpd.crt"');
       await this.exec(routerId, 'uci set uhttpd.main.key="/etc/uhttpd.key"');
       await this.exec(routerId, 'uci set uhttpd.main.redirect_https="0"');
-      await this.exec(routerId, `uci set uhttpd.main.listen_http="${this.HOTSPOT_IP}:80"`);
+      // Listen on both LAN (for LuCI management) and Hotspot (for captive portal)
+      await this.exec(routerId, `uci add_list uhttpd.main.listen_http="${lanIp}:80"`);
+      await this.exec(routerId, `uci add_list uhttpd.main.listen_http="${this.HOTSPOT_IP}:80"`);
       
       await this.exec(routerId, 'uci commit uhttpd');
       return { step: 'portal_config', status: 'success' };
