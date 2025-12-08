@@ -87,6 +87,26 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
+      // Check if uspot config exists and has an instance
+      let instanceExists = false;
+      try {
+        const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
+        instanceExists = !!(uspotConfig?.['@instance[0]'] || uspotConfig?.values?.['@instance[0]']);
+      } catch {
+        fastify.log.warn(`[UAM Config] uspot config not found, attempting to create instance`);
+      }
+
+      // If no instance exists, create one
+      if (!instanceExists) {
+        try {
+          await routerRpcService.rpcCall(id, 'uci', 'add', { config: 'uspot', type: 'instance' });
+          await routerRpcService.rpcCall(id, 'uci', 'set', { config: 'uspot', section: '@instance[-1]', option: 'enabled', value: '1' });
+        } catch (e) {
+          fastify.log.error(`[UAM Config] Failed to create uspot instance: ${e}`);
+          throw new Error('uspot package may not be installed. Run /api/routers/:id/uspot/setup first');
+        }
+      }
+
       const changes: Array<{ config: string; section: string; option: string; value: string }> = [];
 
       changes.push(
