@@ -739,10 +739,11 @@ done > /usr/lib/opkg/status
         if (satisfied) {
           alreadySatisfied.push(pkg);
         } else {
-          // For alternatives, prefer the first one in the list
+          // For alternatives, try to find which one is available in repos
           const alternatives = this.PACKAGE_ALTERNATIVES[pkg];
           if (alternatives) {
-            toInstall.push(alternatives[0]);
+            // Don't add to install list yet - we'll try each alternative
+            toInstall.push(`ALT:${pkg}`);
           } else {
             toInstall.push(pkg);
           }
@@ -766,30 +767,104 @@ done > /usr/lib/opkg/status
       // Install packages one at a time to avoid timeout and handle individual failures
       const results: { pkg: string; status: 'success' | 'skipped' | 'error'; message?: string }[] = [];
       let hasError = false;
+      let criticalError = false;
 
-      for (const pkg of uniqueToInstall) {
+      for (const pkgSpec of uniqueToInstall) {
+        // Handle alternative packages
+        if (pkgSpec.startsWith('ALT:')) {
+          const altKey = pkgSpec.substring(4);
+          const alternatives = this.PACKAGE_ALTERNATIVES[altKey] || [altKey];
+          let altInstalled = false;
+          
+          // Try each alternative until one succeeds
+          for (const alt of alternatives) {
+            try {
+              // First check if this specific alternative is available
+              const checkResult = await this.exec(routerId, `opkg info ${alt} 2>/dev/null | head -1`).catch(() => '');
+              if (!checkResult.includes('Package:')) {
+                this.logger.info(`[Setup] Package ${alt} not available, trying next alternative`);
+                continue;
+              }
+              
+              await this.exec(routerId, `opkg install ${alt}`, 120000);
+              results.push({ pkg: alt, status: 'success', message: `Installed (alternative for ${altKey})` });
+              altInstalled = true;
+              break;
+            } catch (e: any) {
+              this.logger.warn(`[Setup] Failed to install ${alt}: ${e.message}`);
+              // Continue to next alternative
+            }
+          }
+          
+          if (!altInstalled) {
+            // Check if the binary already exists (might be built-in)
+            const binaries = this.PACKAGE_BINARIES[altKey];
+            let binaryExists = false;
+            if (binaries) {
+              for (const bin of binaries) {
+                try {
+                  await this.exec(routerId, `test -x ${bin}`);
+                  binaryExists = true;
+                  break;
+                } catch {}
+              }
+            }
+            
+            if (binaryExists) {
+              results.push({ pkg: altKey, status: 'skipped', message: 'Binary exists (built-in)' });
+            } else {
+              results.push({ pkg: altKey, status: 'error', message: `No alternative available: ${alternatives.join(', ')}` });
+              hasError = true;
+              // Only mark as critical if it's not iptables (iptables is usually built-in)
+              if (altKey !== 'iptables' && altKey !== 'ca-certificates' && altKey !== 'openssl-util') {
+                criticalError = true;
+              }
+            }
+          }
+          continue;
+        }
+
+        // Regular package installation
         try {
           // Use longer timeout for package installation (120 seconds per package)
-          await this.exec(routerId, `opkg install ${pkg}`, 120000);
-          results.push({ pkg, status: 'success' });
+          await this.exec(routerId, `opkg install ${pkgSpec}`, 120000);
+          results.push({ pkg: pkgSpec, status: 'success' });
         } catch (e: any) {
-          // Retry with no-check-certificate
+          // Check if package is already installed (opkg returns error for reinstall attempts)
+          const errMsg = e.message || '';
+          if (errMsg.includes('already installed') || errMsg.includes('up to date')) {
+            results.push({ pkg: pkgSpec, status: 'skipped', message: 'Already installed' });
+            continue;
+          }
+          
+          // Retry with --force-depends for dependency issues
           try {
-            await this.exec(routerId, `opkg install ${pkg} --no-check-certificate`, 120000);
-            results.push({ pkg, status: 'success', message: 'Installed with --no-check-certificate' });
+            await this.exec(routerId, `opkg install ${pkgSpec} --force-depends`, 120000);
+            results.push({ pkg: pkgSpec, status: 'success', message: 'Installed with --force-depends' });
           } catch (e2: any) {
-            const errMsg = this.parseOpkgError(e2.message);
-            results.push({ pkg, status: 'error', message: errMsg });
+            const parsedErr = this.parseOpkgError(e2.message);
+            results.push({ pkg: pkgSpec, status: 'error', message: parsedErr });
             hasError = true;
-            // Continue with other packages even if one fails
+            // Critical packages that must be installed
+            if (pkgSpec === 'uspot' || pkgSpec === 'uhttpd') {
+              criticalError = true;
+            }
           }
         }
       }
 
       const successCount = results.filter(r => r.status === 'success').length;
+      const skippedCount = results.filter(r => r.status === 'skipped').length;
       const errorCount = results.filter(r => r.status === 'error').length;
 
-      if (hasError && successCount === 0) {
+      if (criticalError) {
+        return { 
+          step: 'package_install', 
+          status: 'error', 
+          message: `Critical package installation failed`,
+          details: results
+        };
+      } else if (hasError && successCount === 0 && skippedCount === 0) {
         return { 
           step: 'package_install', 
           status: 'error', 
@@ -800,7 +875,7 @@ done > /usr/lib/opkg/status
         return { 
           step: 'package_install', 
           status: 'warning', 
-          message: `Installed ${successCount}/${uniqueToInstall.length} packages (${errorCount} failed)`,
+          message: `Installed ${successCount}, skipped ${skippedCount}, failed ${errorCount}`,
           details: results
         };
       }
@@ -808,7 +883,7 @@ done > /usr/lib/opkg/status
       return { 
         step: 'package_install', 
         status: 'success',
-        message: `Installed ${successCount} packages (${alreadySatisfied.length} already satisfied)`,
+        message: `Installed ${successCount} packages, ${skippedCount} skipped (${alreadySatisfied.length} already satisfied)`,
         details: { installed: results, alreadySatisfied }
       };
     } catch (e: any) {
