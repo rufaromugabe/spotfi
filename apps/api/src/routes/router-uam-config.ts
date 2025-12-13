@@ -259,24 +259,42 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       });
 
       // Build UCI commands using named section
+      // uspot uses specific option names: auth_server, auth_secret, uam_server (not radius_*)
       const radiusHost = body.radiusServer.split(':')[0];
       const radiusPort = body.radiusServer.split(':')[1] || '1812';
+      
+      // Get router MAC for nasmac (required by uspot)
+      let nasmac = '';
+      try {
+        const macResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+          command: 'sh',
+          params: ['-c', "cat /sys/class/net/br-lan/address 2>/dev/null || cat /sys/class/net/eth0/address 2>/dev/null || echo '00:00:00:00:00:00'"]
+        });
+        nasmac = (macResult?.stdout || '').trim().toUpperCase();
+      } catch {
+        nasmac = '00:00:00:00:00:00';
+      }
+      
+      // Generate nasid from router name or use default
+      const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
       
       let uciCommands = [
         // Set auth_mode to 'uam' for RADIUS UAM authentication
         `uci set uspot.${sectionName}.auth_mode='uam'`,
         `uci set uspot.${sectionName}.uam_port='3990'`,
-        `uci set uspot.${sectionName}.uam_url='${body.uamServerUrl}'`,
-        `uci set uspot.${sectionName}.radius_auth_server='${radiusHost}'`,
-        `uci set uspot.${sectionName}.radius_auth_port='${radiusPort}'`,
-        `uci set uspot.${sectionName}.radius_secret='${body.radiusSecret}'`
+        `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
+        `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
+        `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
+        `uci set uspot.${sectionName}.auth_secret='${body.radiusSecret}'`,
+        `uci set uspot.${sectionName}.nasid='${nasid}'`,
+        `uci set uspot.${sectionName}.nasmac='${nasmac}'`
       ];
 
       if (body.radiusServer2) {
         const acctHost = body.radiusServer2.split(':')[0];
         const acctPort = body.radiusServer2.split(':')[1] || '1813';
-        uciCommands.push(`uci set uspot.${sectionName}.radius_acct_server='${acctHost}'`);
-        uciCommands.push(`uci set uspot.${sectionName}.radius_acct_port='${acctPort}'`);
+        uciCommands.push(`uci set uspot.${sectionName}.acct_server='${acctHost}'`);
+        uciCommands.push(`uci set uspot.${sectionName}.acct_port='${acctPort}'`);
       }
 
       uciCommands.push('uci commit uspot');
@@ -364,11 +382,13 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         routerId: id,
         config: {
           authMode: section.auth_mode || section['auth_mode'],
-          uamUrl: section.uam_url || section['uam_url'],
+          uamServer: section.uam_server || section['uam_server'],
           uamPort: section.uam_port || section['uam_port'],
-          radiusServer: section.radius_auth_server || section['radius_auth_server'],
-          radiusServer2: section.radius_acct_server || section['radius_acct_server'],
-          radiusSecret: section.radius_secret || section['radius_secret'] ? '***' : undefined,
+          authServer: section.auth_server || section['auth_server'],
+          acctServer: section.acct_server || section['acct_server'],
+          authSecret: (section.auth_secret || section['auth_secret']) ? '***' : undefined,
+          nasid: section.nasid || section['nasid'],
+          nasmac: section.nasmac || section['nasmac'],
           interface: section.interface || section['interface'],
           setname: section.setname || section['setname']
         }
