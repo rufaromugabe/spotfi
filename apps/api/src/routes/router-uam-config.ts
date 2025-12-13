@@ -6,14 +6,142 @@ import { UspotSetupService } from '../services/uspot-setup.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
 
 export async function routerUamConfigRoutes(fastify: FastifyInstance) {
-  // Full uSpot setup endpoint - installs packages and configures everything
+  // Async uSpot setup endpoint - returns job ID immediately
+  fastify.post('/api/routers/:id/uspot/setup/async', {
+    preHandler: [fastify.authenticate, requireAdmin],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Start async uSpot setup (recommended for slow connections)',
+      security: [{ bearerAuth: [] }],
+      description: 'Admin only - Starts setup in background. Use GET /api/routers/:id/uspot/setup/status to check progress.',
+      body: {
+        type: 'object',
+        properties: {
+          combinedSSID: { type: 'boolean', description: 'Create combined 2.4GHz and 5GHz wireless network' },
+          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
+          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
+        }
+      }
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    assertAuthenticated(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { combinedSSID?: boolean, ssid?: string, password?: string } || {};
+
+    if (body.combinedSSID) {
+      body.ssid = body.ssid || 'SpotFi';
+      body.password = body.password || 'none';
+    }
+
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    try {
+      const setupService = new UspotSetupService(fastify.log);
+      const { jobId } = await setupService.setupAsync(id, body);
+
+      return reply.code(202).send({
+        routerId: id,
+        jobId,
+        status: 'pending',
+        message: 'Setup started. Poll /api/routers/:id/uspot/setup/status or /api/setup/jobs/:jobId for progress.',
+        statusUrl: `/api/routers/${id}/uspot/setup/status`,
+        jobUrl: `/api/setup/jobs/${jobId}`
+      });
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`[uSpot Setup Async] Failed to start: ${errorMessage}`);
+      return reply.code(500).send({ error: errorMessage });
+    }
+  });
+
+  // Get setup job status by router ID
+  fastify.get('/api/routers/:id/uspot/setup/status', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Get uSpot setup status for a router',
+      security: [{ bearerAuth: [] }],
+      description: 'Returns the current setup job status for a router (if any)'
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    assertAuthenticated(request);
+    const { id } = request.params as { id: string };
+
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    const job = UspotSetupService.getJobByRouterId(id);
+    if (!job) {
+      return reply.code(404).send({ 
+        error: 'No setup job found for this router',
+        message: 'Start a setup using POST /api/routers/:id/uspot/setup/async'
+      });
+    }
+
+    return {
+      routerId: id,
+      jobId: job.jobId,
+      status: job.status,
+      progress: job.progress,
+      currentStep: job.currentStep,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      result: job.result,
+      error: job.error
+    };
+  });
+
+  // Get setup job status by job ID
+  fastify.get('/api/setup/jobs/:jobId', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Get setup job status by job ID',
+      security: [{ bearerAuth: [] }],
+      description: 'Returns the current status of a setup job'
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    assertAuthenticated(request);
+    const { jobId } = request.params as { jobId: string };
+
+    const job = UspotSetupService.getJobStatus(jobId);
+    if (!job) {
+      return reply.code(404).send({ error: 'Setup job not found' });
+    }
+
+    // Verify user has access to this router
+    const router = await routerAccessService.verifyRouterAccess(job.routerId, request.user as AuthenticatedUser);
+    if (!router) {
+      return reply.code(403).send({ error: 'Access denied' });
+    }
+
+    return {
+      routerId: job.routerId,
+      jobId: job.jobId,
+      status: job.status,
+      progress: job.progress,
+      currentStep: job.currentStep,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      result: job.result,
+      error: job.error
+    };
+  });
+
+  // Full uSpot setup endpoint (synchronous) - kept for backward compatibility
   fastify.post('/api/routers/:id/uspot/setup', {
     preHandler: [fastify.authenticate, requireAdmin],
     schema: {
       tags: ['router-management'],
-      summary: 'Complete uSpot setup (packages, network, firewall, portal)',
+      summary: 'Complete uSpot setup (sync - may timeout on slow connections)',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Installs uSpot packages and configures network, firewall, and portal remotely',
+      description: 'Admin only - Installs uSpot packages and configures network, firewall, and portal remotely. Use /async endpoint for slow connections.',
       body: {
         type: 'object',
         properties: {

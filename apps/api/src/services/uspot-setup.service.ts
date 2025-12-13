@@ -18,6 +18,26 @@ export interface SetupResult {
   results?: any;
 }
 
+/**
+ * Async Setup Job Status
+ */
+export type SetupJobStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface SetupJob {
+  jobId: string;
+  routerId: string;
+  status: SetupJobStatus;
+  startedAt: Date;
+  completedAt?: Date;
+  currentStep?: string;
+  progress: number; // 0-100
+  result?: SetupResult;
+  error?: string;
+}
+
+// In-memory job store (could be replaced with Redis for production)
+const setupJobs = new Map<string, SetupJob>();
+
 interface UciConfig {
   config: string;
   section: string;
@@ -34,22 +54,135 @@ export class UspotSetupService {
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
-  private readonly LAN_IP = '192.168.56.10';
+  private readonly LAN_IP = '192.168.3.10';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
+  private readonly TOTAL_STEPS = 11;
 
   constructor(private logger: FastifyBaseLogger) {}
 
   /**
-   * Execute complete setup with diagnostics and auto-remediation
+   * Get setup job status by job ID
    */
-  async setup(routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string } = {}): Promise<SetupResult> {
+  static getJobStatus(jobId: string): SetupJob | null {
+    return setupJobs.get(jobId) || null;
+  }
+
+  /**
+   * Get setup job status by router ID
+   */
+  static getJobByRouterId(routerId: string): SetupJob | null {
+    for (const job of setupJobs.values()) {
+      if (job.routerId === routerId) {
+        return job;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Clean up old completed/failed jobs (call periodically)
+   */
+  static cleanupOldJobs(maxAgeMs: number = 3600000): number {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [jobId, job] of setupJobs.entries()) {
+      if (job.status === 'completed' || job.status === 'failed') {
+        const jobAge = now - job.startedAt.getTime();
+        if (jobAge > maxAgeMs) {
+          setupJobs.delete(jobId);
+          cleaned++;
+        }
+      }
+    }
+    return cleaned;
+  }
+
+  /**
+   * Start async setup - returns job ID immediately
+   */
+  async setupAsync(routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string } = {}): Promise<{ jobId: string }> {
+    // Check if there's already a running job for this router
+    const existingJob = UspotSetupService.getJobByRouterId(routerId);
+    if (existingJob && (existingJob.status === 'pending' || existingJob.status === 'running')) {
+      return { jobId: existingJob.jobId };
+    }
+
+    const jobId = `setup_${routerId}_${Date.now()}`;
+    const job: SetupJob = {
+      jobId,
+      routerId,
+      status: 'pending',
+      startedAt: new Date(),
+      progress: 0,
+    };
+    setupJobs.set(jobId, job);
+
+    // Run setup in background (don't await)
+    this.runSetupJob(jobId, routerId, options).catch(err => {
+      this.logger.error(`[uSpot Setup] Background job ${jobId} failed: ${err.message}`);
+    });
+
+    return { jobId };
+  }
+
+  /**
+   * Run the setup job in the background
+   */
+  private async runSetupJob(jobId: string, routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string } = {}): Promise<void> {
+    const job = setupJobs.get(jobId);
+    if (!job) return;
+
+    job.status = 'running';
+    setupJobs.set(jobId, job);
+
+    try {
+      const result = await this.setup(routerId, options, (step: string, stepNum: number) => {
+        // Progress callback
+        job.currentStep = step;
+        job.progress = Math.round((stepNum / this.TOTAL_STEPS) * 100);
+        setupJobs.set(jobId, job);
+      });
+
+      job.status = result.success ? 'completed' : 'failed';
+      job.completedAt = new Date();
+      job.result = result;
+      job.progress = 100;
+      if (!result.success) {
+        job.error = result.message;
+      }
+      setupJobs.set(jobId, job);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      job.status = 'failed';
+      job.completedAt = new Date();
+      job.error = errorMessage;
+      setupJobs.set(jobId, job);
+    }
+  }
+
+  /**
+   * Execute complete setup with diagnostics and auto-remediation
+   * @param progressCallback - Optional callback to report progress (step name, step number)
+   */
+  async setup(
+    routerId: string, 
+    options: { combinedSSID?: boolean, ssid?: string, password?: string } = {},
+    progressCallback?: (step: string, stepNum: number) => void
+  ): Promise<SetupResult> {
     const steps: SetupStepResult[] = [];
+    let stepNum = 0;
+
+    const reportProgress = (stepName: string) => {
+      stepNum++;
+      if (progressCallback) progressCallback(stepName, stepNum);
+    };
 
     try {
       // --- PHASE 1: PRE-FLIGHT VALIDATION ---
       
       // 1. Check System Resources (Disk/RAM)
+      reportProgress('resource_check');
       const resourceCheck = await this.checkResources(routerId);
       steps.push(resourceCheck);
       if (resourceCheck.status === 'error') {
@@ -57,9 +190,11 @@ export class UspotSetupService {
       }
 
       // 2. Check & Fix System Time (Crucial for SSL)
+      reportProgress('time_sync');
       steps.push(await this.ensureSystemTime(routerId));
 
       // 3. Network & DNS Diagnostics + Remediation
+      reportProgress('connectivity_check');
       const netCheck = await this.ensureConnectivity(routerId);
       steps.push(netCheck);
       if (netCheck.status === 'error') {
@@ -67,6 +202,7 @@ export class UspotSetupService {
       }
 
       // 4. Repository Configuration Check + Protocol Downgrade (if needed)
+      reportProgress('repo_check');
       const repoCheck = await this.prepareRepositories(routerId);
       steps.push(repoCheck);
       if (repoCheck.status === 'error') {
@@ -76,13 +212,15 @@ export class UspotSetupService {
       // --- PHASE 2: PACKAGE INSTALLATION ---
 
       // 5. Update Packages
+      reportProgress('package_update');
       const updateResult = await this.updatePackages(routerId);
       steps.push(updateResult);
       if (updateResult.status === 'error') {
         return this.fail(steps, `Package update failed. Check router logs.`);
       }
 
-      // 6. Install Packages
+      // 6. Install Packages (only those not already installed)
+      reportProgress('package_install');
       const installResult = await this.installPackages(routerId);
       steps.push(installResult);
       if (installResult.status === 'error') {
@@ -92,24 +230,29 @@ export class UspotSetupService {
       // --- PHASE 3: CONFIGURATION ---
 
       // 7. Wireless Setup
+      reportProgress('wireless_config');
       steps.push(await this.configureWireless(routerId, options));
 
       // 8. Network Interfaces
+      reportProgress('network_config');
       const netConfig = await this.configureNetwork(routerId);
       steps.push(netConfig);
       if (netConfig.status === 'error') return this.fail(steps, 'Network config failed');
 
       // 9. Firewall
+      reportProgress('firewall_config');
       const fwConfig = await this.configureFirewall(routerId);
       steps.push(fwConfig);
       if (fwConfig.status === 'error') return this.fail(steps, 'Firewall config failed');
 
       // 10. Portal & Certificates
+      reportProgress('portal_config');
       const portalConfig = await this.configurePortal(routerId);
       steps.push(portalConfig);
       if (portalConfig.status === 'error') return this.fail(steps, 'Portal config failed');
 
       // 11. Final Restart
+      reportProgress('services_restart');
       steps.push(await this.restartServices(routerId));
 
       return {
@@ -265,20 +408,96 @@ export class UspotSetupService {
     }
   }
 
+  /**
+   * Check which packages are already installed
+   */
+  private async getInstalledPackages(routerId: string): Promise<Set<string>> {
+    const installed = new Set<string>();
+    try {
+      const output = await this.exec(routerId, 'opkg list-installed', 60000);
+      // Format: "package_name - version"
+      const lines = output.split('\n');
+      for (const line of lines) {
+        const pkgName = line.split(' - ')[0]?.trim();
+        if (pkgName) {
+          installed.add(pkgName);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[Setup] Could not list installed packages: ${e.message}`);
+    }
+    return installed;
+  }
+
   private async installPackages(routerId: string): Promise<SetupStepResult> {
     try {
-      const cmd = `opkg install ${this.REQUIRED_PACKAGES.join(' ')}`;
-      await this.exec(routerId, cmd);
-      return { step: 'package_install', status: 'success' };
-    } catch (e: any) {
-      // Retry with no-check-certificate
-      try {
-        const cmdRetry = `opkg install ${this.REQUIRED_PACKAGES.join(' ')} --no-check-certificate`;
-        await this.exec(routerId, cmdRetry);
-        return { step: 'package_install', status: 'warning', message: 'Installed with --no-check-certificate' };
-      } catch (e2: any) {
-        return { step: 'package_install', status: 'error', message: this.parseOpkgError(e2.message) };
+      // First, check which packages are already installed
+      const installed = await this.getInstalledPackages(routerId);
+      const toInstall = this.REQUIRED_PACKAGES.filter(pkg => !installed.has(pkg));
+
+      if (toInstall.length === 0) {
+        return { 
+          step: 'package_install', 
+          status: 'success', 
+          message: 'All packages already installed',
+          details: { skipped: this.REQUIRED_PACKAGES, installed: [] }
+        };
       }
+
+      this.logger.info(`[Setup] Installing packages: ${toInstall.join(', ')} (skipping already installed: ${this.REQUIRED_PACKAGES.filter(pkg => installed.has(pkg)).join(', ')})`);
+
+      // Install packages one at a time to avoid timeout and handle individual failures
+      const results: { pkg: string; status: 'success' | 'skipped' | 'error'; message?: string }[] = [];
+      let hasError = false;
+
+      for (const pkg of toInstall) {
+        try {
+          // Use longer timeout for package installation (120 seconds per package)
+          await this.exec(routerId, `opkg install ${pkg}`, 120000);
+          results.push({ pkg, status: 'success' });
+        } catch (e: any) {
+          // Retry with no-check-certificate
+          try {
+            await this.exec(routerId, `opkg install ${pkg} --no-check-certificate`, 120000);
+            results.push({ pkg, status: 'success', message: 'Installed with --no-check-certificate' });
+          } catch (e2: any) {
+            const errMsg = this.parseOpkgError(e2.message);
+            results.push({ pkg, status: 'error', message: errMsg });
+            hasError = true;
+            // Continue with other packages even if one fails
+          }
+        }
+      }
+
+      const successCount = results.filter(r => r.status === 'success').length;
+      const errorCount = results.filter(r => r.status === 'error').length;
+
+      if (hasError && successCount === 0) {
+        return { 
+          step: 'package_install', 
+          status: 'error', 
+          message: `All package installations failed`,
+          details: results
+        };
+      } else if (hasError) {
+        return { 
+          step: 'package_install', 
+          status: 'warning', 
+          message: `Installed ${successCount}/${toInstall.length} packages (${errorCount} failed)`,
+          details: results
+        };
+      }
+
+      return { 
+        step: 'package_install', 
+        status: 'success',
+        message: toInstall.length < this.REQUIRED_PACKAGES.length 
+          ? `Installed ${toInstall.length} packages (${this.REQUIRED_PACKAGES.length - toInstall.length} already present)`
+          : undefined,
+        details: results
+      };
+    } catch (e: any) {
+      return { step: 'package_install', status: 'error', message: this.parseOpkgError(e.message) };
     }
   }
 
