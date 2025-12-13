@@ -70,7 +70,7 @@ export class UspotSetupService {
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
   private readonly HOTSPOT_VLAN_ID = 10; // VLAN for guest/hotspot network
-  private readonly LAN_IP = '192.168.3.10';
+  private readonly LAN_IP = '192.168.1.1';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
   private readonly TOTAL_STEPS = 13; // Updated for DHCP step
@@ -807,129 +807,107 @@ done > /usr/lib/opkg/status
 
   // --- CONFIGURATION HELPERS ---
 
-  private async detectRadios(routerId: string): Promise<{ ghz24: string | null; ghz5: string | null }> {
-    try {
-      const wirelessConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'wireless' });
-      const values = wirelessConfig?.values || wirelessConfig || {};
-      
-      let ghz24 = null;
-      let ghz5 = null;
-      
-      for (const key of Object.keys(values)) {
-        if (values[key]['.type'] === 'wifi-device' || values[key]['type'] === 'wifi-device') {
-          const channel = values[key].channel;
-          const chNum = parseInt(channel);
-          
-          if (!isNaN(chNum)) {
-            if (chNum <= 14) ghz24 = key;
-            else ghz5 = key;
-          } else {
-            // Fallback for 'auto' or other values
-            const hwmode = values[key].hwmode;
-            if (hwmode === '11a' || hwmode === '11ac' || hwmode === '11ax') ghz5 = key;
-            else ghz24 = key; // Default to 2.4 for 11b/g/n
-          }
-        }
-      }
-      return { ghz24, ghz5 };
-    } catch (e) {
-      return { ghz24: null, ghz5: null };
+  /**
+   * Configure wireless networks with dual SSID setup:
+   * 1. Guest SSID (on 'hotspot' network) - for captive portal
+   * 2. Management SSID (on 'lan' network, hidden) - for admin access
+   */
+  public async configureWireless(
+    routerId: string, 
+    options: { 
+      combinedSSID?: boolean;
+      ssid?: string;
+      password?: string;
     }
-  }
+  ): Promise<SetupStepResult> {
+    const guestSSID = options.ssid || 'SpotFi';
+    const guestPassword = options.password || '';
+    const mgmtSSID = `${guestSSID}-Admin`;
+    const mgmtPassword = guestPassword || 'spotfi-admin'; // Require password for management
 
-  public async configureWireless(routerId: string, options: { combinedSSID?: boolean, ssid?: string, password?: string }): Promise<SetupStepResult> {
     try {
-      // Check if wireless config exists
-      try { await this.exec(routerId, 'uci get wireless'); } catch {
+      // Step 1: Check if wireless exists
+      try { 
+        await this.exec(routerId, 'uci get wireless'); 
+      } catch {
         return { step: 'wireless_config', status: 'skipped', message: 'No wireless radio found' };
       }
 
-      if (options.combinedSSID) {
-        const radios = await this.detectRadios(routerId);
-        if (!radios.ghz24 || !radios.ghz5) {
-          this.logger.warn('[Setup] Dual-band wireless not detected, falling back to standard config');
-        } else {
-          const ssid = options.ssid || 'Spotfi';
-          const password = options.password || 'Spotfi123'; // Default password if not provided
+      // Step 2: Get list of radio devices
+      const radiosOutput = await this.exec(routerId, 
+        "uci show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut -d'=' -f1"
+      );
+      const radios = radiosOutput.trim().split('\n').filter(r => r && r.length > 0);
 
-          // Helper to configure a radio
-          const configureRadio = async (radio: string) => {
-            try {
-              await this.exec(routerId, `uci set wireless.${radio}.disabled='0'`);
-              
-              // Find or create interface for this radio
-              // We need to find an interface that points to this device
-              // Since UCI is tricky to query by value via exec, we'll iterate
-              let ifaceIndex = -1;
-              for (let i = 0; i < 5; i++) {
-                try {
-                  const dev = (await this.exec(routerId, `uci get wireless.@wifi-iface[${i}].device`)).trim();
-                  if (dev === radio) {
-                    ifaceIndex = i;
-                    break;
-                  }
-                } catch {}
-              }
+      if (radios.length === 0) {
+        return { step: 'wireless_config', status: 'warning', message: 'No wireless radios detected' };
+      }
 
-              if (ifaceIndex === -1) {
-                // Create new interface
-                await this.exec(routerId, 'uci add wireless wifi-iface');
-                ifaceIndex = -1; // We need to find the index of the new one, usually last. 
-                // But simpler to just add and set properties on the new section if we knew the ID.
-                // Let's assume we can just set properties on the last added one if we use named sections or just append.
-                // Actually, `uci add` returns the section ID.
-                // But `exec` returns stdout.
-                // Let's try to just use the loop again or assume standard OpenWrt config has interfaces.
-                // If not found, we might skip or try to add.
-                // For robustness, let's just try to set the first interface found for that radio if exists, 
-                // or create one.
-                // Simplified approach: Just use the standard loop below but apply SSID settings.
-              }
-            } catch (e: any) {
-              this.logger.warn(`[Setup] Failed to enable wireless device ${radio}: ${e.message}`);
-            }
-          };
-          
-          // We will use the standard loop but apply specific settings if combinedSSID is true
+      this.logger.info(`[Setup] Found ${radios.length} wireless radio(s): ${radios.join(', ')}`);
+
+      // Step 3: Delete ALL existing wifi-iface sections (clean slate)
+      let deleteIdx = 0;
+      while (deleteIdx < 10) {
+        try {
+          await this.exec(routerId, `uci delete wireless.@wifi-iface[0]`);
+          deleteIdx++;
+        } catch { 
+          break; 
         }
       }
+      this.logger.info(`[Setup] Removed ${deleteIdx} existing wifi-iface sections`);
 
-      // Enable devices
-      let idx = 0;
-      while(idx < 5) {
+      // Step 4: Configure each radio with dual SSIDs
+      for (const radio of radios) {
+        // Enable the radio
+        await this.exec(routerId, `uci set wireless.${radio}.disabled='0'`);
+
+        // Get band info for logging
+        let bandInfo = '';
         try {
-          await this.exec(routerId, `uci set wireless.@wifi-device[${idx}].disabled='0'`);
-          idx++;
-        } catch { break; }
+          const band = (await this.exec(routerId, `uci -q get wireless.${radio}.band || echo ""`)).trim();
+          const channel = (await this.exec(routerId, `uci -q get wireless.${radio}.channel || echo "auto"`)).trim();
+          bandInfo = band || (parseInt(channel) > 14 ? '5GHz' : '2.4GHz');
+        } catch {}
+
+        // 4a. Create Guest SSID (hotspot network - captive portal)
+        await this.exec(routerId, `uci add wireless wifi-iface`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].device='${radio}'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].mode='ap'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${guestSSID}'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='hotspot'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].isolate='1'`); // Client isolation
+        
+        if (guestPassword && guestPassword !== 'none' && guestPassword.length >= 8) {
+          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${guestPassword}'`);
+        } else {
+          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='none'`);
+        }
+
+        // 4b. Create Management SSID (lan network - hidden, for admin)
+        await this.exec(routerId, `uci add wireless wifi-iface`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].device='${radio}'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].mode='ap'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${mgmtSSID}'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='lan'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].hidden='1'`); // Hidden SSID
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${mgmtPassword}'`);
+
+        this.logger.info(`[Setup] Configured ${radio} (${bandInfo}): Guest='${guestSSID}', Admin='${mgmtSSID}' (hidden)`);
       }
 
-      // Configure interfaces for hotspot network (captive portal)
-      idx = 0;
-      while(idx < 5) {
-        try {
-          // Use 'hotspot' network for captive portal - this is the network uspot monitors
-          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].network='hotspot'`);
-          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].mode='ap'`);
-          
-          if (options.combinedSSID && options.ssid) {
-             await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].ssid='${options.ssid}'`);
-             if (options.password && options.password !== 'none') {
-               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='psk2+ccmp'`);
-               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].key='${options.password}'`);
-             } else {
-               await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].encryption='none'`);
-               try { await this.exec(routerId, `uci delete wireless.@wifi-iface[${idx}].key`); } catch {}
-             }
-          }
-          
-          idx++;
-        } catch { break; }
-      }
-
+      // Step 5: Commit wireless config
       await this.exec(routerId, 'uci commit wireless');
-      return { step: 'wireless_config', status: 'success', message: options.combinedSSID ? `Configured combined wireless network '${options.ssid}'` : undefined };
+
+      return { 
+        step: 'wireless_config', 
+        status: 'success', 
+        message: `Created ${radios.length * 2} SSIDs: '${guestSSID}' (guest) + '${mgmtSSID}' (admin, hidden)`
+      };
     } catch (e: any) {
-      return { step: 'wireless_config', status: 'warning', message: e.message };
+      return { step: 'wireless_config', status: 'error', message: e.message };
     }
   }
 
@@ -975,80 +953,91 @@ done > /usr/lib/opkg/status
       } catch {}
 
       // ============================================================
-      // VLAN-based Hotspot Network Setup (Best Practice)
+      // DSA Port-Based VLAN Configuration (Best Practice)
       // ============================================================
-      // This creates a proper isolated guest network that works for both
-      // WiFi clients AND Ethernet clients tagged with VLAN 10
+      // Modern OpenWrt (21.02+) uses DSA for switch configuration
+      // We configure: LAN1 = Admin (untagged LAN), LAN2-4 = Guest (hotspot)
       
-      // Step 1: Create the hotspot bridge device (br-hotspot)
-      await this.exec(routerId, 'uci set network.br_hotspot=device');
-      await this.exec(routerId, 'uci set network.br_hotspot.type="bridge"');
-      await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
-      // Enable STP to prevent loops if multiple ports are added
-      await this.exec(routerId, 'uci set network.br_hotspot.stp="1"');
-      // Isolate bridge ports - prevents guest-to-guest traffic at L2
-      await this.exec(routerId, 'uci set network.br_hotspot.isolate="1"');
+      // Detect DSA switch and available ports
+      let isDSA = false;
+      let lanPorts: string[] = [];
       
-      // Step 2: Create VLAN 10 device for Ethernet guests
-      // This allows tagging physical ports for guest access
-      // Find the base switch device (usually eth0 or wan/lan device)
-      let baseDevice = 'eth0';
       try {
-        // Try to get the underlying device from br-lan
-        const brPorts = await this.exec(routerId, 'uci get network.br_lan.ports 2>/dev/null || echo ""');
-        if (brPorts && brPorts.trim()) {
-          // Get first port as base device reference
-          const ports = brPorts.trim().split(/\s+/);
-          if (ports.length > 0) {
-            // Extract base device (e.g., 'lan1' -> use parent, or 'eth0.1' -> 'eth0')
-            const firstPort = ports[0];
-            if (firstPort.includes('.')) {
-              baseDevice = firstPort.split('.')[0];
-            }
-          }
-        }
+        // Check for DSA ports (lan1, lan2, lan3, lan4)
+        const dsaCheck = await this.exec(routerId, 
+          'for i in 1 2 3 4; do [ -d /sys/class/net/lan$i ] && echo lan$i; done'
+        );
+        lanPorts = dsaCheck.trim().split('\n').filter(p => p.startsWith('lan'));
+        isDSA = lanPorts.length > 0;
       } catch {}
-      
-      // Try DSA-style detection (OpenWrt 21.02+)
-      try {
-        const dsaCheck = await this.exec(routerId, 'ls /sys/class/net/lan1 2>/dev/null && echo "dsa" || echo "swconfig"');
-        if (dsaCheck.trim() === 'dsa') {
-          // DSA switch - create VLAN on each port that should be guest
-          // For now, we'll create a tagged VLAN interface
-          this.logger.info('[Setup] DSA switch detected - configuring VLAN tagging');
-          
-          // Create VLAN 10 bridge member for DSA
-          await this.exec(routerId, `uci set network.hotspot_vlan=device`);
-          await this.exec(routerId, `uci set network.hotspot_vlan.type="8021q"`);
-          await this.exec(routerId, `uci set network.hotspot_vlan.ifname="${lanBridge}"`);
-          await this.exec(routerId, `uci set network.hotspot_vlan.vid="${this.HOTSPOT_VLAN_ID}"`);
-          await this.exec(routerId, `uci set network.hotspot_vlan.name="${lanBridge}.${this.HOTSPOT_VLAN_ID}"`);
-          
-          // Add VLAN interface to hotspot bridge
-          try {
-            await this.exec(routerId, `uci add_list network.br_hotspot.ports="${lanBridge}.${this.HOTSPOT_VLAN_ID}"`);
-          } catch {}
+
+      if (isDSA && lanPorts.length > 1) {
+        this.logger.info(`[Setup] DSA switch detected with ports: ${lanPorts.join(', ')}`);
+        
+        // ============================================================
+        // Port Assignment: LAN1 = Admin, LAN2+ = Guest
+        // ============================================================
+        const adminPort = lanPorts[0]; // lan1 for admin
+        const guestPorts = lanPorts.slice(1); // lan2, lan3, lan4 for guests
+        
+        this.logger.info(`[Setup] Admin port: ${adminPort}, Guest ports: ${guestPorts.join(', ')}`);
+
+        // Step 1: Update br-lan to only include admin port
+        // First, get current br-lan device config
+        try {
+          await this.exec(routerId, 'uci set network.br_lan=device');
+          await this.exec(routerId, 'uci set network.br_lan.type="bridge"');
+          await this.exec(routerId, 'uci set network.br_lan.name="br-lan"');
+          // Clear existing ports and set only admin port
+          try { await this.exec(routerId, 'uci delete network.br_lan.ports'); } catch {}
+          await this.exec(routerId, `uci add_list network.br_lan.ports="${adminPort}"`);
+        } catch (e: any) {
+          this.logger.warn(`[Setup] Could not configure br-lan ports: ${e.message}`);
         }
-      } catch {
-        this.logger.info('[Setup] Using standard bridge configuration (non-DSA)');
+
+        // Step 2: Create br-hotspot with guest ports
+        await this.exec(routerId, 'uci set network.br_hotspot=device');
+        await this.exec(routerId, 'uci set network.br_hotspot.type="bridge"');
+        await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
+        await this.exec(routerId, 'uci set network.br_hotspot.stp="1"');
+        await this.exec(routerId, 'uci set network.br_hotspot.isolate="1"'); // Client isolation
+        
+        // Clear existing ports and add guest ports
+        try { await this.exec(routerId, 'uci delete network.br_hotspot.ports'); } catch {}
+        for (const port of guestPorts) {
+          await this.exec(routerId, `uci add_list network.br_hotspot.ports="${port}"`);
+        }
+        
+        this.logger.info(`[Setup] Configured br-hotspot with ports: ${guestPorts.join(', ')}`);
+
+      } else {
+        // Non-DSA or single port: Create br-hotspot for WiFi only
+        this.logger.info('[Setup] Non-DSA switch or single port - WiFi-only hotspot');
+        
+        await this.exec(routerId, 'uci set network.br_hotspot=device');
+        await this.exec(routerId, 'uci set network.br_hotspot.type="bridge"');
+        await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
+        await this.exec(routerId, 'uci set network.br_hotspot.stp="1"');
+        await this.exec(routerId, 'uci set network.br_hotspot.isolate="1"');
+        // No physical ports - WiFi interfaces will auto-join when network='hotspot'
       }
 
-      // Step 3: Configure hotspot interface with the bridge
+      // Step 3: Configure hotspot interface
       await this.exec(routerId, 'uci set network.hotspot=interface');
       await this.exec(routerId, 'uci set network.hotspot.proto="static"');
       await this.exec(routerId, `uci set network.hotspot.ipaddr="${this.HOTSPOT_IP}"`);
       await this.exec(routerId, `uci set network.hotspot.netmask="${this.HOTSPOT_NETMASK}"`);
       await this.exec(routerId, 'uci set network.hotspot.device="br-hotspot"');
-      // Force interface up even without clients
       await this.exec(routerId, 'uci set network.hotspot.force_link="1"');
+      await this.exec(routerId, 'uci set network.hotspot.delegate="0"'); // No IPv6 delegation
       
-      // Step 4: Configure client isolation and security at network level
-      // Prevent hotspot clients from accessing LAN subnet
-      await this.exec(routerId, 'uci set network.hotspot.delegate="0"'); // No IPv6 prefix delegation
+      const portMsg = isDSA && lanPorts.length > 1 
+        ? `Admin: ${lanPorts[0]}, Guest: ${lanPorts.slice(1).join(', ')}`
+        : 'WiFi-only (no DSA ports)';
+      this.logger.info(`[Setup] Network configured - ${portMsg}`);
       
-      this.logger.info(`[Setup] Configured hotspot network with VLAN ${this.HOTSPOT_VLAN_ID} for Ethernet guests`);
       await this.exec(routerId, 'uci commit network');
-      return { step: 'network_config', status: 'success' };
+      return { step: 'network_config', status: 'success', message: portMsg };
     } catch (e: any) {
       return { step: 'network_config', status: 'error', message: e.message };
     }
