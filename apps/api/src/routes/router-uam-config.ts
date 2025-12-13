@@ -197,28 +197,33 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate, requireAdmin],
     schema: {
       tags: ['router-management'],
-      summary: 'Configure UAM server and RADIUS settings',
+      summary: 'Configure uspot captive portal settings',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Configures uspot for UAM mode with RADIUS authentication. Sets auth_mode=uam, configures uam_server, auth_server, auth_secret, nasid, and nasmac.',
+      description: 'Admin only - Configure uspot auth mode and settings. Use authMode to switch between click-to-continue (simple), uam (RADIUS UAM), radius (RADIUS credentials), or credentials (local users).',
       body: {
         type: 'object',
-        required: ['uamServerUrl', 'radiusServer', 'radiusSecret'],
         properties: {
+          authMode: {
+            type: 'string',
+            enum: ['click-to-continue', 'uam', 'radius', 'credentials'],
+            default: 'uam',
+            description: 'Authentication mode: click-to-continue (accept & go), uam (RADIUS UAM with external portal), radius (RADIUS with local login), credentials (local username/password)'
+          },
           uamServerUrl: { 
             type: 'string', 
-            description: 'UAM portal URL (sets uspot uam_server option). Example: https://api.spotfi.com/uam/login' 
+            description: 'UAM portal URL (required for uam mode). Example: https://api.spotfi.com/uam/login' 
           },
           radiusServer: { 
             type: 'string', 
-            description: 'RADIUS authentication server IP:port (sets uspot auth_server/auth_port). Example: 192.168.1.100:1812' 
+            description: 'RADIUS authentication server IP:port (required for uam/radius modes). Example: 192.168.1.100:1812' 
           },
           radiusSecret: { 
             type: 'string', 
-            description: 'RADIUS shared secret (sets uspot auth_secret option)' 
+            description: 'RADIUS shared secret (required for uam/radius modes)' 
           },
           radiusServer2: { 
             type: 'string', 
-            description: 'RADIUS accounting server IP:port (sets uspot acct_server/acct_port). Example: 192.168.1.100:1813' 
+            description: 'RADIUS accounting server IP:port (optional). Example: 192.168.1.100:1813' 
           },
           restartUspot: { type: 'boolean', default: true, description: 'Restart uspot and uhttpd services after configuration' },
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
@@ -231,9 +236,10 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
     const body = request.body as {
-      uamServerUrl: string;
-      radiusServer: string;
-      radiusSecret: string;
+      authMode?: 'click-to-continue' | 'uam' | 'radius' | 'credentials';
+      uamServerUrl?: string;
+      radiusServer?: string;
+      radiusSecret?: string;
       radiusServer2?: string;
       restartUspot?: boolean;
       combinedSSID?: boolean;
@@ -276,86 +282,122 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         params: ['-c', `uci -q show uspot.${sectionName} || (uci set uspot.${sectionName}=uspot && uci set uspot.${sectionName}.enabled=1 && uci set uspot.${sectionName}.interface=${sectionName} && uci set uspot.${sectionName}.setname=uspot_${sectionName} && uci commit uspot)`]
       });
 
+      // Determine auth mode (default to 'uam' for backward compatibility)
+      const authMode = body.authMode || 'uam';
+      
+      // Validate required fields based on auth mode
+      if ((authMode === 'uam' || authMode === 'radius') && (!body.radiusServer || !body.radiusSecret)) {
+        return reply.code(400).send({ 
+          error: `radiusServer and radiusSecret are required for auth_mode '${authMode}'` 
+        });
+      }
+      if (authMode === 'uam' && !body.uamServerUrl) {
+        return reply.code(400).send({ 
+          error: "uamServerUrl is required for auth_mode 'uam'" 
+        });
+      }
+      
       // Build UCI commands using named section
-      // uspot uses specific option names: auth_server, auth_secret, uam_server (not radius_*)
-      const radiusHost = body.radiusServer.split(':')[0];
-      const radiusPort = body.radiusServer.split(':')[1] || '1812';
-      
-      // Get router MAC for nasmac (required by uspot)
-      let nasmac = '';
-      try {
-        const macResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
-          command: 'sh',
-          params: ['-c', "cat /sys/class/net/br-lan/address 2>/dev/null || cat /sys/class/net/eth0/address 2>/dev/null || echo '00:00:00:00:00:00'"]
-        });
-        nasmac = (macResult?.stdout || '').trim().toUpperCase();
-      } catch {
-        nasmac = '00:00:00:00:00:00';
-      }
-      
-      // Generate nasid from router name or use default
-      const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
-      
-      // Get hotspot IP for uhttpd UAM listener
-      let hotspotIp = '10.1.30.1';
-      try {
-        const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
-          command: 'sh',
-          params: ['-c', "uci -q get network.hotspot.ipaddr || echo '10.1.30.1'"]
-        });
-        hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
-      } catch {}
-      
       let uciCommands = [
-        // Set auth_mode to 'uam' for RADIUS UAM authentication
-        `uci set uspot.${sectionName}.auth_mode='uam'`,
-        `uci set uspot.${sectionName}.uam_port='3990'`,
-        `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
-        `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
-        `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
-        `uci set uspot.${sectionName}.auth_secret='${body.radiusSecret}'`,
-        `uci set uspot.${sectionName}.nasid='${nasid}'`,
-        `uci set uspot.${sectionName}.nasmac='${nasmac}'`
+        `uci set uspot.${sectionName}.auth_mode='${authMode}'`
       ];
-
-      if (body.radiusServer2) {
-        const acctHost = body.radiusServer2.split(':')[0];
-        const acctPort = body.radiusServer2.split(':')[1] || '1813';
-        uciCommands.push(`uci set uspot.${sectionName}.acct_server='${acctHost}'`);
-        uciCommands.push(`uci set uspot.${sectionName}.acct_port='${acctPort}'`);
-        uciCommands.push(`uci set uspot.${sectionName}.acct_secret='${body.radiusSecret}'`);
-      }
+      
+      // For click-to-continue mode, just set auth_mode and we're done
+      if (authMode === 'click-to-continue') {
+        // Remove RADIUS settings if switching to click-to-continue
+        uciCommands.push(
+          `uci delete uspot.${sectionName}.uam_server 2>/dev/null || true`,
+          `uci delete uspot.${sectionName}.auth_server 2>/dev/null || true`,
+          `uci delete uspot.${sectionName}.auth_secret 2>/dev/null || true`
+        );
+      } else {
+        // For uam/radius modes, configure RADIUS settings
+        const radiusHost = body.radiusServer!.split(':')[0];
+        const radiusPort = body.radiusServer!.split(':')[1] || '1812';
+        
+        // Get router MAC for nasmac (required by uspot for RADIUS modes)
+        let nasmac = '';
+        try {
+          const macResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', "cat /sys/class/net/br-lan/address 2>/dev/null || cat /sys/class/net/eth0/address 2>/dev/null || echo '00:00:00:00:00:00'"]
+          });
+          nasmac = (macResult?.stdout || '').trim().toUpperCase();
+        } catch {
+          nasmac = '00:00:00:00:00:00';
+        }
+        
+        // Generate nasid from router name or use default
+        const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
+        
+        // Get hotspot IP for uhttpd UAM listener
+        let hotspotIp = '10.1.30.1';
+        try {
+          const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', "uci -q get network.hotspot.ipaddr || echo '10.1.30.1'"]
+          });
+          hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
+        } catch {}
+        
+        uciCommands.push(
+          `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
+          `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
+          `uci set uspot.${sectionName}.auth_secret='${body.radiusSecret}'`,
+          `uci set uspot.${sectionName}.nasid='${nasid}'`,
+          `uci set uspot.${sectionName}.nasmac='${nasmac}'`
+        );
+        
+        // UAM mode specific settings
+        if (authMode === 'uam') {
+          uciCommands.push(
+            `uci set uspot.${sectionName}.uam_port='3990'`,
+            `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`
+          );
+        }
+        
+        // Accounting server (optional)
+        if (body.radiusServer2) {
+          const acctHost = body.radiusServer2.split(':')[0];
+          const acctPort = body.radiusServer2.split(':')[1] || '1813';
+          uciCommands.push(`uci set uspot.${sectionName}.acct_server='${acctHost}'`);
+          uciCommands.push(`uci set uspot.${sectionName}.acct_port='${acctPort}'`);
+          uciCommands.push(`uci set uspot.${sectionName}.acct_secret='${body.radiusSecret}'`);
+        }
+        
+        // Configure uhttpd UAM listener on port 3990 (required for UAM mode)
+        if (authMode === 'uam') {
+          const uhttpdUamCommands = [
+            `uci set uhttpd.uam3990=uhttpd`,
+            `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
+            `uci set uhttpd.uam3990.redirect_https='0'`,
+            `uci set uhttpd.uam3990.max_requests='5'`,
+            `uci set uhttpd.uam3990.no_dirlists='1'`,
+            `uci set uhttpd.uam3990.home='/www-uspot'`,
+            `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
+            `uci commit uhttpd`
+          ];
+          
+          // Configure uhttpd UAM listener
+          await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', uhttpdUamCommands.join(' && ')]
+          });
+        }
+      } // End of RADIUS modes block
 
       uciCommands.push('uci commit uspot');
-      
-      // Configure uhttpd UAM listener on port 3990 (required for UAM mode)
-      const uhttpdUamCommands = [
-        `uci set uhttpd.uam3990=uhttpd`,
-        `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
-        `uci set uhttpd.uam3990.redirect_https='0'`,
-        `uci set uhttpd.uam3990.max_requests='5'`,
-        `uci set uhttpd.uam3990.no_dirlists='1'`,
-        `uci set uhttpd.uam3990.home='/www-uspot'`,
-        `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
-        `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
-        `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
-        `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
-        `uci commit uhttpd`
-      ];
 
       // Execute all UCI commands in one shell call
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
         params: ['-c', uciCommands.join(' && ')]
       });
-      
-      // Configure uhttpd UAM listener
-      await routerRpcService.rpcCall(id, 'file', 'exec', {
-        command: 'sh',
-        params: ['-c', uhttpdUamCommands.join(' && ')]
-      });
 
-      if (body.restartUspot) {
+      if (body.restartUspot !== false) {
         // Restart both uhttpd (for UAM listener) and uspot
         await routerRpcService.rpcCall(id, 'file', 'exec', {
           command: 'sh',
@@ -363,30 +405,33 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Extract base URL from UAM server URL for RFC8908 API endpoint
-      const uamUrlObj = new URL(body.uamServerUrl);
-      const dhcpApiUrl = `${uamUrlObj.origin}/api`;
-      try {
-        const dhcpConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'dhcp', section: 'captive' });
-        if (dhcpConfig) {
-          await routerRpcService.rpcCall(id, 'uci', 'set', {
-            config: 'dhcp',
-            section: 'captive',
-            option: 'dhcp_option',
-            value: `114,${dhcpApiUrl}`
-          });
-          await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'dhcp' });
+      // Extract base URL from UAM server URL for RFC8908 API endpoint (only for UAM mode)
+      if (authMode === 'uam' && body.uamServerUrl) {
+        try {
+          const uamUrlObj = new URL(body.uamServerUrl);
+          const dhcpApiUrl = `${uamUrlObj.origin}/api`;
+          const dhcpConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'dhcp', section: 'captive' });
+          if (dhcpConfig) {
+            await routerRpcService.rpcCall(id, 'uci', 'set', {
+              config: 'dhcp',
+              section: 'captive',
+              option: 'dhcp_option',
+              value: `114,${dhcpApiUrl}`
+            });
+            await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'dhcp' });
+          }
+        } catch {
+          // DHCP captive section doesn't exist, skip Option 114
         }
-      } catch {
-        // DHCP captive section doesn't exist, skip Option 114
       }
 
       return {
         routerId: id,
         success: true,
-        message: 'UAM and RADIUS configuration updated',
+        message: `uspot configured with auth_mode '${authMode}'`,
         config: {
-          portalUrl: body.uamServerUrl,
+          authMode,
+          uamServerUrl: body.uamServerUrl,
           radiusServer: body.radiusServer,
           radiusServer2: body.radiusServer2
         }
