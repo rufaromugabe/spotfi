@@ -518,6 +518,20 @@ export class UspotSetupService {
       
       const installed = results.filter(r => r.status === 'success').length;
       const skipped = results.filter(r => r.status === 'skipped').length;
+      
+      // Ensure radcli dictionary is properly set up (required for RADIUS authentication)
+      // This fixes: "rc_read_dictionary couldn't open dictionary /etc/radcli/dictionary"
+      try {
+        await this.exec(routerId, 'opkg list-installed | grep -q libradcli || opkg install libradcli');
+        await this.exec(routerId, 'mkdir -p /etc/radcli');
+        await this.exec(routerId, '[ -f /etc/radcli/dictionary ] || ln -sf /usr/share/radcli/dictionary /etc/radcli/dictionary');
+        // Fallback to alternative dictionary location if primary doesn't exist
+        await this.exec(routerId, '[ -f /etc/radcli/dictionary ] || [ -f /usr/share/radcli/dictionary ] || ln -sf /etc/radiusclient/dictionary /etc/radcli/dictionary 2>/dev/null || true');
+        this.logger.info('[Setup] radcli dictionary configured');
+      } catch (radcliErr: any) {
+        this.logger.warn(`[Setup] Could not configure radcli dictionary: ${radcliErr.message}`);
+      }
+      
       return {
         step: 'package_install',
         status: 'success',
