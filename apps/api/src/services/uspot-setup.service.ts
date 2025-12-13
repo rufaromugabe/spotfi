@@ -69,10 +69,11 @@ export class UspotSetupService {
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
+  private readonly HOTSPOT_VLAN_ID = 10; // VLAN for guest/hotspot network
   private readonly LAN_IP = '192.168.3.10';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
-  private readonly TOTAL_STEPS = 12;
+  private readonly TOTAL_STEPS = 13; // Updated for DHCP step
 
   constructor(private logger: FastifyBaseLogger) {}
 
@@ -259,19 +260,25 @@ export class UspotSetupService {
       steps.push(netConfig);
       if (netConfig.status === 'error') return this.fail(steps, 'Network config failed');
 
-      // 9. Firewall
+      // 9. DHCP Configuration for Hotspot
+      reportProgress('dhcp_config');
+      const dhcpConfig = await this.configureDhcp(routerId);
+      steps.push(dhcpConfig);
+      if (dhcpConfig.status === 'error') return this.fail(steps, 'DHCP config failed');
+
+      // 10. Firewall
       reportProgress('firewall_config');
       const fwConfig = await this.configureFirewall(routerId);
       steps.push(fwConfig);
       if (fwConfig.status === 'error') return this.fail(steps, 'Firewall config failed');
 
-      // 10. Portal & Certificates
+      // 11. Portal & Certificates
       reportProgress('portal_config');
       const portalConfig = await this.configurePortal(routerId);
       steps.push(portalConfig);
       if (portalConfig.status === 'error') return this.fail(steps, 'Portal config failed');
 
-      // 11. Final Restart
+      // 12. Final Restart
       reportProgress('services_restart');
       steps.push(await this.restartServices(routerId));
 
@@ -896,11 +903,12 @@ done > /usr/lib/opkg/status
         } catch { break; }
       }
 
-      // Configure interfaces
+      // Configure interfaces for hotspot network (captive portal)
       idx = 0;
       while(idx < 5) {
         try {
-          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].network='lan'`);
+          // Use 'hotspot' network for captive portal - this is the network uspot monitors
+          await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].network='hotspot'`);
           await this.exec(routerId, `uci set wireless.@wifi-iface[${idx}].mode='ap'`);
           
           if (options.combinedSSID && options.ssid) {
@@ -957,23 +965,149 @@ done > /usr/lib/opkg/status
       }
 
       // Get device for hotspot (OpenWrt 23+)
-      let bridge = this.DEFAULT_BRIDGE;
+      // For WiFi-only captive portal, hotspot network doesn't need a physical device
+      // WiFi interfaces bound to 'hotspot' network will create br-hotspot automatically
+      // For Ethernet guests, you would need VLANs or a dedicated port
+      let lanBridge = this.DEFAULT_BRIDGE;
       try {
         const out = await this.exec(routerId, 'uci get network.lan.device');
-        if (out && out.trim()) bridge = out.trim().split(' ')[0];
+        if (out && out.trim()) lanBridge = out.trim().split(' ')[0];
       } catch {}
 
-      // Hotspot
+      // ============================================================
+      // VLAN-based Hotspot Network Setup (Best Practice)
+      // ============================================================
+      // This creates a proper isolated guest network that works for both
+      // WiFi clients AND Ethernet clients tagged with VLAN 10
+      
+      // Step 1: Create the hotspot bridge device (br-hotspot)
+      await this.exec(routerId, 'uci set network.br_hotspot=device');
+      await this.exec(routerId, 'uci set network.br_hotspot.type="bridge"');
+      await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
+      // Enable STP to prevent loops if multiple ports are added
+      await this.exec(routerId, 'uci set network.br_hotspot.stp="1"');
+      // Isolate bridge ports - prevents guest-to-guest traffic at L2
+      await this.exec(routerId, 'uci set network.br_hotspot.isolate="1"');
+      
+      // Step 2: Create VLAN 10 device for Ethernet guests
+      // This allows tagging physical ports for guest access
+      // Find the base switch device (usually eth0 or wan/lan device)
+      let baseDevice = 'eth0';
+      try {
+        // Try to get the underlying device from br-lan
+        const brPorts = await this.exec(routerId, 'uci get network.br_lan.ports 2>/dev/null || echo ""');
+        if (brPorts && brPorts.trim()) {
+          // Get first port as base device reference
+          const ports = brPorts.trim().split(/\s+/);
+          if (ports.length > 0) {
+            // Extract base device (e.g., 'lan1' -> use parent, or 'eth0.1' -> 'eth0')
+            const firstPort = ports[0];
+            if (firstPort.includes('.')) {
+              baseDevice = firstPort.split('.')[0];
+            }
+          }
+        }
+      } catch {}
+      
+      // Try DSA-style detection (OpenWrt 21.02+)
+      try {
+        const dsaCheck = await this.exec(routerId, 'ls /sys/class/net/lan1 2>/dev/null && echo "dsa" || echo "swconfig"');
+        if (dsaCheck.trim() === 'dsa') {
+          // DSA switch - create VLAN on each port that should be guest
+          // For now, we'll create a tagged VLAN interface
+          this.logger.info('[Setup] DSA switch detected - configuring VLAN tagging');
+          
+          // Create VLAN 10 bridge member for DSA
+          await this.exec(routerId, `uci set network.hotspot_vlan=device`);
+          await this.exec(routerId, `uci set network.hotspot_vlan.type="8021q"`);
+          await this.exec(routerId, `uci set network.hotspot_vlan.ifname="${lanBridge}"`);
+          await this.exec(routerId, `uci set network.hotspot_vlan.vid="${this.HOTSPOT_VLAN_ID}"`);
+          await this.exec(routerId, `uci set network.hotspot_vlan.name="${lanBridge}.${this.HOTSPOT_VLAN_ID}"`);
+          
+          // Add VLAN interface to hotspot bridge
+          try {
+            await this.exec(routerId, `uci add_list network.br_hotspot.ports="${lanBridge}.${this.HOTSPOT_VLAN_ID}"`);
+          } catch {}
+        }
+      } catch {
+        this.logger.info('[Setup] Using standard bridge configuration (non-DSA)');
+      }
+
+      // Step 3: Configure hotspot interface with the bridge
       await this.exec(routerId, 'uci set network.hotspot=interface');
       await this.exec(routerId, 'uci set network.hotspot.proto="static"');
       await this.exec(routerId, `uci set network.hotspot.ipaddr="${this.HOTSPOT_IP}"`);
       await this.exec(routerId, `uci set network.hotspot.netmask="${this.HOTSPOT_NETMASK}"`);
-      await this.exec(routerId, `uci set network.hotspot.device="${bridge}"`);
-
+      await this.exec(routerId, 'uci set network.hotspot.device="br-hotspot"');
+      // Force interface up even without clients
+      await this.exec(routerId, 'uci set network.hotspot.force_link="1"');
+      
+      // Step 4: Configure client isolation and security at network level
+      // Prevent hotspot clients from accessing LAN subnet
+      await this.exec(routerId, 'uci set network.hotspot.delegate="0"'); // No IPv6 prefix delegation
+      
+      this.logger.info(`[Setup] Configured hotspot network with VLAN ${this.HOTSPOT_VLAN_ID} for Ethernet guests`);
       await this.exec(routerId, 'uci commit network');
       return { step: 'network_config', status: 'success' };
     } catch (e: any) {
       return { step: 'network_config', status: 'error', message: e.message };
+    }
+  }
+
+  /**
+   * Configure DHCP for hotspot network
+   * This provides IP addresses to both WiFi and Ethernet guests
+   */
+  private async configureDhcp(routerId: string): Promise<SetupStepResult> {
+    try {
+      // Check if hotspot DHCP pool already exists
+      let hotspotDhcpExists = false;
+      try {
+        const dhcpConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'dhcp' });
+        const dhcpStr = JSON.stringify(dhcpConfig);
+        hotspotDhcpExists = dhcpStr.includes('"interface":"hotspot"') || dhcpStr.includes("interface='hotspot'");
+      } catch {}
+
+      if (!hotspotDhcpExists) {
+        // Create DHCP pool for hotspot network
+        await this.exec(routerId, 'uci set dhcp.hotspot=dhcp');
+        await this.exec(routerId, 'uci set dhcp.hotspot.interface="hotspot"');
+        await this.exec(routerId, 'uci set dhcp.hotspot.start="100"');  // 10.1.30.100
+        await this.exec(routerId, 'uci set dhcp.hotspot.limit="150"');  // 150 clients max
+        await this.exec(routerId, 'uci set dhcp.hotspot.leasetime="2h"'); // Short lease for guests
+        await this.exec(routerId, 'uci set dhcp.hotspot.force="1"'); // Force DHCP even if no interface
+        
+        // DNS settings - use router as DNS (for captive portal detection)
+        await this.exec(routerId, `uci add_list dhcp.hotspot.dhcp_option="6,${this.HOTSPOT_IP}"`); // DNS server
+        
+        // Captive Portal Detection - DHCP Option 114 (RFC 8910)
+        // Clients use this URL to detect captive portal
+        await this.exec(routerId, 'uci add_list dhcp.hotspot.dhcp_option="114,http://detectportal.firefox.com/success.txt"');
+        
+        this.logger.info('[Setup] Created DHCP pool for hotspot network');
+      } else {
+        this.logger.info('[Setup] Hotspot DHCP pool already exists, skipping');
+      }
+
+      // Configure captive portal DHCP section for uspot compatibility
+      try {
+        await this.exec(routerId, 'uci set dhcp.captive=dhcp');
+        await this.exec(routerId, 'uci set dhcp.captive.interface="hotspot"');
+        // Will be updated with actual portal URL during UAM config
+      } catch {}
+
+      await this.exec(routerId, 'uci commit dhcp');
+      
+      // Restart dnsmasq to apply DHCP changes
+      try {
+        await this.exec(routerId, '/etc/init.d/dnsmasq restart');
+      } catch {
+        // dnsmasq might not be running yet
+      }
+
+      return { step: 'dhcp_config', status: 'success', message: 'DHCP pool configured for hotspot (10.1.30.100-249)' };
+    } catch (e: any) {
+      return { step: 'dhcp_config', status: 'error', message: e.message };
     }
   }
 
@@ -991,14 +1125,71 @@ done > /usr/lib/opkg/status
         await this.exec(routerId, 'uci set firewall.@zone[-1].output="ACCEPT"');
         await this.exec(routerId, 'uci set firewall.@zone[-1].forward="REJECT"');
         await this.exec(routerId, 'uci set firewall.@zone[-1].network="hotspot"');
+        // Enable MSS clamping for proper MTU handling
+        await this.exec(routerId, 'uci set firewall.@zone[-1].mtu_fix="1"');
       }
 
-      // Check if forwarding exists
+      // Check if forwarding exists (hotspot -> wan for internet access)
       const hotspotForwardExists = zonesStr.includes('"src":"hotspot"') && zonesStr.includes('"dest":"wan"');
       if (!hotspotForwardExists) {
         await this.exec(routerId, 'uci add firewall forwarding');
         await this.exec(routerId, 'uci set firewall.@forwarding[-1].src="hotspot"');
         await this.exec(routerId, 'uci set firewall.@forwarding[-1].dest="wan"');
+      }
+
+      // ============================================================
+      // Security Rules: Isolate Hotspot from LAN (Best Practice)
+      // ============================================================
+      
+      // Rule 1: Block hotspot -> LAN traffic (prevent guest access to private network)
+      const blockLanRuleName = 'Block-Hotspot-to-LAN';
+      if (!zonesStr.includes(blockLanRuleName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name="${blockLanRuleName}"`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest="lan"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
+      }
+      
+      // Rule 2: Block RFC1918 private ranges from hotspot (extra protection)
+      const blockPrivateRuleName = 'Block-Hotspot-Private-Ranges';
+      if (!zonesStr.includes(blockPrivateRuleName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name="${blockPrivateRuleName}"`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest="*"'); // Any destination
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
+        // Block common private ranges (except hotspot's own subnet)
+        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="192.168.0.0/16"');
+        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="172.16.0.0/12"');
+        // Note: 10.0.0.0/8 partially allowed for hotspot subnet (10.1.30.0/24)
+        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="10.0.0.0/8"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
+        // Exclude hotspot's own subnet from this rule
+        await this.exec(routerId, `uci set firewall.@rule[-1].src_ip="!${this.HOTSPOT_IP.replace(/\.\d+$/, '.0')}/24"`);
+      }
+      
+      // Rule 3: Allow DHCP/DNS from hotspot clients to router (required for captive portal)
+      const allowDhcpRuleName = 'Allow-Hotspot-DHCP-DNS';
+      if (!zonesStr.includes(allowDhcpRuleName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name="${allowDhcpRuleName}"`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="53 67 68"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      }
+      
+      // Rule 4: Allow captive portal HTTP/HTTPS from hotspot to router
+      const allowPortalRuleName = 'Allow-Hotspot-Portal';
+      if (!zonesStr.includes(allowPortalRuleName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name="${allowPortalRuleName}"`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"'); // 3990 = uspot portal
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
       }
 
       // Add RADIUS rules to allow hotspot clients to reach external RADIUS server
@@ -1016,6 +1207,7 @@ done > /usr/lib/opkg/status
       }
 
       await this.exec(routerId, 'uci commit firewall');
+      this.logger.info('[Setup] Firewall configured with hotspot isolation rules');
       return { step: 'firewall_config', status: 'success' };
     } catch (e: any) {
       return { step: 'firewall_config', status: 'error', message: e.message };
