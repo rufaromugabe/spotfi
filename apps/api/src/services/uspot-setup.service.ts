@@ -50,14 +50,29 @@ interface UciConfig {
  * Implements "Verify -> Remediate -> Execute" pattern
  */
 export class UspotSetupService {
-  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter', 'ca-bundle', 'ca-certificates', 'openssl-util'];
+  // Core required packages
+  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter'];
+  
+  // Packages with alternatives - if ANY alternative is installed, requirement is satisfied
+  private readonly PACKAGE_ALTERNATIVES: Record<string, string[]> = {
+    'ca-certificates': ['ca-certificates', 'ca-bundle'],
+    'openssl-util': ['openssl-util', 'px5g-mbedtls', 'px5g-standalone'],
+  };
+  
+  // Binary paths to check if packages are installed (even if opkg doesn't know)
+  private readonly PACKAGE_BINARIES: Record<string, string[]> = {
+    'uspot': ['/usr/bin/uspot', '/usr/sbin/uspot'],
+    'uhttpd': ['/usr/sbin/uhttpd'],
+    'jsonfilter': ['/usr/bin/jsonfilter'],
+  };
+  
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
   private readonly LAN_IP = '192.168.3.10';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
-  private readonly TOTAL_STEPS = 11;
+  private readonly TOTAL_STEPS = 12;
 
   constructor(private logger: FastifyBaseLogger) {}
 
@@ -201,7 +216,12 @@ export class UspotSetupService {
         return this.fail(steps, `Network failure: ${netCheck.message}`);
       }
 
-      // 4. Repository Configuration Check + Protocol Downgrade (if needed)
+      // 4. Repair opkg database if needed (empty status file)
+      reportProgress('opkg_repair');
+      const opkgRepair = await this.repairOpkgDatabase(routerId);
+      steps.push(opkgRepair);
+
+      // 5. Repository Configuration Check + Protocol Downgrade (if needed)
       reportProgress('repo_check');
       const repoCheck = await this.prepareRepositories(routerId);
       steps.push(repoCheck);
@@ -211,7 +231,7 @@ export class UspotSetupService {
 
       // --- PHASE 2: PACKAGE INSTALLATION ---
 
-      // 5. Update Packages
+      // 6. Update Packages
       reportProgress('package_update');
       const updateResult = await this.updatePackages(routerId);
       steps.push(updateResult);
@@ -219,7 +239,7 @@ export class UspotSetupService {
         return this.fail(steps, `Package update failed. Check router logs.`);
       }
 
-      // 6. Install Packages (only those not already installed)
+      // 7. Install Packages (only those not already installed)
       reportProgress('package_install');
       const installResult = await this.installPackages(routerId);
       steps.push(installResult);
@@ -391,34 +411,71 @@ export class UspotSetupService {
    */
   private async verifyAndFixArchitecture(routerId: string): Promise<string | null> {
     try {
-      // Get actual router architecture
-      const arch = (await this.exec(routerId, 'opkg print-architecture | grep -v all | head -1 | awk \'{print $2}\'')).trim();
-      if (!arch) {
-        this.logger.warn('[Setup] Could not determine router architecture');
-        return null;
-      }
-
-      // Get OpenWrt version info for proper repo URLs
+      // Get OpenWrt version info - DISTRIB_ARCH is the most reliable source
       let version = '';
       let release = '';
+      let arch = '';
+      
       try {
         const osRelease = await this.exec(routerId, 'cat /etc/openwrt_release');
         const versionMatch = osRelease.match(/DISTRIB_RELEASE='([^']+)'/);
         const targetMatch = osRelease.match(/DISTRIB_TARGET='([^']+)'/);
+        const archMatch = osRelease.match(/DISTRIB_ARCH='([^']+)'/);
         if (versionMatch) version = versionMatch[1];
         if (targetMatch) release = targetMatch[1];
+        if (archMatch) arch = archMatch[1];
       } catch {}
+
+      // Fallback to opkg print-architecture if DISTRIB_ARCH not available
+      if (!arch) {
+        try {
+          const archOutput = await this.exec(routerId, 'opkg print-architecture');
+          const archLines = archOutput.split('\n');
+          let maxPriority = 0;
+          
+          for (const line of archLines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 3 && parts[0] === 'arch') {
+              const archName = parts[1];
+              const priority = parseInt(parts[2]) || 0;
+              if (archName !== 'all' && archName !== 'noarch' && priority > maxPriority) {
+                arch = archName;
+                maxPriority = priority;
+              }
+            }
+          }
+        } catch {}
+      }
+      
+      if (!arch) {
+        this.logger.warn('[Setup] Could not determine router architecture');
+        return null;
+      }
 
       this.logger.info(`[Setup] Router arch: ${arch}, version: ${version}, target: ${release}`);
 
       // Read current distfeeds
       const distfeeds = await this.exec(routerId, 'cat /etc/opkg/distfeeds.conf');
       
-      // Check if distfeeds contains the wrong architecture or is corrupted
-      const hasArchMismatch = !distfeeds.includes(arch) && !distfeeds.includes('SNAPSHOT');
+      // Check if distfeeds needs fixing:
+      // 1. Empty or corrupted
+      // 2. Contains /packages/noarch/ which is ALWAYS wrong for arch-specific packages
+      // 3. Contains wrong architecture
+      const isEmpty = distfeeds.trim().length < 50;
+      const looksCorrupted = !distfeeds.includes('openwrt') && !distfeeds.includes('src/gz');
+      const hasNoarch = distfeeds.includes('/packages/noarch/');
+      const hasWrongArch = arch && !distfeeds.includes(`/packages/${arch}/`) && distfeeds.includes('/packages/');
       
-      if (hasArchMismatch && release && version) {
-        this.logger.warn(`[Setup] Architecture mismatch detected, rebuilding distfeeds.conf`);
+      if ((isEmpty || looksCorrupted || hasNoarch || hasWrongArch) && release && version && arch) {
+        const reason = hasNoarch ? 'has noarch URLs' : 
+                       hasWrongArch ? 'has wrong architecture' :
+                       isEmpty ? 'is empty' : 'is corrupted';
+        this.logger.warn(`[Setup] distfeeds.conf ${reason}, rebuilding with ${arch}`);
+        
+        // Backup original first
+        try {
+          await this.exec(routerId, 'cp /etc/opkg/distfeeds.conf /etc/opkg/distfeeds.conf.bak');
+        } catch {}
         
         // Determine base URL based on version
         const isSnapshot = version.includes('SNAPSHOT') || version.includes('snapshot');
@@ -426,7 +483,7 @@ export class UspotSetupService {
           ? 'http://downloads.openwrt.org/snapshots'
           : `http://downloads.openwrt.org/releases/${version}`;
         
-        // Build correct distfeeds
+        // Build correct distfeeds with proper architecture
         const newFeeds = [
           `src/gz openwrt_core ${baseUrl}/targets/${release}/packages`,
           `src/gz openwrt_base ${baseUrl}/packages/${arch}/base`,
@@ -439,13 +496,94 @@ export class UspotSetupService {
         // Write new distfeeds
         await this.exec(routerId, `cat > /etc/opkg/distfeeds.conf << 'EOF'\n${newFeeds}\nEOF`);
         
-        return `Fixed architecture mismatch (${arch})`;
+        // Clear opkg cache to force fresh download
+        try {
+          await this.exec(routerId, 'rm -rf /var/opkg-lists/*');
+        } catch {}
+        
+        return `Fixed distfeeds.conf (${arch} instead of ${hasNoarch ? 'noarch' : 'wrong arch'})`;
       }
 
+      this.logger.info(`[Setup] distfeeds.conf architecture looks correct (${arch})`);
       return null;
     } catch (e: any) {
       this.logger.warn(`[Setup] Architecture verification failed: ${e.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Repair opkg database if status file is empty
+   * This can happen after firmware flash or reset
+   */
+  private async repairOpkgDatabase(routerId: string): Promise<SetupStepResult> {
+    try {
+      // Check if opkg status file is empty
+      let statusEmpty = false;
+      try {
+        const statusSize = await this.exec(routerId, 'wc -c < /usr/lib/opkg/status');
+        statusEmpty = parseInt(statusSize.trim()) < 10;
+      } catch {
+        statusEmpty = true;
+      }
+
+      if (!statusEmpty) {
+        return { step: 'opkg_repair', status: 'success', message: 'opkg database OK' };
+      }
+
+      this.logger.warn('[Setup] opkg status file is empty, rebuilding from .control files');
+
+      // Check if control files exist
+      let hasControlFiles = false;
+      try {
+        const controlCount = await this.exec(routerId, 'ls /usr/lib/opkg/info/*.control 2>/dev/null | wc -l');
+        hasControlFiles = parseInt(controlCount.trim()) > 0;
+      } catch {}
+
+      if (!hasControlFiles) {
+        return { 
+          step: 'opkg_repair', 
+          status: 'warning', 
+          message: 'No control files found, cannot rebuild opkg database' 
+        };
+      }
+
+      // Rebuild status file from control files
+      const rebuildCmd = `
+for control in /usr/lib/opkg/info/*.control; do
+  cat "$control"
+  echo "Status: install ok installed"
+  echo ""
+done > /usr/lib/opkg/status
+`;
+      await this.exec(routerId, rebuildCmd, 60000);
+
+      // Verify rebuild worked
+      let packageCount = 0;
+      try {
+        const countOutput = await this.exec(routerId, 'opkg list-installed 2>/dev/null | wc -l');
+        packageCount = parseInt(countOutput.trim());
+      } catch {}
+
+      if (packageCount > 0) {
+        return { 
+          step: 'opkg_repair', 
+          status: 'success', 
+          message: `Rebuilt opkg database (${packageCount} packages)` 
+        };
+      } else {
+        return { 
+          step: 'opkg_repair', 
+          status: 'warning', 
+          message: 'Rebuilt opkg database but package count is 0' 
+        };
+      }
+    } catch (e: any) {
+      return { 
+        step: 'opkg_repair', 
+        status: 'warning', 
+        message: `opkg repair failed: ${e.message}` 
+      };
     }
   }
 
@@ -478,16 +616,34 @@ export class UspotSetupService {
         await this.exec(routerId, 'rm -rf /var/opkg-lists/*', 30000);
       } catch {}
 
-      // Try update
-      await this.exec(routerId, 'opkg update', 90000);
+      // Try update with longer timeout
+      await this.exec(routerId, 'opkg update', 120000);
       return { step: 'package_update', status: 'success' };
     } catch (e: any) {
-      // If update fails, try one more time with no-check-certificate
+      const firstError = e.message || '';
+      
+      // If update fails, try with no-check-certificate
       try {
-        await this.exec(routerId, 'opkg update --no-check-certificate', 90000);
+        await this.exec(routerId, 'opkg update --no-check-certificate', 120000);
         return { step: 'package_update', status: 'warning', message: 'Update succeeded with --no-check-certificate' };
       } catch (e2: any) {
-        const msg = this.parseOpkgError(e.message || e2.message);
+        // If we have a backup distfeeds, try restoring it
+        try {
+          const hasBackup = await this.exec(routerId, 'test -f /etc/opkg/distfeeds.conf.bak && echo yes || echo no');
+          if (hasBackup.trim() === 'yes') {
+            this.logger.warn('[Setup] opkg update failed, restoring original distfeeds.conf');
+            await this.exec(routerId, 'cp /etc/opkg/distfeeds.conf.bak /etc/opkg/distfeeds.conf');
+            await this.exec(routerId, 'sed -i "s/https:/http:/g" /etc/opkg/distfeeds.conf');
+            
+            // Try one more time with restored feeds
+            try {
+              await this.exec(routerId, 'opkg update', 120000);
+              return { step: 'package_update', status: 'warning', message: 'Update succeeded after restoring original feeds' };
+            } catch {}
+          }
+        } catch {}
+        
+        const msg = this.parseOpkgError(firstError || e2.message);
         return { step: 'package_update', status: 'error', message: msg };
       }
     }
@@ -514,28 +670,86 @@ export class UspotSetupService {
     return installed;
   }
 
+  /**
+   * Check if a package requirement is satisfied
+   * Checks: opkg database, alternative packages, and binary existence
+   */
+  private async isPackageSatisfied(routerId: string, pkg: string, installed: Set<string>): Promise<boolean> {
+    // 1. Direct match in opkg database
+    if (installed.has(pkg)) return true;
+    
+    // 2. Check alternatives
+    const alternatives = this.PACKAGE_ALTERNATIVES[pkg];
+    if (alternatives) {
+      for (const alt of alternatives) {
+        if (installed.has(alt)) return true;
+      }
+    }
+    
+    // 3. Check if binary exists (package might be installed but opkg doesn't know)
+    const binaries = this.PACKAGE_BINARIES[pkg];
+    if (binaries) {
+      for (const bin of binaries) {
+        try {
+          await this.exec(routerId, `test -f ${bin}`);
+          this.logger.info(`[Setup] Package ${pkg} detected via binary ${bin}`);
+          return true;
+        } catch {}
+      }
+    }
+    
+    return false;
+  }
+
   private async installPackages(routerId: string): Promise<SetupStepResult> {
     try {
       // First, check which packages are already installed
       const installed = await this.getInstalledPackages(routerId);
-      const toInstall = this.REQUIRED_PACKAGES.filter(pkg => !installed.has(pkg));
+      
+      // Build complete list of requirements (core + alternatives)
+      const allRequirements = [
+        ...this.REQUIRED_PACKAGES,
+        ...Object.keys(this.PACKAGE_ALTERNATIVES)
+      ];
+      
+      // Check which packages need to be installed
+      const toInstall: string[] = [];
+      const alreadySatisfied: string[] = [];
+      
+      for (const pkg of allRequirements) {
+        const satisfied = await this.isPackageSatisfied(routerId, pkg, installed);
+        if (satisfied) {
+          alreadySatisfied.push(pkg);
+        } else {
+          // For alternatives, prefer the first one in the list
+          const alternatives = this.PACKAGE_ALTERNATIVES[pkg];
+          if (alternatives) {
+            toInstall.push(alternatives[0]);
+          } else {
+            toInstall.push(pkg);
+          }
+        }
+      }
+      
+      // Remove duplicates
+      const uniqueToInstall = [...new Set(toInstall)];
 
-      if (toInstall.length === 0) {
+      if (uniqueToInstall.length === 0) {
         return { 
           step: 'package_install', 
           status: 'success', 
-          message: 'All packages already installed',
-          details: { skipped: this.REQUIRED_PACKAGES, installed: [] }
+          message: `All ${alreadySatisfied.length} required packages already installed`,
+          details: { alreadySatisfied, installed: [] }
         };
       }
 
-      this.logger.info(`[Setup] Installing packages: ${toInstall.join(', ')} (skipping already installed: ${this.REQUIRED_PACKAGES.filter(pkg => installed.has(pkg)).join(', ')})`);
+      this.logger.info(`[Setup] Installing packages: ${uniqueToInstall.join(', ')} (already satisfied: ${alreadySatisfied.join(', ')})`);
 
       // Install packages one at a time to avoid timeout and handle individual failures
       const results: { pkg: string; status: 'success' | 'skipped' | 'error'; message?: string }[] = [];
       let hasError = false;
 
-      for (const pkg of toInstall) {
+      for (const pkg of uniqueToInstall) {
         try {
           // Use longer timeout for package installation (120 seconds per package)
           await this.exec(routerId, `opkg install ${pkg}`, 120000);
@@ -568,7 +782,7 @@ export class UspotSetupService {
         return { 
           step: 'package_install', 
           status: 'warning', 
-          message: `Installed ${successCount}/${toInstall.length} packages (${errorCount} failed)`,
+          message: `Installed ${successCount}/${uniqueToInstall.length} packages (${errorCount} failed)`,
           details: results
         };
       }
@@ -576,10 +790,8 @@ export class UspotSetupService {
       return { 
         step: 'package_install', 
         status: 'success',
-        message: toInstall.length < this.REQUIRED_PACKAGES.length 
-          ? `Installed ${toInstall.length} packages (${this.REQUIRED_PACKAGES.length - toInstall.length} already present)`
-          : undefined,
-        details: results
+        message: `Installed ${successCount} packages (${alreadySatisfied.length} already satisfied)`,
+        details: { installed: results, alreadySatisfied }
       };
     } catch (e: any) {
       return { step: 'package_install', status: 'error', message: this.parseOpkgError(e.message) };
