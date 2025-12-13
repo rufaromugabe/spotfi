@@ -692,7 +692,21 @@ VALUE	Auth-Type	System	1
 VALUE	Auth-Type	Reject	4
 VALUE	Auth-Type	Accept	254
 DICTEOF`);
-        this.logger.info('[Setup] radcli dictionary created');
+        
+        // Verify the dictionary was created successfully
+        const verifyResult = await this.exec(routerId, 'test -f /etc/radcli/dictionary && wc -l < /etc/radcli/dictionary');
+        const lineCount = parseInt(verifyResult.trim()) || 0;
+        if (lineCount < 50) {
+          throw new Error(`Dictionary file incomplete: only ${lineCount} lines`);
+        }
+        
+        // Verify it's a real file (not a broken symlink)
+        const fileType = await this.exec(routerId, 'file /etc/radcli/dictionary 2>/dev/null || echo "unknown"');
+        if (fileType.includes('symbolic link') || fileType.includes('broken')) {
+          throw new Error('Dictionary is a broken symlink');
+        }
+        
+        this.logger.info(`[Setup] radcli dictionary created and verified (${lineCount} lines)`);
       } catch (radcliErr: any) {
         this.logger.warn(`[Setup] Could not configure radcli dictionary: ${radcliErr.message}`);
       }
