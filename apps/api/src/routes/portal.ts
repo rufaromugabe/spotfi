@@ -111,11 +111,13 @@ export async function portalRoutes(fastify: FastifyInstance) {
         return safeRedirect('Invalid username or password');
       }
 
-      // Note: After successful authentication, the router will automatically allow the user
-      // through the captive portal. No CoA/WebSocket disconnect needed here since we want
-      // to allow the user, not disconnect them.
-
-      return reply.redirect(userurl || 'http://www.google.com');
+      // Successful authentication - redirect to router's logon endpoint to complete UAM flow
+      // The router (uspot/CoovaChilli) expects a redirect to http://{uamip}:{uamport}/logon
+      // with username parameter to authorize the session
+      const logonUrl = `http://${uamip}:${uamport}/logon?username=${encodeURIComponent(username)}&userurl=${encodeURIComponent(userurl)}`;
+      
+      fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting to router logon: ${logonUrl}`);
+      return reply.redirect(logonUrl);
     } catch (error: any) {
       fastify.log.error(`[UAM] Error processing login: ${error.message}`);
       return safeRedirect('Server error');
