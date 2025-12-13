@@ -523,6 +523,8 @@ export class UspotSetupService {
       // This fixes: "rc_read_dictionary couldn't open dictionary /etc/radcli/dictionary"
       try {
         await this.exec(routerId, 'mkdir -p /etc/radcli');
+        // Remove any broken symlink first (OpenWRT creates a symlink to non-existent file)
+        await this.exec(routerId, 'rm -f /etc/radcli/dictionary 2>/dev/null || true');
         // Create the full RADIUS dictionary file
         await this.exec(routerId, `cat > /etc/radcli/dictionary << 'DICTEOF'
 #
