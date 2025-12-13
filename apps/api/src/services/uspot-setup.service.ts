@@ -51,21 +51,13 @@ interface UciConfig {
  */
 export class UspotSetupService {
   // Core required packages
-  private readonly REQUIRED_PACKAGES = [
-    'uspot', 
-    'uhttpd', 
-    'jsonfilter',
-    // Compatibility packages for OpenWrt 22.03+ (nftables)
-    'iptables-nft',
-    'iptables-mod-nat-extra',
-    'kmod-ipt-nat',
-    'kmod-ipt-ipset'
-  ];
+  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter', 'iptables'];
   
   // Packages with alternatives - if ANY alternative is installed, requirement is satisfied
   private readonly PACKAGE_ALTERNATIVES: Record<string, string[]> = {
     'ca-certificates': ['ca-certificates', 'ca-bundle'],
     'openssl-util': ['openssl-util', 'px5g-mbedtls', 'px5g-standalone'],
+    'iptables': ['iptables-nft', 'iptables-zz-legacy', 'iptables'],
   };
   
   // Binary paths to check if packages are installed (even if opkg doesn't know)
@@ -73,6 +65,7 @@ export class UspotSetupService {
     'uspot': ['/usr/bin/uspot', '/usr/sbin/uspot'],
     'uhttpd': ['/usr/sbin/uhttpd'],
     'jsonfilter': ['/usr/bin/jsonfilter'],
+    'iptables': ['/usr/sbin/iptables'],
   };
   
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
