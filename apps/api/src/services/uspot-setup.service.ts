@@ -73,7 +73,7 @@ export class UspotSetupService {
   private readonly LAN_IP = '192.168.1.1';
   private readonly LAN_NETMASK = '255.255.255.0';
   private readonly DEFAULT_BRIDGE = 'br-lan';
-  private readonly TOTAL_STEPS = 13; // Updated for DHCP step
+  private readonly TOTAL_STEPS = 14; // Updated for uspot config step
 
   constructor(private logger: FastifyBaseLogger) {}
 
@@ -278,7 +278,13 @@ export class UspotSetupService {
       steps.push(portalConfig);
       if (portalConfig.status === 'error') return this.fail(steps, 'Portal config failed');
 
-      // 12. Final Restart
+      // 12. Configure uspot captive portal service
+      reportProgress('uspot_config');
+      const uspotConfig = await this.configureUspot(routerId);
+      steps.push(uspotConfig);
+      if (uspotConfig.status === 'error') return this.fail(steps, 'uspot config failed');
+
+      // 13. Final Restart
       reportProgress('services_restart');
       steps.push(await this.restartServices(routerId));
 
@@ -1260,15 +1266,117 @@ done > /usr/lib/opkg/status
     }
   }
 
+  /**
+   * Configure uspot captive portal service
+   * This is the core configuration that enables captive portal redirect
+   */
+  private async configureUspot(routerId: string): Promise<SetupStepResult> {
+    try {
+      // Get hotspot IP for redirect URL
+      const hotspotIp = this.HOTSPOT_IP;
+      
+      // Delete any existing uspot instances to start fresh
+      try {
+        let idx = 0;
+        while (idx < 5) {
+          try {
+            await this.exec(routerId, `uci delete uspot.@instance[0]`);
+            idx++;
+          } catch { break; }
+        }
+      } catch {}
+
+      // Create uspot instance for the hotspot interface
+      await this.exec(routerId, 'uci add uspot instance');
+      await this.exec(routerId, 'uci set uspot.@instance[-1].enabled="1"');
+      await this.exec(routerId, 'uci set uspot.@instance[-1].interface="hotspot"');
+      
+      // Auth mode: 'click' for click-through, 'radius' for RADIUS auth, 'uam' for external UAM
+      // Default to 'click' for basic setup - UAM config will override this
+      await this.exec(routerId, 'uci set uspot.@instance[-1].auth_mode="click"');
+      
+      // Portal settings
+      await this.exec(routerId, `uci set uspot.@instance[-1].portal_url="http://${hotspotIp}:3990/portal"`);
+      await this.exec(routerId, 'uci set uspot.@instance[-1].idle_timeout="600"'); // 10 min idle timeout
+      await this.exec(routerId, 'uci set uspot.@instance[-1].session_timeout="0"'); // 0 = no session timeout
+      
+      // MAC authentication (allow returning users)
+      await this.exec(routerId, 'uci set uspot.@instance[-1].mac_auth="0"'); // Disable by default
+      
+      // Walled garden - sites accessible before login
+      // These are needed for captive portal detection to work
+      await this.exec(routerId, 'uci delete uspot.@instance[-1].whitelist 2>/dev/null || true');
+      const walledGarden = [
+        // Apple captive portal detection
+        'captive.apple.com',
+        'www.apple.com',
+        // Google/Android captive portal detection
+        'connectivitycheck.gstatic.com',
+        'connectivitycheck.android.com',
+        'clients3.google.com',
+        'www.gstatic.com',
+        // Microsoft captive portal detection
+        'www.msftconnecttest.com',
+        'www.msftncsi.com',
+        // Firefox captive portal detection
+        'detectportal.firefox.com',
+        // Generic
+        'dns.google',
+        '1.1.1.1',
+      ];
+      
+      for (const domain of walledGarden) {
+        await this.exec(routerId, `uci add_list uspot.@instance[-1].whitelist="${domain}"`);
+      }
+
+      // Commit uspot config
+      await this.exec(routerId, 'uci commit uspot');
+
+      // Enable and start uspot service
+      await this.exec(routerId, '/etc/init.d/uspot enable');
+      
+      this.logger.info('[Setup] uspot captive portal configured');
+      return { 
+        step: 'uspot_config', 
+        status: 'success', 
+        message: `Captive portal enabled on hotspot interface (click-through mode)` 
+      };
+    } catch (e: any) {
+      return { step: 'uspot_config', status: 'error', message: e.message };
+    }
+  }
+
   private async restartServices(routerId: string): Promise<SetupStepResult> {
     try {
+      // Restart network first
       await this.exec(routerId, '/etc/init.d/network restart');
       await this.sleep(3000);
+      
+      // Restart firewall
       await this.exec(routerId, '/etc/init.d/firewall restart');
+      await this.sleep(1000);
+      
+      // Restart wireless
       try { await this.exec(routerId, '/etc/init.d/wireless restart'); } catch {}
+      await this.sleep(2000);
+      
+      // Restart dnsmasq (DHCP)
+      try { await this.exec(routerId, '/etc/init.d/dnsmasq restart'); } catch {}
+      
+      // Start uhttpd
       await this.exec(routerId, '/etc/init.d/uhttpd enable');
       await this.exec(routerId, '/etc/init.d/uhttpd restart');
-      return { step: 'services_restart', status: 'success' };
+      
+      // Start uspot captive portal - THIS IS CRITICAL
+      try {
+        await this.exec(routerId, '/etc/init.d/uspot enable');
+        await this.exec(routerId, '/etc/init.d/uspot restart');
+        this.logger.info('[Setup] uspot service started');
+      } catch (e: any) {
+        this.logger.warn(`[Setup] Could not start uspot: ${e.message}`);
+      }
+      
+      return { step: 'services_restart', status: 'success', message: 'All services restarted including uspot' };
     } catch (e: any) {
       return { step: 'services_restart', status: 'warning', message: e.message };
     }
