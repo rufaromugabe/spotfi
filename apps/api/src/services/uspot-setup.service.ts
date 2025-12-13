@@ -50,14 +50,17 @@ interface UciConfig {
  * Implements "Verify -> Remediate -> Execute" pattern
  */
 export class UspotSetupService {
-  // Core required packages
-  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter', 'iptables'];
+  // Core required packages - only packages that MUST be installed
+  // Note: iptables is handled separately via PACKAGE_ALTERNATIVES since different
+  // OpenWRT versions use different iptables implementations
+  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter'];
   
   // Packages with alternatives - if ANY alternative is installed, requirement is satisfied
+  // The first item is the preferred package to install if none are present
   private readonly PACKAGE_ALTERNATIVES: Record<string, string[]> = {
     'ca-certificates': ['ca-certificates', 'ca-bundle'],
     'openssl-util': ['openssl-util', 'px5g-mbedtls', 'px5g-standalone'],
-    'iptables': ['iptables-nft', 'iptables-zz-legacy', 'iptables'],
+    'iptables': ['iptables', 'iptables-nft', 'iptables-zz-legacy', 'iptables-legacy'],
   };
   
   // Binary paths to check if packages are installed (even if opkg doesn't know)
@@ -65,7 +68,7 @@ export class UspotSetupService {
     'uspot': ['/usr/bin/uspot', '/usr/sbin/uspot'],
     'uhttpd': ['/usr/sbin/uhttpd'],
     'jsonfilter': ['/usr/bin/jsonfilter'],
-    'iptables': ['/usr/sbin/iptables'],
+    'iptables': ['/usr/sbin/iptables', '/usr/sbin/xtables-nft-multi'],
   };
   
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
