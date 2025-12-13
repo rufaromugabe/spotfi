@@ -60,6 +60,7 @@ export class UspotSetupService {
   // Optional packages - try to install but don't fail if unavailable
   private readonly OPTIONAL_PACKAGES: Record<string, string[]> = {
     'ca-certificates': ['ca-certificates', 'ca-bundle'],
+    'luci-uspot': ['luci-app-uspot'],  // LuCI web interface for uspot configuration
   };
   
   // Built-in components that should exist on modern OpenWRT
