@@ -956,34 +956,62 @@ done > /usr/lib/opkg/status
       // DSA Port-Based VLAN Configuration (Best Practice)
       // ============================================================
       // Modern OpenWrt (21.02+) uses DSA for switch configuration
-      // We configure: LAN1 = Admin (untagged LAN), LAN2-4 = Guest (hotspot)
+      // We configure: First port = Admin, remaining ports = Guest (hotspot)
       
       // Detect DSA switch and available ports
       let isDSA = false;
       let lanPorts: string[] = [];
       
       try {
-        // Check for DSA ports (lan1, lan2, lan3, lan4)
-        const dsaCheck = await this.exec(routerId, 
-          'for i in 1 2 3 4; do [ -d /sys/class/net/lan$i ] && echo lan$i; done'
+        // Method 1: Check for DSA-style ports (lan1, lan2, lan3, lan4)
+        const dsaCheck1 = await this.exec(routerId, 
+          'for i in 1 2 3 4 5 6; do [ -d /sys/class/net/lan$i ] && echo lan$i; done 2>/dev/null || true'
         );
-        lanPorts = dsaCheck.trim().split('\n').filter(p => p.startsWith('lan'));
+        if (dsaCheck1.trim()) {
+          lanPorts = dsaCheck1.trim().split('\n').filter(p => p.startsWith('lan'));
+        }
+        
+        // Method 2: Check br-lan ports from UCI config
+        if (lanPorts.length === 0) {
+          try {
+            const brPorts = await this.exec(routerId, "uci -q get network.br_lan.ports 2>/dev/null || uci -q get network.@device[0].ports 2>/dev/null || echo ''");
+            if (brPorts.trim()) {
+              lanPorts = brPorts.trim().split(/\s+/).filter(p => p && !p.includes('wan'));
+              this.logger.info(`[Setup] Found ports from br-lan config: ${lanPorts.join(', ')}`);
+            }
+          } catch {}
+        }
+        
+        // Method 3: List all ethernet interfaces that look like switch ports
+        if (lanPorts.length === 0) {
+          try {
+            const allIfaces = await this.exec(routerId, 
+              "ls /sys/class/net/ | grep -E '^(lan|eth[0-9]+$|port[0-9])' | head -6"
+            );
+            if (allIfaces.trim()) {
+              lanPorts = allIfaces.trim().split('\n').filter(p => p && !p.includes('wan'));
+            }
+          } catch {}
+        }
+
         isDSA = lanPorts.length > 0;
-      } catch {}
+        this.logger.info(`[Setup] Port detection result - isDSA: ${isDSA}, ports: [${lanPorts.join(', ')}]`);
+      } catch (e: any) {
+        this.logger.warn(`[Setup] DSA detection failed: ${e.message}`);
+      }
 
       if (isDSA && lanPorts.length > 1) {
-        this.logger.info(`[Setup] DSA switch detected with ports: ${lanPorts.join(', ')}`);
+        this.logger.info(`[Setup] Multiple LAN ports detected: ${lanPorts.join(', ')}`);
         
         // ============================================================
-        // Port Assignment: LAN1 = Admin, LAN2+ = Guest
+        // Port Assignment: First port = Admin, Rest = Guest
         // ============================================================
-        const adminPort = lanPorts[0]; // lan1 for admin
-        const guestPorts = lanPorts.slice(1); // lan2, lan3, lan4 for guests
+        const adminPort = lanPorts[0]; // First port for admin
+        const guestPorts = lanPorts.slice(1); // Remaining ports for guests
         
         this.logger.info(`[Setup] Admin port: ${adminPort}, Guest ports: ${guestPorts.join(', ')}`);
 
         // Step 1: Update br-lan to only include admin port
-        // First, get current br-lan device config
         try {
           await this.exec(routerId, 'uci set network.br_lan=device');
           await this.exec(routerId, 'uci set network.br_lan.type="bridge"');
