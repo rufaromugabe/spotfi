@@ -250,29 +250,33 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Check if uspot instance exists, create if needed
-      // Ensure at least one instance exists (create if missing, reuse if exists)
+      // Check if uspot named section exists, create if needed
+      // uspot uses named sections: config uspot 'sectionname' (NOT config instance)
+      const sectionName = 'hotspot';
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
-        params: ['-c', 'uci -q show uspot.@instance[0] || (uci add uspot instance && uci set uspot.@instance[0].enabled=1 && uci set uspot.@instance[0].interface=hotspot && uci commit uspot)']
+        params: ['-c', `uci -q show uspot.${sectionName} || (uci set uspot.${sectionName}=uspot && uci set uspot.${sectionName}.enabled=1 && uci set uspot.${sectionName}.interface=${sectionName} && uci set uspot.${sectionName}.setname=uspot_${sectionName} && uci commit uspot)`]
       });
 
-      // Build UCI commands
+      // Build UCI commands using named section
       const radiusHost = body.radiusServer.split(':')[0];
       const radiusPort = body.radiusServer.split(':')[1] || '1812';
       
       let uciCommands = [
-        `uci set uspot.@instance[0].portal_url='${body.uamServerUrl}'`,
-        `uci set uspot.@instance[0].radius_auth_server='${radiusHost}'`,
-        `uci set uspot.@instance[0].radius_auth_port='${radiusPort}'`,
-        `uci set uspot.@instance[0].radius_secret='${body.radiusSecret}'`
+        // Set auth_mode to 'uam' for RADIUS UAM authentication
+        `uci set uspot.${sectionName}.auth_mode='uam'`,
+        `uci set uspot.${sectionName}.uam_port='3990'`,
+        `uci set uspot.${sectionName}.uam_url='${body.uamServerUrl}'`,
+        `uci set uspot.${sectionName}.radius_auth_server='${radiusHost}'`,
+        `uci set uspot.${sectionName}.radius_auth_port='${radiusPort}'`,
+        `uci set uspot.${sectionName}.radius_secret='${body.radiusSecret}'`
       ];
 
       if (body.radiusServer2) {
         const acctHost = body.radiusServer2.split(':')[0];
         const acctPort = body.radiusServer2.split(':')[1] || '1813';
-        uciCommands.push(`uci set uspot.@instance[0].radius_acct_server='${acctHost}'`);
-        uciCommands.push(`uci set uspot.@instance[0].radius_acct_port='${acctPort}'`);
+        uciCommands.push(`uci set uspot.${sectionName}.radius_acct_server='${acctHost}'`);
+        uciCommands.push(`uci set uspot.${sectionName}.radius_acct_port='${acctPort}'`);
       }
 
       uciCommands.push('uci commit uspot');
@@ -346,23 +350,27 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
       const values = uspotConfig?.values || uspotConfig || {};
       
-      // Find the first section of type 'instance'
-      // UCI dump returns sections by ID (e.g. cfg123456), not by @type[index]
-      const instanceKey = Object.keys(values).find(key => 
-        values[key]['.type'] === 'instance' || 
-        values[key]['type'] === 'instance' ||
-        key === '@instance[0]'
+      // Find uspot sections (named sections of type 'uspot')
+      // UCI dump returns sections by name (e.g. 'hotspot') or ID (e.g. cfg123456)
+      const sectionKey = Object.keys(values).find(key => 
+        values[key]['.type'] === 'uspot' || 
+        key === 'hotspot' ||
+        key === 'captive'
       );
       
-      const instance = instanceKey ? values[instanceKey] : {};
+      const section = sectionKey ? values[sectionKey] : {};
 
       return {
         routerId: id,
         config: {
-          portalUrl: instance.portal_url || instance['portal_url'],
-          radiusServer: instance.radius_auth_server || instance['radius_auth_server'],
-          radiusServer2: instance.radius_acct_server || instance['radius_acct_server'],
-          radiusSecret: instance.radius_secret || instance['radius_secret'] ? '***' : undefined
+          authMode: section.auth_mode || section['auth_mode'],
+          uamUrl: section.uam_url || section['uam_url'],
+          uamPort: section.uam_port || section['uam_port'],
+          radiusServer: section.radius_auth_server || section['radius_auth_server'],
+          radiusServer2: section.radius_acct_server || section['radius_acct_server'],
+          radiusSecret: section.radius_secret || section['radius_secret'] ? '***' : undefined,
+          interface: section.interface || section['interface'],
+          setname: section.setname || section['setname']
         }
       };
     } catch (error: unknown) {
