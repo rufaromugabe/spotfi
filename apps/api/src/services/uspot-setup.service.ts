@@ -345,11 +345,14 @@ export class UspotSetupService {
 
   /**
    * Prepare Repositories
-   * Handles "HTTPS not supported" bootstrap problem
+   * Handles "HTTPS not supported" bootstrap problem and architecture mismatch
    */
   private async prepareRepositories(routerId: string): Promise<SetupStepResult> {
     try {
-      // Check if ca-certificates is installed
+      // 1. Verify and fix architecture in distfeeds.conf
+      const archFixResult = await this.verifyAndFixArchitecture(routerId);
+      
+      // 2. Check if ca-certificates is installed
       let hasSsl = false;
       try {
         await this.exec(routerId, 'opkg list-installed | grep ca-certificates');
@@ -360,12 +363,89 @@ export class UspotSetupService {
         // Downgrade repos to HTTP to bootstrap installation
         // This fixes SSL certificate issues on fresh installs
         await this.exec(routerId, 'sed -i "s/https:/http:/g" /etc/opkg/distfeeds.conf');
-        return { step: 'repo_check', status: 'warning', message: 'Downgraded repos to HTTP to bootstrap SSL support' };
+        
+        // Force opkg update after changing repos
+        try {
+          await this.exec(routerId, 'opkg update', 60000);
+        } catch {}
+        
+        const msg = archFixResult 
+          ? `${archFixResult}. Downgraded repos to HTTP.`
+          : 'Downgraded repos to HTTP to bootstrap SSL support';
+        return { step: 'repo_check', status: 'warning', message: msg };
+      }
+
+      if (archFixResult) {
+        return { step: 'repo_check', status: 'warning', message: archFixResult };
       }
 
       return { step: 'repo_check', status: 'success' };
     } catch (e: any) {
       return { step: 'repo_check', status: 'warning', message: `Repo check skipped: ${e.message}` };
+    }
+  }
+
+  /**
+   * Verify architecture in distfeeds.conf matches actual router architecture
+   * This fixes "cannot find dependency libc" errors caused by architecture mismatch
+   */
+  private async verifyAndFixArchitecture(routerId: string): Promise<string | null> {
+    try {
+      // Get actual router architecture
+      const arch = (await this.exec(routerId, 'opkg print-architecture | grep -v all | head -1 | awk \'{print $2}\'')).trim();
+      if (!arch) {
+        this.logger.warn('[Setup] Could not determine router architecture');
+        return null;
+      }
+
+      // Get OpenWrt version info for proper repo URLs
+      let version = '';
+      let release = '';
+      try {
+        const osRelease = await this.exec(routerId, 'cat /etc/openwrt_release');
+        const versionMatch = osRelease.match(/DISTRIB_RELEASE='([^']+)'/);
+        const targetMatch = osRelease.match(/DISTRIB_TARGET='([^']+)'/);
+        if (versionMatch) version = versionMatch[1];
+        if (targetMatch) release = targetMatch[1];
+      } catch {}
+
+      this.logger.info(`[Setup] Router arch: ${arch}, version: ${version}, target: ${release}`);
+
+      // Read current distfeeds
+      const distfeeds = await this.exec(routerId, 'cat /etc/opkg/distfeeds.conf');
+      
+      // Check if distfeeds contains the wrong architecture or is corrupted
+      const hasArchMismatch = !distfeeds.includes(arch) && !distfeeds.includes('SNAPSHOT');
+      
+      if (hasArchMismatch && release && version) {
+        this.logger.warn(`[Setup] Architecture mismatch detected, rebuilding distfeeds.conf`);
+        
+        // Determine base URL based on version
+        const isSnapshot = version.includes('SNAPSHOT') || version.includes('snapshot');
+        const baseUrl = isSnapshot 
+          ? 'http://downloads.openwrt.org/snapshots'
+          : `http://downloads.openwrt.org/releases/${version}`;
+        
+        // Build correct distfeeds
+        const newFeeds = [
+          `src/gz openwrt_core ${baseUrl}/targets/${release}/packages`,
+          `src/gz openwrt_base ${baseUrl}/packages/${arch}/base`,
+          `src/gz openwrt_packages ${baseUrl}/packages/${arch}/packages`,
+          `src/gz openwrt_luci ${baseUrl}/packages/${arch}/luci`,
+          `src/gz openwrt_routing ${baseUrl}/packages/${arch}/routing`,
+          `src/gz openwrt_telephony ${baseUrl}/packages/${arch}/telephony`
+        ].join('\n');
+        
+        // Write new distfeeds
+        await this.exec(routerId, `cat > /etc/opkg/distfeeds.conf << 'EOF'\n${newFeeds}\nEOF`);
+        
+        return `Fixed architecture mismatch (${arch})`;
+      }
+
+      return null;
+    } catch (e: any) {
+      this.logger.warn(`[Setup] Architecture verification failed: ${e.message}`);
+      return null;
     }
   }
 
@@ -393,13 +473,18 @@ export class UspotSetupService {
 
   private async updatePackages(routerId: string): Promise<SetupStepResult> {
     try {
+      // Clear opkg lists cache first to ensure fresh download
+      try {
+        await this.exec(routerId, 'rm -rf /var/opkg-lists/*', 30000);
+      } catch {}
+
       // Try update
-      await this.exec(routerId, 'opkg update');
+      await this.exec(routerId, 'opkg update', 90000);
       return { step: 'package_update', status: 'success' };
     } catch (e: any) {
       // If update fails, try one more time with no-check-certificate
       try {
-        await this.exec(routerId, 'opkg update --no-check-certificate');
+        await this.exec(routerId, 'opkg update --no-check-certificate', 90000);
         return { step: 'package_update', status: 'warning', message: 'Update succeeded with --no-check-certificate' };
       } catch (e2: any) {
         const msg = this.parseOpkgError(e.message || e2.message);
@@ -819,7 +904,12 @@ export class UspotSetupService {
     if (msg.includes('No space')) return 'Disk full';
     if (msg.includes('lock')) return 'Package manager locked';
     if (msg.includes('Cannot find package')) return 'Package not found in repositories';
-    return msg.substring(0, 100);
+    if (msg.includes('cannot find dependency libc') || msg.includes('pkg_hash_check_unresolved')) {
+      return 'Architecture mismatch - package feeds do not match router. Run opkg update.';
+    }
+    if (msg.includes('Signature check failed')) return 'Package signature verification failed';
+    if (msg.includes('satisfy_dependencies')) return 'Dependency resolution failed';
+    return msg.substring(0, 150);
   }
 
   private sleep(ms: number): Promise<void> {
