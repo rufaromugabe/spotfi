@@ -51,8 +51,6 @@ interface UciConfig {
  */
 export class UspotSetupService {
   // Core required packages - only packages that MUST be installed
-  // Note: iptables is handled separately via PACKAGE_ALTERNATIVES since different
-  // OpenWRT versions use different iptables implementations
   private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter'];
   
   // Packages with alternatives - if ANY alternative is installed, requirement is satisfied
@@ -60,7 +58,12 @@ export class UspotSetupService {
   private readonly PACKAGE_ALTERNATIVES: Record<string, string[]> = {
     'ca-certificates': ['ca-certificates', 'ca-bundle'],
     'openssl-util': ['openssl-util', 'px5g-mbedtls', 'px5g-standalone'],
-    'iptables': ['iptables', 'iptables-nft', 'iptables-zz-legacy', 'iptables-legacy'],
+  };
+  
+  // Packages that are usually built-in to OpenWRT - only warn if missing, don't fail
+  // These should NOT be in REQUIRED_PACKAGES or PACKAGE_ALTERNATIVES
+  private readonly BUILTIN_PACKAGES: Record<string, string[]> = {
+    'iptables': ['/usr/sbin/iptables', '/usr/sbin/xtables-nft-multi', '/usr/sbin/xtables-legacy-multi'],
   };
   
   // Binary paths to check if packages are installed (even if opkg doesn't know)
@@ -68,7 +71,6 @@ export class UspotSetupService {
     'uspot': ['/usr/bin/uspot', '/usr/sbin/uspot'],
     'uhttpd': ['/usr/sbin/uhttpd'],
     'jsonfilter': ['/usr/bin/jsonfilter'],
-    'iptables': ['/usr/sbin/iptables', '/usr/sbin/xtables-nft-multi'],
   };
   
   private readonly RADIUS_PORTS = [1812, 1813, 3799];
@@ -724,6 +726,24 @@ done > /usr/lib/opkg/status
       // First, check which packages are already installed
       const installed = await this.getInstalledPackages(routerId);
       
+      // Check built-in packages first (like iptables) - these don't need to be installed
+      const builtinStatus: { pkg: string; status: 'ok' | 'missing' }[] = [];
+      for (const [pkg, binaries] of Object.entries(this.BUILTIN_PACKAGES)) {
+        let found = false;
+        for (const bin of binaries) {
+          try {
+            await this.exec(routerId, `test -x ${bin}`);
+            found = true;
+            this.logger.info(`[Setup] Built-in package ${pkg} found at ${bin}`);
+            break;
+          } catch {}
+        }
+        builtinStatus.push({ pkg, status: found ? 'ok' : 'missing' });
+        if (!found) {
+          this.logger.warn(`[Setup] Built-in package ${pkg} not found - router may be missing required functionality`);
+        }
+      }
+      
       // Build complete list of requirements (core + alternatives)
       const allRequirements = [
         ...this.REQUIRED_PACKAGES,
@@ -754,11 +774,12 @@ done > /usr/lib/opkg/status
       const uniqueToInstall = [...new Set(toInstall)];
 
       if (uniqueToInstall.length === 0) {
+        const builtinOk = builtinStatus.filter(b => b.status === 'ok').map(b => b.pkg);
         return { 
           step: 'package_install', 
           status: 'success', 
           message: `All ${alreadySatisfied.length} required packages already installed`,
-          details: { alreadySatisfied, installed: [] }
+          details: { alreadySatisfied, installed: [], builtIn: builtinOk }
         };
       }
 
@@ -856,27 +877,43 @@ done > /usr/lib/opkg/status
       const successCount = results.filter(r => r.status === 'success').length;
       const skippedCount = results.filter(r => r.status === 'skipped').length;
       const errorCount = results.filter(r => r.status === 'error').length;
+      const builtinOk = builtinStatus.filter(b => b.status === 'ok').map(b => b.pkg);
 
       if (criticalError) {
         return { 
           step: 'package_install', 
           status: 'error', 
           message: `Critical package installation failed`,
-          details: results
+          details: { installed: results, builtIn: builtinOk }
         };
       } else if (hasError && successCount === 0 && skippedCount === 0) {
+        // Check if all we tried to install were alternatives that aren't critical
+        const onlyNonCriticalErrors = results.every(r => 
+          r.status !== 'error' || 
+          ['ca-certificates', 'openssl-util'].includes(r.pkg)
+        );
+        
+        if (onlyNonCriticalErrors && builtinOk.length > 0) {
+          return { 
+            step: 'package_install', 
+            status: 'warning', 
+            message: `Optional packages unavailable, built-in packages OK: ${builtinOk.join(', ')}`,
+            details: { installed: results, alreadySatisfied, builtIn: builtinOk }
+          };
+        }
+        
         return { 
           step: 'package_install', 
           status: 'error', 
           message: `All package installations failed`,
-          details: results
+          details: { installed: results, builtIn: builtinOk }
         };
       } else if (hasError) {
         return { 
           step: 'package_install', 
           status: 'warning', 
           message: `Installed ${successCount}, skipped ${skippedCount}, failed ${errorCount}`,
-          details: results
+          details: { installed: results, builtIn: builtinOk }
         };
       }
 
@@ -884,7 +921,7 @@ done > /usr/lib/opkg/status
         step: 'package_install', 
         status: 'success',
         message: `Installed ${successCount} packages, ${skippedCount} skipped (${alreadySatisfied.length} already satisfied)`,
-        details: { installed: results, alreadySatisfied }
+        details: { installed: results, alreadySatisfied, builtIn: builtinOk }
       };
     } catch (e: any) {
       return { step: 'package_install', status: 'error', message: this.parseOpkgError(e.message) };
