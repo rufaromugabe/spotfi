@@ -16,12 +16,14 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 ## 🎯 Recommended Hardware
 
 ### Budget Option: **GL.iNet GL-MT300N-V2** ($20)
+
 - CPU: 580MHz MediaTek
 - RAM: 128MB
 - OpenWRT: ✅ Pre-installed
 - Perfect for: Low-traffic locations
 
 ### Recommended: **GL.iNet GL-AXT1800 (Slate AX)** ($90)
+
 - CPU: 1.0GHz Quad-core
 - RAM: 512MB
 - WiFi 6, Gigabit Ethernet
@@ -29,6 +31,7 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 - Perfect for: Most deployments
 
 ### High Performance: **Linksys WRT3200ACM** ($150)
+
 - CPU: 1.8GHz Dual-core
 - RAM: 512MB
 - Very powerful for high-traffic sites
@@ -40,6 +43,7 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 ### Step 1: Create Router in SpotFi Dashboard
 
 **Option A: Create via Dashboard (Recommended)**
+
 1. Log in to SpotFi dashboard as Admin
 2. Navigate to **Routers** → **Add Router**
 3. Fill in router details:
@@ -51,6 +55,7 @@ Complete guide to configure OpenWRT routers with SpotFi's real-time accounting s
 5. **Copy the Router Token** - you'll need this for Step 2
 
 **Option B: Create via API:**
+
 ```bash
 curl -X POST http://192.168.56.1:8080/api/routers \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
@@ -64,6 +69,7 @@ curl -X POST http://192.168.56.1:8080/api/routers \
 ```
 
 **Example Response:**
+
 ```json
 {
   "router": {
@@ -91,6 +97,7 @@ ssh root@192.168.1.1
 **📦 Download Setup Script**
 
 **For Public Repository:**
+
 ```bash
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
 chmod +x /tmp/openwrt-setup-cloud.sh
@@ -101,11 +108,13 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 > **Note:** BusyBox `wget` on OpenWRT doesn't support `--header`. Use `curl` instead, or install full `wget`.
 
 Create a GitHub Personal Access Token:
+
 1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
 2. Generate new token with `repo` scope
 3. Copy the token (starts with `ghp_`)
 
 **Option 1: Using curl (Recommended - works with BusyBox):**
+
 ```bash
 # Store token securely
 echo "ghp_your_token_here" > /etc/github_token
@@ -120,6 +129,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
 **Option 2: Install full wget (if curl not available):**
+
 ```bash
 # Install full wget package
 opkg update
@@ -137,6 +147,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
 **Option 3: Manual download (if both fail):**
+
 1. Download the script on your computer from: `https://github.com/rufaromugabe/spotfi/blob/main/scripts/openwrt-setup-cloud.sh`
 2. Copy to router via SCP:
    ```bash
@@ -166,12 +177,14 @@ sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_you
 ```
 
 **Example:**
+
 ```bash
 # Using token from Step 1
 sh /tmp/openwrt-setup-cloud.sh test-router-token-123
 ```
 
 **What the script does:**
+
 - ✅ Detects router architecture automatically
 - ✅ Downloads and installs SpotFi bridge binary
 - ✅ Auto-detects MAC address
@@ -181,6 +194,7 @@ sh /tmp/openwrt-setup-cloud.sh test-router-token-123
 **Environment Variables Created:**
 
 The script creates `/etc/spotfi.env` with:
+
 ```bash
 SPOTFI_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
 SPOTFI_WS_URL="wss://api.spotfi.com/ws"
@@ -196,12 +210,14 @@ SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 If you need captive portal functionality, configure uSpot remotely from the SpotFi dashboard:
 
 **Option A: Via Dashboard (Recommended)**
+
 1. Wait for router to appear as **ONLINE** in dashboard (30-60 seconds)
 2. Navigate to router settings
 3. Click **Setup uSpot** or **Configure Captive Portal**
 4. The cloud will remotely install packages and configure everything
 
 **Option B: Via API:**
+
 ```bash
 # Setup uSpot remotely (installs packages, configures network, firewall, portal)
 curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
@@ -219,6 +235,7 @@ curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
 ```
 
 **What happens:**
+
 - ✅ Installs uSpot packages remotely
 - ✅ Configures network interfaces (LAN + hotspot)
 - ✅ Sets up firewall rules
@@ -227,7 +244,6 @@ curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
 
 **No manual configuration needed!** Everything is done from the cloud.
 
-
 ---
 
 ### Step 5: Verify Setup
@@ -235,12 +251,13 @@ curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
 After running the script, verify everything is working:
 
 **On Router:**
+
 ```bash
 # Check SpotFi bridge is running
 ps | grep spotfi-bridge
 /etc/init.d/spotfi-bridge status
 
-# Restart the bridge 
+# Restart the bridge
 /etc/init.d/spotfi-bridge restart
 
 # Check service logs
@@ -251,11 +268,13 @@ cat /etc/spotfi.env
 ```
 
 **In SpotFi Dashboard:**
+
 - Router should show as **ONLINE** within 30-60 seconds
 - You can now configure router remotely from dashboard
 - If uSpot was configured, check captive portal functionality
 
 **Test Remote Configuration:**
+
 ```bash
 # From dashboard or API, you can now:
 # - View router metrics
@@ -274,6 +293,7 @@ If you prefer to configure everything manually instead of using the automated sc
 ### Manual Configuration Steps
 
 The automated scripts (`openwrt-setup-cloud.sh` and `openwrt-setup-uspot.sh`) handle:
+
 - ✅ Package installation
 - ✅ Uspot configuration (if using Uspot script)
 - ✅ Network interface setup
@@ -293,13 +313,14 @@ For manual configuration details, see the script source code on GitHub or refer 
 You can customize the login page by configuring uspot to use your own portal URL:
 
 ```bash
-# Configure uspot to use custom portal
-uci set uspot.@instance[0].portal_url="https://your-portal.com/portal"
+# Configure uspot to use custom portal (using named section 'hotspot')
+uci set uspot.hotspot.auth_mode='uam'
+uci set uspot.hotspot.uam_url="https://your-portal.com/portal"
 uci commit uspot
 /etc/init.d/uspot restart
 ```
 
-The portal form must submit to the router's UAM endpoint: `http://<uamip>:<uamport>/login`
+The portal form must submit to the router's UAM endpoint: `http://<uamip>:<uamport>/logon`
 
 ---
 
@@ -342,6 +363,7 @@ ubus call uspot client_remove '{"address": "AA:BB:CC:DD:EE:FF"}'
 ### Problem: "wget: unrecognized option: header"
 
 **Error:**
+
 ```
 wget: unrecognized option: header=Authorization: token ...
 ```
@@ -352,6 +374,7 @@ BusyBox `wget` (default on OpenWRT) doesn't support the `--header` option. This 
 **Solutions:**
 
 **Solution 1: Use curl (Recommended)**
+
 ```bash
 # Check if curl is available
 which curl
@@ -365,6 +388,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
 **Solution 2: Install full wget**
+
 ```bash
 # Install full wget package (replaces BusyBox wget)
 opkg update
@@ -379,6 +403,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
 **Solution 3: Install curl (if not available)**
+
 ```bash
 # Install curl package
 opkg update
@@ -389,6 +414,7 @@ opkg install curl ca-bundle
 
 **Solution 4: Manual download**
 If you can't install packages, download the script on your computer and copy it:
+
 ```bash
 # On your computer, download the script
 # Then copy to router via SCP:
@@ -403,6 +429,7 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 ### Problem: "Router shows OFFLINE"
 
 **Check:**
+
 ```bash
 # Check if bridge is running
 ps | grep spotfi-bridge
@@ -421,6 +448,7 @@ ping api.spotfi.com
 ```
 
 **Fix:**
+
 ```bash
 # Restart bridge
 /etc/init.d/spotfi-bridge restart
@@ -434,6 +462,7 @@ cat /etc/spotfi.env
 ### Problem: "Error starting x session: Exception occurred in preexec_fn"
 
 **Error Message:**
+
 ```
 Error starting x session: Exception occurred in preexec_fn.
 File "/root/spotfi-bridge/bridge.py", line 260, in handle_x_start
@@ -484,6 +513,7 @@ logread | grep -i x
 ### Problem: "Users can't authenticate"
 
 **Check:**
+
 ```bash
 # Check uspot status
 /etc/init.d/uspot status
@@ -499,6 +529,7 @@ echo "User-Name=testuser,User-Password=testpass" | radclient 192.168.42.181:1812
 ```
 
 **Fix:**
+
 ```bash
 # Verify RADIUS settings in uspot config
 uci show uspot | grep radius
@@ -512,6 +543,7 @@ uci show uspot | grep radius
 ### Problem: "No internet after login"
 
 **Check:**
+
 ```bash
 # Check firewall rules
 iptables -L -n -v
@@ -524,6 +556,7 @@ ip route show
 ```
 
 **Fix:**
+
 ```bash
 # Restart network
 /etc/init.d/network restart
@@ -540,6 +573,7 @@ ip route show
 ### Problem: "High CPU usage"
 
 **Check:**
+
 ```bash
 # Check processes
 top
@@ -552,10 +586,11 @@ ubus call uspot client_list
 ```
 
 **Fix:**
+
 ```bash
 # Reduce logging
-# In uspot config, adjust debug level:
-uci set uspot.@instance[0].debug='0'
+# In uspot config, adjust debug level (using named section 'hotspot'):
+uci set uspot.hotspot.debug='0'
 uci commit uspot
 /etc/init.d/uspot restart
 ```
@@ -685,20 +720,22 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
 ### Step 1: Download OpenWRT Image
 
 1. Download OpenWRT x86/64 image:
+
    ```bash
    # Download from https://downloads.openwrt.org/releases/
    # For example, OpenWRT 23.05.5:
    wget https://downloads.openwrt.org/releases/23.05.5/targets/x86/64/openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img.gz
-   
+
    # Extract the image
    gunzip openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img.gz
    ```
 
 2. Convert to VDI (VirtualBox format):
+
    ```bash
    # On Linux/Mac
    VBoxManage convertfromraw openwrt-23.05.5-x86-64-generic-ext4-combined-efi.img openwrt.vdi --format VDI
-   
+
    # On Windows (use VBoxManage from VirtualBox installation directory)
    "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" convertfromraw openwrt.img openwrt.vdi --format VDI
    ```
@@ -706,6 +743,7 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
 ### Step 2: Create VirtualBox VM
 
 1. **Create New VM:**
+
    - Open VirtualBox → New
    - Name: `OpenWRT-Test`
    - Type: Linux
@@ -714,20 +752,23 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
    - Hard disk: Use existing → Select `openwrt.vdi`
 
 2. **Configure Network:**
-   
+
    **Adapter 1 (WAN):**
+
    - Enable Network Adapter
    - Attached to: Bridged Adapter
    - Name: Your host network adapter (e.g., Ethernet or Wi-Fi)
    - This will get an IP from your router (for internet access)
 
    **Adapter 2 (LAN/Hotspot):**
+
    - Enable Network Adapter
    - Attached to: Internal Network
    - Name: `intnet` (create if needed)
    - This will be used for the hotspot network
 
    **Adapter 3 (Optional - for management):**
+
    - Enable Network Adapter
    - Attached to: Host-only Adapter
    - Name: `VirtualBox Host-Only Ethernet Adapter`
@@ -736,16 +777,19 @@ This section covers how to set up and test SpotFi scripts in a VirtualBox VM.
 ### Step 3: Start VM and Get IP Address
 
 1. **Start the VM:**
+
    - Power on the VM
    - Wait for OpenWRT to boot
 
 2. **Get IP address:**
+
    ```bash
    # In the VM console, run:
    ip addr show
    ```
 
    You'll see interfaces like:
+
    - `eth0` - WAN (bridged adapter - gets IP from your router)
    - `eth1` - LAN (internal network)
    - `eth2` - Host-only (management)
@@ -776,29 +820,31 @@ passwd
 ### Step 5: Test Cloud Script
 
 1. **Download and run cloud script:**
+
    ```bash
    # x into VM
    x root@192.168.56.10
-   
+
    # Download script
    wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
    chmod +x /tmp/openwrt-setup-cloud.sh
-   
+
    # Run script with your router token
    sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
    ```
 
 2. **Verify it works:**
+
    ```bash
    # Check SpotFi bridge is running
    ps | grep spotfi-bridge
-   
+
    # Check service status
    /etc/init.d/spotfi-bridge status
-   
+
    # View logs
    logread | grep spotfi-bridge
-   
+
    # Check configuration
    cat /etc/spotfi.env
    ```
@@ -812,17 +858,19 @@ passwd
 **Note:** uSpot setup is now done remotely from the cloud, not via script.
 
 1. **Via Dashboard:**
+
    - Wait for router to show ONLINE
    - Navigate to router settings
    - Click **Setup uSpot** or **Configure Captive Portal**
    - Cloud will remotely install and configure everything
 
 2. **Via API:**
+
    ```bash
    # Setup uSpot remotely
    curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-   
+
    # Configure UAM/RADIUS
    curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
@@ -835,13 +883,14 @@ passwd
    ```
 
 3. **Verify uSpot:**
+
    ```bash
    # Check uspot status
    /etc/init.d/uspot status
-   
+
    # Check active sessions
    ubus call uspot client_list
-   
+
    # View logs
    logread | grep uspot
    ```
@@ -869,21 +918,25 @@ ip addr show
 ### Common Issues and Solutions
 
 **Issue: Can't x into VM**
+
 - **Solution:** Use host-only adapter, not bridged
 - Check VM network adapter is enabled
 - Verify IP: `ip addr show` in VM
 
 **Issue: No internet in VM**
+
 - **Solution:** Check WAN adapter (eth0) is bridged to your network
 - Verify it got an IP: `ip addr show eth0`
 - Test: `ping google.com`
 
 **Issue: WiFi configuration skipped**
+
 - **Solution:** This is normal! VMs don't have WiFi hardware
 - Uspot will use LAN bridge instead
 - Check: `ip addr show br-lan`
 
 **Issue: Can't reach SpotFi server**
+
 - **Solution:** Verify VM has internet access
 - Check server IP/hostname is reachable: `ping api.spotfi.com`
 - For local testing, use your host's IP: `192.168.56.1` (host-only network)
@@ -891,14 +944,17 @@ ip addr show
 ### Testing Tips
 
 1. **Use host-only network for management:**
+
    - Easier x access from host
    - Stable IP address
 
 2. **Use bridged adapter for WAN:**
+
    - Allows internet access
    - Can test real server connectivity
 
 3. **Internal network for hotspot:**
+
    - Isolated network for captive portal testing
    - Connect test clients here
 
@@ -942,4 +998,3 @@ Host Machine
 **Your OpenWRT router is now integrated with SpotFi!** 🎉
 
 Users can connect to your hotspot, and sessions will appear in your dashboard instantly with real-time accounting data.
-

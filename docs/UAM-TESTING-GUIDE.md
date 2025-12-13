@@ -17,6 +17,7 @@ npx prisma db seed
 ```
 
 This creates:
+
 - Admin user: `admin@spotfi.com` / `admin123`
 - Host user: `host@spotfi.com` / `host123`
 - Test router with token: `test-router-token-123`
@@ -64,6 +65,7 @@ export ROUTER_ID="router-id-from-response"
 ```
 
 Or use existing router from seed:
+
 ```bash
 # Get router ID
 curl -X GET http://localhost:8080/api/routers \
@@ -89,6 +91,7 @@ curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
 ```
 
 **For production:**
+
 ```bash
 curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
   -H "Content-Type: application/json" \
@@ -107,17 +110,26 @@ curl -X POST http://localhost:8080/api/routers/$ROUTER_ID/uam/configure \
 If router is not connected via WebSocket bridge, configure manually:
 
 ### OpenWRT with uspot:
+
 ```bash
 ssh root@router-ip
 
-uci set uspot.@instance[0].portal_url="http://localhost:8080/uam/login"
-uci set uspot.@instance[0].radius_auth_server="127.0.0.1"
-uci set uspot.@instance[0].radius_secret="testing123"
+# uspot uses named sections (e.g., 'hotspot')
+uci set uspot.hotspot=uspot
+uci set uspot.hotspot.enabled='1'
+uci set uspot.hotspot.interface='hotspot'
+uci set uspot.hotspot.setname='uspot_hotspot'
+uci set uspot.hotspot.auth_mode='uam'
+uci set uspot.hotspot.uam_port='3990'
+uci set uspot.hotspot.uam_url="http://localhost:8080/uam/login"
+uci set uspot.hotspot.radius_auth_server="127.0.0.1"
+uci set uspot.hotspot.radius_secret="testing123"
 uci commit uspot
 /etc/init.d/uspot restart
 ```
 
 ### MikroTik:
+
 ```
 /ip hotspot profile set [find name=default] hotspot-address=10.1.30.1
 /ip hotspot profile set [find name=default] http-proxy=10.1.30.1:80
@@ -267,11 +279,13 @@ API_URL=http://localhost:8080
 ### Issue: "Authentication Failed"
 
 **Check:**
+
 - RADIUS server is running and accessible
 - User exists in RADIUS database
 - RADIUS secret matches
 
 **Fix:**
+
 ```bash
 # Test RADIUS directly
 echo "User-Name=testuser,User-Password=testpass" | \
@@ -285,10 +299,12 @@ mysql -u root -p radius -e "SELECT * FROM radcheck WHERE username='testuser';"
 ### Issue: "Router Not Found"
 
 **Check:**
+
 - Router ID is correct
 - Router is registered in database
 
 **Fix:**
+
 ```bash
 # List all routers
 curl -X GET "http://localhost:8080/api/routers" \
@@ -343,4 +359,3 @@ Use these credentials for testing:
 3. Test CoA functionality (if router supports it)
 4. Test session management
 5. Test quota limits (if configured)
-

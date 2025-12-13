@@ -124,16 +124,17 @@ echo "User-Name=testuser,User-Password=testpass" | \
 
 ## Test Users (from seed.ts)
 
-| Username | Password | Session Timeout |
-|----------|----------|-----------------|
-| testuser | testpass | 1 hour |
-| demo | demo123 | 30 minutes |
-| john.doe | password123 | 2 hours |
-| jane.smith | secure456 | 4 hours |
+| Username   | Password    | Session Timeout |
+| ---------- | ----------- | --------------- |
+| testuser   | testpass    | 1 hour          |
+| demo       | demo123     | 30 minutes      |
+| john.doe   | password123 | 2 hours         |
+| jane.smith | secure456   | 4 hours         |
 
 ## Monitor Logs
 
 ### FreeRADIUS Logs
+
 ```bash
 # Watch FreeRADIUS logs
 docker logs -f spotfi-freeradius
@@ -144,6 +145,7 @@ docker logs -f spotfi-freeradius
 ```
 
 ### API Logs
+
 ```bash
 # Watch API logs
 docker logs -f spotfi-api
@@ -167,17 +169,26 @@ If router is online and connected:
 ### Option 2: Manual Router Configuration
 
 **OpenWRT with uspot:**
+
 ```bash
 ssh root@router-ip
 
-uci set uspot.@instance[0].portal_url="http://localhost:8080/uam/login"
-uci set uspot.@instance[0].radius_auth_server="127.0.0.1"
-uci set uspot.@instance[0].radius_secret="testing123"
+# uspot uses named sections (e.g., 'hotspot')
+uci set uspot.hotspot=uspot
+uci set uspot.hotspot.enabled='1'
+uci set uspot.hotspot.interface='hotspot'
+uci set uspot.hotspot.setname='uspot_hotspot'
+uci set uspot.hotspot.auth_mode='uam'
+uci set uspot.hotspot.uam_port='3990'
+uci set uspot.hotspot.uam_url="http://localhost:8080/uam/login"
+uci set uspot.hotspot.radius_auth_server="127.0.0.1"
+uci set uspot.hotspot.radius_secret="testing123"
 uci commit uspot
 /etc/init.d/uspot restart
 ```
 
 **MikroTik:**
+
 ```
 /ip hotspot profile set [find name=default] hotspot-address=10.1.30.1
 /ip hotspot set [find] use-radius=yes
@@ -202,6 +213,7 @@ API_URL=http://localhost:8080
 ### Issue: "Authentication Failed"
 
 **Check:**
+
 ```bash
 # Test RADIUS directly
 echo "User-Name=testuser,User-Password=testpass" | \
@@ -217,6 +229,7 @@ docker logs spotfi-freeradius | tail -20
 ### Issue: "Router Not Found"
 
 **Check:**
+
 ```bash
 # List all routers
 TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \

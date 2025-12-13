@@ -23,10 +23,18 @@ UAM Allowed: api.spotfi.com,8.8.8.8,8.8.4.4
 ```
 
 **OpenWRT with uspot:**
+
 ```bash
-uci set uspot.@instance[0].portal_url="https://api.spotfi.com/uam/login"
-uci set uspot.@instance[0].radius_auth_server="radius.hotspotsystem.com"
-uci set uspot.@instance[0].radius_secret="hotsys123"
+# uspot uses named sections (e.g., 'hotspot' or 'captive')
+uci set uspot.hotspot=uspot
+uci set uspot.hotspot.enabled='1'
+uci set uspot.hotspot.interface='hotspot'
+uci set uspot.hotspot.setname='uspot_hotspot'
+uci set uspot.hotspot.auth_mode='uam'
+uci set uspot.hotspot.uam_port='3990'
+uci set uspot.hotspot.uam_url="https://api.spotfi.com/uam/login"
+uci set uspot.hotspot.radius_auth_server="radius.hotspotsystem.com"
+uci set uspot.hotspot.radius_secret="hotsys123"
 uci commit uspot
 /etc/init.d/uspot restart
 ```
