@@ -54,7 +54,8 @@ const setupJobs = new Map<string, SetupJob>();
  */
 export class UspotSetupService {
   // Required packages for modern OpenWRT with uspot
-  private readonly REQUIRED_PACKAGES = ['uspot', 'uhttpd', 'jsonfilter'];
+  // uspot-www contains the web templates (click.ut, header.ut, etc.)
+  private readonly REQUIRED_PACKAGES = ['uspot', 'uspot-www', 'uhttpd', 'jsonfilter'];
   
   // Optional packages - try to install but don't fail if unavailable
   private readonly OPTIONAL_PACKAGES: Record<string, string[]> = {
