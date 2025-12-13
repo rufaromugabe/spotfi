@@ -199,19 +199,38 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       tags: ['router-management'],
       summary: 'Configure UAM server and RADIUS settings',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Configure UAM server URL, UAM secret, and RADIUS server settings',
+      description: 'Admin only - Configures uspot for UAM mode with RADIUS authentication. Sets auth_mode=uam, configures uam_server, auth_server, auth_secret, nasid, and nasmac.',
       body: {
         type: 'object',
         required: ['uamServerUrl', 'radiusServer', 'radiusSecret'],
         properties: {
-          uamServerUrl: { type: 'string', description: 'Full UAM server URL (e.g., https://api.spotfi.com/uam/login)' },
-          radiusServer: { type: 'string', description: 'RADIUS server IP or hostname' },
-          radiusSecret: { type: 'string', description: 'RADIUS secret' },
-          radiusServer2: { type: 'string', description: 'Secondary RADIUS server (optional)' },
-          restartUspot: { type: 'boolean', default: true, description: 'Restart uspot service after configuration' },
+          uamServerUrl: { 
+            type: 'string', 
+            description: 'UAM portal URL (sets uspot uam_server option). Example: https://api.spotfi.com/uam/login' 
+          },
+          radiusServer: { 
+            type: 'string', 
+            description: 'RADIUS authentication server IP:port (sets uspot auth_server/auth_port). Example: 192.168.1.100:1812' 
+          },
+          radiusSecret: { 
+            type: 'string', 
+            description: 'RADIUS shared secret (sets uspot auth_secret option)' 
+          },
+          radiusServer2: { 
+            type: 'string', 
+            description: 'RADIUS accounting server IP:port (sets uspot acct_server/acct_port). Example: 192.168.1.100:1813' 
+          },
+          restartUspot: { type: 'boolean', default: true, description: 'Restart uspot and uhttpd services after configuration' },
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
           ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
           password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
+        },
+        example: {
+          uamServerUrl: 'https://api.spotfi.com/uam/login',
+          radiusServer: '192.168.1.100:1812',
+          radiusSecret: 'your-radius-secret',
+          radiusServer2: '192.168.1.100:1813',
+          restartUspot: true
         }
       }
     }
@@ -250,6 +269,12 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // Ensure /www-uspot directory exists (required by uhttpd)
+      await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: 'sh',
+        params: ['-c', 'mkdir -p /www-uspot && [ -f /www-uspot/index.html ] || echo \'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/hotspot"></head><body>Redirecting...</body></html>\' > /www-uspot/index.html']
+      });
+
       // Check if uspot named section exists, create if needed
       // uspot uses named sections: config uspot 'sectionname' (NOT config instance)
       const sectionName = 'hotspot';
@@ -278,6 +303,16 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       // Generate nasid from router name or use default
       const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
       
+      // Get hotspot IP for uhttpd UAM listener
+      let hotspotIp = '10.1.30.1';
+      try {
+        const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+          command: 'sh',
+          params: ['-c', "uci -q get network.hotspot.ipaddr || echo '10.1.30.1'"]
+        });
+        hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
+      } catch {}
+      
       let uciCommands = [
         // Set auth_mode to 'uam' for RADIUS UAM authentication
         `uci set uspot.${sectionName}.auth_mode='uam'`,
@@ -295,21 +330,43 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         const acctPort = body.radiusServer2.split(':')[1] || '1813';
         uciCommands.push(`uci set uspot.${sectionName}.acct_server='${acctHost}'`);
         uciCommands.push(`uci set uspot.${sectionName}.acct_port='${acctPort}'`);
+        uciCommands.push(`uci set uspot.${sectionName}.acct_secret='${body.radiusSecret}'`);
       }
 
       uciCommands.push('uci commit uspot');
+      
+      // Configure uhttpd UAM listener on port 3990 (required for UAM mode)
+      const uhttpdUamCommands = [
+        `uci set uhttpd.uam3990=uhttpd`,
+        `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
+        `uci set uhttpd.uam3990.redirect_https='0'`,
+        `uci set uhttpd.uam3990.max_requests='5'`,
+        `uci set uhttpd.uam3990.no_dirlists='1'`,
+        `uci set uhttpd.uam3990.home='/www-uspot'`,
+        `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
+        `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
+        `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
+        `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
+        `uci commit uhttpd`
+      ];
 
       // Execute all UCI commands in one shell call
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
         params: ['-c', uciCommands.join(' && ')]
       });
+      
+      // Configure uhttpd UAM listener
+      await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: 'sh',
+        params: ['-c', uhttpdUamCommands.join(' && ')]
+      });
 
       if (body.restartUspot) {
-        // Use file.exec for reliable service restart
+        // Restart both uhttpd (for UAM listener) and uspot
         await routerRpcService.rpcCall(id, 'file', 'exec', {
           command: 'sh',
-          params: ['-c', '/etc/init.d/uspot restart']
+          params: ['-c', '/etc/init.d/uhttpd restart && /etc/init.d/uspot restart']
         });
       }
 
