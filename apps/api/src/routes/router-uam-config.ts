@@ -224,13 +224,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
           ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
           password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
-        },
-        example: {
-          uamServerUrl: 'https://api.spotfi.com/uam/login',
-          radiusServer: '192.168.1.100:1812',
-          radiusSecret: 'your-radius-secret',
-          radiusServer2: '192.168.1.100:1813',
-          restartUspot: true
         }
       }
     }
