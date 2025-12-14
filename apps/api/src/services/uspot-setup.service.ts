@@ -533,6 +533,12 @@ export class UspotSetupService {
 # Based on RFC 2865/2866 with radcli-compatible type names
 # See: https://github.com/f00b4r0/uspot - radcli dictionary format
 #
+VENDOR	WBAL	14122
+ATTRIBUTE	WBAL-WISPr-Location-Name	2	string	WBAL
+ATTRIBUTE	WBAL-WISPr-Logoff-URL	3	string	WBAL
+VENDOR	ChilliSpot	14559
+ATTRIBUTE	ChilliSpot-Lang	7	string	ChilliSpot
+
 ATTRIBUTE	User-Name		1	string
 ATTRIBUTE	Password		2	string
 ATTRIBUTE	CHAP-Password		3	string
@@ -1072,102 +1078,140 @@ DICTEOF`);
 
   private async configureFirewall(routerId: string): Promise<SetupStepResult> {
     try {
-      // Check if hotspot zone exists by trying to find it in config
+      const setName = 'uspot_hotspot'; // Must match uspot config setname
+      
+      // Get current firewall config for checking existing rules
       const zones = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'firewall' });
       const zonesStr = JSON.stringify(zones);
+      
+      // ============================================================
+      // ZONE: Create hotspot zone (input REJECT, forward REJECT)
+      // This ensures unauthenticated clients cannot access anything
+      // ============================================================
       const hotspotZoneExists = zonesStr.includes('"name":"hotspot"') || zonesStr.includes("name='hotspot'");
-
       if (!hotspotZoneExists) {
         await this.exec(routerId, 'uci add firewall zone');
         await this.exec(routerId, 'uci set firewall.@zone[-1].name="hotspot"');
         await this.exec(routerId, 'uci set firewall.@zone[-1].input="REJECT"');
         await this.exec(routerId, 'uci set firewall.@zone[-1].output="ACCEPT"');
-        await this.exec(routerId, 'uci set firewall.@zone[-1].forward="REJECT"');
+        await this.exec(routerId, 'uci set firewall.@zone[-1].forward="REJECT"'); // NO forwarding by default!
         await this.exec(routerId, 'uci set firewall.@zone[-1].network="hotspot"');
-        // Enable MSS clamping for proper MTU handling
         await this.exec(routerId, 'uci set firewall.@zone[-1].mtu_fix="1"');
-      }
-
-      // Check if forwarding exists (hotspot -> wan for internet access)
-      const hotspotForwardExists = zonesStr.includes('"src":"hotspot"') && zonesStr.includes('"dest":"wan"');
-      if (!hotspotForwardExists) {
-        await this.exec(routerId, 'uci add firewall forwarding');
-        await this.exec(routerId, 'uci set firewall.@forwarding[-1].src="hotspot"');
-        await this.exec(routerId, 'uci set firewall.@forwarding[-1].dest="wan"');
+        this.logger.info('[Setup] Created hotspot zone with REJECT defaults');
       }
 
       // ============================================================
-      // Security Rules: Isolate Hotspot from LAN (Best Practice)
+      // IPSET: Create ipset for authenticated client MACs
+      // uspot adds authenticated clients to this set
+      // ============================================================
+      if (!zonesStr.includes(`"name":"${setName}"`) && !zonesStr.includes(`name='${setName}'`)) {
+        await this.exec(routerId, 'uci add firewall ipset');
+        await this.exec(routerId, `uci set firewall.@ipset[-1].name='${setName}'`);
+        await this.exec(routerId, `uci add_list firewall.@ipset[-1].match='src_mac'`);
+        this.logger.info(`[Setup] Created ipset '${setName}' for authenticated clients`);
+      }
+
+      // ============================================================
+      // REDIRECT: Captive Portal Detection hijacking
+      // Redirect HTTP (port 80) from UNAUTHENTICATED clients to portal
+      // ============================================================
+      const cpdRedirectName = 'Redirect-Hotspot-CPD';
+      if (!zonesStr.includes(cpdRedirectName)) {
+        await this.exec(routerId, 'uci add firewall redirect');
+        await this.exec(routerId, `uci set firewall.@redirect[-1].name='${cpdRedirectName}'`);
+        await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="80"');
+        await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="tcp"');
+        await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
+        await this.exec(routerId, 'uci set firewall.@redirect[-1].reflection="0"');
+        // Only redirect clients NOT in the authenticated ipset
+        await this.exec(routerId, `uci set firewall.@redirect[-1].ipset='!${setName}'`);
+        this.logger.info('[Setup] Created CPD redirect for unauthenticated clients');
+      }
+
+      // ============================================================
+      // RULES: Allow essential services for ALL hotspot clients
+      // Order matters! These must come before the forward rule
       // ============================================================
       
-      // Rule 1: Block hotspot -> LAN traffic (prevent guest access to private network)
-      const blockLanRuleName = 'Block-Hotspot-to-LAN';
-      if (!zonesStr.includes(blockLanRuleName)) {
+      // Rule 1: Allow DHCP (UDP 67) and NTP (UDP 123) for all clients
+      const allowDhcpNtpName = 'Allow-Hotspot-DHCP-NTP';
+      if (!zonesStr.includes(allowDhcpNtpName)) {
         await this.exec(routerId, 'uci add firewall rule');
-        await this.exec(routerId, `uci set firewall.@rule[-1].name="${blockLanRuleName}"`);
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${allowDhcpNtpName}'`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="67 123"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      }
+      
+      // Rule 2: Block traffic to LAN-side services (weak host model protection)
+      // Must come AFTER DHCP rule since DHCP uses broadcast
+      const restrictInputName = 'Restrict-Hotspot-Input';
+      if (!zonesStr.includes(restrictInputName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${restrictInputName}'`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_ip="!hotspot"'); // Not destined to hotspot network
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="DROP"');
+      }
+      
+      // Rule 3: Allow CPD/Web/UAM ports (80, 443, 3990) for all clients
+      const allowPortalName = 'Allow-Hotspot-CPD-WEB-UAM';
+      if (!zonesStr.includes(allowPortalName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${allowPortalName}'`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      }
+      
+      // Rule 4: Allow DNS (53 TCP/UDP) for all clients
+      const allowDnsName = 'Allow-Hotspot-DNS';
+      if (!zonesStr.includes(allowDnsName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${allowDnsName}'`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci add_list firewall.@rule[-1].proto="udp"');
+        await this.exec(routerId, 'uci add_list firewall.@rule[-1].proto="tcp"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="53"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      }
+
+      // ============================================================
+      // RULE: Forward to WAN ONLY for authenticated clients (in ipset)
+      // This is the key rule - no internet without authentication!
+      // ============================================================
+      const forwardAuthName = 'Forward-Hotspot-Authenticated';
+      if (!zonesStr.includes(forwardAuthName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${forwardAuthName}'`);
+        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="any"');
+        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+        // CRITICAL: Only allow clients whose MAC is in the authenticated ipset
+        await this.exec(routerId, `uci set firewall.@rule[-1].ipset='${setName}'`);
+        this.logger.info('[Setup] Created forward rule for authenticated clients only');
+      }
+
+      // ============================================================
+      // RULE: Block hotspot -> LAN (prevent guest access to admin)
+      // ============================================================
+      const blockLanName = 'Block-Hotspot-to-LAN';
+      if (!zonesStr.includes(blockLanName)) {
+        await this.exec(routerId, 'uci add firewall rule');
+        await this.exec(routerId, `uci set firewall.@rule[-1].name='${blockLanName}'`);
         await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
         await this.exec(routerId, 'uci set firewall.@rule[-1].dest="lan"');
         await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
         await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
       }
-      
-      // Rule 2: Block RFC1918 private ranges from hotspot (extra protection)
-      const blockPrivateRuleName = 'Block-Hotspot-Private-Ranges';
-      if (!zonesStr.includes(blockPrivateRuleName)) {
-        await this.exec(routerId, 'uci add firewall rule');
-        await this.exec(routerId, `uci set firewall.@rule[-1].name="${blockPrivateRuleName}"`);
-        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].dest="*"'); // Any destination
-        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
-        // Block common private ranges (except hotspot's own subnet)
-        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="192.168.0.0/16"');
-        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="172.16.0.0/12"');
-        // Note: 10.0.0.0/8 partially allowed for hotspot subnet (10.1.30.0/24)
-        await this.exec(routerId, 'uci add_list firewall.@rule[-1].dest_ip="10.0.0.0/8"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
-        // Exclude hotspot's own subnet from this rule
-        await this.exec(routerId, `uci set firewall.@rule[-1].src_ip="!${this.HOTSPOT_IP.replace(/\.\d+$/, '.0')}/24"`);
-      }
-      
-      // Rule 3: Allow DHCP/DNS from hotspot clients to router (required for captive portal)
-      const allowDhcpRuleName = 'Allow-Hotspot-DHCP-DNS';
-      if (!zonesStr.includes(allowDhcpRuleName)) {
-        await this.exec(routerId, 'uci add firewall rule');
-        await this.exec(routerId, `uci set firewall.@rule[-1].name="${allowDhcpRuleName}"`);
-        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="53 67 68"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      }
-      
-      // Rule 4: Allow captive portal HTTP/HTTPS from hotspot to router
-      const allowPortalRuleName = 'Allow-Hotspot-Portal';
-      if (!zonesStr.includes(allowPortalRuleName)) {
-        await this.exec(routerId, 'uci add firewall rule');
-        await this.exec(routerId, `uci set firewall.@rule[-1].name="${allowPortalRuleName}"`);
-        await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"'); // 3990 = uspot portal
-        await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
-        await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      }
-
-      // Add RADIUS rules to allow hotspot clients to reach external RADIUS server
-      for (const port of this.RADIUS_PORTS) {
-        const ruleName = `Allow-RADIUS-Out-${port}`;
-        if (!zonesStr.includes(ruleName)) {
-          await this.exec(routerId, 'uci add firewall rule');
-          await this.exec(routerId, `uci set firewall.@rule[-1].name="${ruleName}"`);
-          await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-          await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
-          await this.exec(routerId, `uci set firewall.@rule[-1].dest_port="${port}"`);
-          await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
-          await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-        }
-      }
 
       await this.exec(routerId, 'uci commit firewall');
-      this.logger.info('[Setup] Firewall configured with hotspot isolation rules');
-      return { step: 'firewall_config', status: 'success' };
+      this.logger.info('[Setup] Firewall configured: unauthenticated clients blocked, authenticated clients allowed');
+      return { step: 'firewall_config', status: 'success', message: 'Captive portal firewall rules configured' };
     } catch (e: any) {
       return { step: 'firewall_config', status: 'error', message: e.message };
     }
