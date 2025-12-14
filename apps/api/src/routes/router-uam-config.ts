@@ -4,7 +4,6 @@ import { routerRpcService } from '../services/router-rpc.service.js';
 import { routerAccessService } from '../services/router-access.service.js';
 import { UspotSetupService } from '../services/uspot-setup.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
-import { generateWhitelistScript, validateWhitelistConfig, type WhitelistConfig } from '../utils/portal-whitelist.js';
 
 export async function routerUamConfigRoutes(fastify: FastifyInstance) {
   // Async uSpot setup endpoint - returns job ID immediately
@@ -171,7 +170,12 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           allowedDomains: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Additional domains to whitelist (e.g. google.com, facebook.com). Supports subdomains automatically.'
+            description: 'Domains to whitelist (Walled Garden). Unauthenticated users can access these.'
+          },
+          blockedDomains: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Domains to block (Content Filter). No users can access these.'
           },
           restartUspot: { type: 'boolean', default: true, description: 'Restart uspot and uhttpd services after configuration' },
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
@@ -190,6 +194,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       radiusSecret?: string;
       radiusServer2?: string;
       allowedDomains?: string[];
+      blockedDomains?: string[];
       restartUspot?: boolean;
       combinedSSID?: boolean;
       ssid?: string;
@@ -403,95 +408,42 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // For UAM mode: ALWAYS configure comprehensive firewall whitelist for unauthenticated users
-      // Best practice: Whitelist portal URLs, DNS, NTP, OS detection URLs, and router UAM IP
-      // This is REQUIRED for UAM mode to function properly
+      // Configure Access Control (Whitelist & Blocklist)
+      // This uses the clean service method instead of inline scripts
       if (authMode === 'uam') {
-        // uamServerUrl is already validated above, so it's safe to use here
-        const uamServerUrl = body.uamServerUrl!;
+        const setupService = new UspotSetupService(fastify.log);
+        
+        // Get DNS servers from router config (or use defaults)
+        let dnsServers: string[] | undefined;
         try {
-          const uamUrlObj = new URL(uamServerUrl);
-          const uamOrigin = uamUrlObj.origin;
-          
-          // Get router UAM IP and port (reuse hotspot IP detection from earlier)
-          let routerUamIp = '10.1.30.1'; // Default
-          try {
-            const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
-              command: 'sh',
-              params: ['-c', "uci -q get network.hotspot.ipaddr || echo '10.1.30.1'"]
-            });
-            routerUamIp = (ipResult?.stdout || '10.1.30.1').trim();
-          } catch {
-            // Use default
+          const dnsResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', "uci -q get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\\n' | grep -v '^$' || echo ''"]
+          });
+          const routerDns = (dnsResult?.stdout || '').trim().split('\n').filter(Boolean);
+          if (routerDns.length > 0) {
+            dnsServers = routerDns;
           }
-          const routerUamPort = '3990';
-          
-          // Build comprehensive whitelist configuration
-          // Portal URLs - include login page and all API endpoints
-          const portalUrls: string[] = [
-            uamServerUrl,                         // Main login page
-            `${uamOrigin}/api`,                    // RFC 8908 API endpoint
-            `${uamOrigin}/generate_204`,           // Android detection
-            `${uamOrigin}/hotspot-detect.html`    // iOS/macOS detection
-          ];
-          
-          // Get DNS servers from router config (or use defaults)
-          let dnsServers: string[] | undefined;
-          try {
-            const dnsResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
-              command: 'sh',
-              params: ['-c', "uci -q get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\\n' | grep -v '^$' || echo ''"]
-            });
-            const routerDns = (dnsResult?.stdout || '').trim().split('\n').filter(Boolean);
-            if (routerDns.length > 0) {
-              dnsServers = routerDns;
-            }
-          } catch {
-            // Use defaults if can't read router DNS config
-          }
-          
-          // Build whitelist config
-          const whitelistConfig: WhitelistConfig = {
-            portalUrls,
-            dnsServers,
-            ntpServers: undefined, // Will use defaults
-            routerUamIp,
-            routerUamPort,
-            allowedDomains: body.allowedDomains // Pass custom domains
-          };
-          
-          // Validate configuration
-          const validation = validateWhitelistConfig(whitelistConfig);
-          if (!validation.valid) {
-            fastify.log.warn(`[UAM Config] Whitelist validation errors: ${validation.errors.join(', ')}`);
-          }
-          
-          // Generate whitelist script
-          const whitelistScript = generateWhitelistScript(whitelistConfig);
-          
-          fastify.log.info(`[UAM Config] Configuring comprehensive firewall whitelist...`);
-          
+        } catch {
+          // Use defaults
+        }
+
+        await setupService.configureAccessControl(id, {
+          whitelist: body.allowedDomains,
+          blocklist: body.blockedDomains,
+          portalUrls: [body.uamServerUrl!],
+          dnsServers
+        });
+        
+        // Also configure DHCP Option 114 for RFC8908 Captive Portal API
+        const uamUrlObj = new URL(body.uamServerUrl!);
+        const dhcpApiUrl = `${uamUrlObj.origin}/api`;
+        try {
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
-            params: ['-c', whitelistScript]
+            params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp; /etc/init.d/dnsmasq restart`]
           });
-          
-          fastify.log.info(`[UAM Config] Whitelist configured with ${portalUrls.length} portal URLs and ${body.allowedDomains?.length || 0} custom domains`);
-          
-          // Also configure DHCP Option 114 for RFC8908 Captive Portal API
-          const dhcpApiUrl = `${uamOrigin}/api`;
-          try {
-            await routerRpcService.rpcCall(id, 'file', 'exec', {
-              command: 'sh',
-              params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp; /etc/init.d/dnsmasq restart`]
-            });
-          } catch {
-            // DHCP section might not exist, that's OK
-          }
-        } catch (wlistErr: unknown) {
-          const errMsg = wlistErr instanceof Error ? wlistErr.message : 'Unknown error';
-          fastify.log.warn(`[UAM Config] Could not update whitelist: ${errMsg}`);
-        }
+        } catch {}
       }
 
       return {

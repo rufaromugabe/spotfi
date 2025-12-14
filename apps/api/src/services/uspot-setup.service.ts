@@ -1564,6 +1564,159 @@ USPOTEOF`);
     return msg.substring(0, 150);
   }
 
+  /**
+   * Configure Access Control (Whitelist/Blocklist)
+   * 
+   * Provides robust domain-based filtering using dnsmasq:
+   * - Whitelist: Dynamic IPSet population (ipset=/domain/uspot_wlist)
+   * - Blocklist: DNS Sinkhole (address=/domain/) - Returns NXDOMAIN
+   * 
+   * This is more robust than static lists because it handles CDNs/Cloudflare
+   * and dynamic IPs automatically.
+   */
+  async configureAccessControl(
+    routerId: string, 
+    config: {
+      whitelist?: string[], // Allowed domains (Walled Garden)
+      blocklist?: string[], // Blocked domains (Content Filter)
+      portalUrls?: string[], // Captive Portal URLs (must be whitelisted)
+      dnsServers?: string[]
+    }
+  ): Promise<SetupStepResult> {
+    try {
+      const whitelist = config.whitelist || [];
+      const blocklist = config.blocklist || [];
+      const portalUrls = config.portalUrls || [];
+      
+      // Combine all domains that need whitelisting (Portal + Custom)
+      const allowedDomains = new Set<string>();
+      const allowedIps = new Set<string>();
+      
+      // Helper to parse URL/Domain/IP
+      const addTarget = (target: string) => {
+        try {
+          // If it's a URL, extract hostname
+          let hostname = target;
+          if (target.includes('://')) {
+            const url = new URL(target);
+            hostname = url.hostname;
+          }
+          
+          if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+            allowedIps.add(hostname); // Is IPv4
+          } else {
+            allowedDomains.add(hostname); // Is Domain
+          }
+        } catch {}
+      };
+
+      portalUrls.forEach(addTarget);
+      whitelist.forEach(addTarget);
+      
+      // Default whitelists (OS detection)
+      const OS_DETECTION = [
+        'connectivitycheck.gstatic.com', 'www.google.com', // Android
+        'captive.apple.com', 'www.apple.com', // Apple
+        'www.msftconnecttest.com', 'www.msftncsi.com', // Windows
+        'detectportal.firefox.com' // Firefox
+      ];
+      OS_DETECTION.forEach(d => allowedDomains.add(d));
+
+      const domainsList = Array.from(allowedDomains);
+      const ipsList = Array.from(allowedIps);
+      const blockList = blocklist.filter(d => !allowedDomains.has(d)); // Whitelist takes precedence
+
+      this.logger.info(`[Access Control] Configuring: ${domainsList.length} allowed, ${blockList.length} blocked, ${ipsList.length} static IPs`);
+
+      // Script to configure dnsmasq and firewall
+      const script = `
+        #!/bin/sh
+        
+        # 1. Ensure Firewall IPSet exists
+        # -------------------------------
+        if ! uci show firewall | grep -q "uspot_wlist"; then
+          uci add firewall ipset
+          uci set firewall.@ipset[-1].name='uspot_wlist'
+          uci set firewall.@ipset[-1].match='ip'
+          uci set firewall.@ipset[-1].enabled='1'
+        fi
+        
+        # Update static IPs in firewall set
+        # Find index of uspot_wlist
+        idx=0
+        found=""
+        while uci get firewall.@ipset[$idx] >/dev/null 2>&1; do
+          name=$(uci get firewall.@ipset[$idx].name 2>/dev/null)
+          if [ "$name" = "uspot_wlist" ]; then
+            found=$idx
+            break
+          fi
+          idx=$((idx + 1))
+        done
+        
+        if [ -n "$found" ]; then
+          uci delete firewall.@ipset[$found].entry 2>/dev/null || true
+          ${ipsList.map(ip => `uci add_list firewall.@ipset[$found].entry='${ip}'`).join('\n          ')}
+        fi
+        
+        # 2. Configure Dnsmasq (Whitelist & Blocklist)
+        # --------------------------------------------
+        
+        # Clear old uspot lists from dnsmasq
+        # Remove sets with 'uspot_wlist' (Whitelist)
+        idx=0
+        while uci get dhcp.@ipset[$idx] >/dev/null 2>&1; do
+          name=$(uci get dhcp.@ipset[$idx].name 2>/dev/null)
+          if echo "$name" | grep -q "uspot_wlist"; then
+            uci delete dhcp.@ipset[$idx]
+            idx=$((idx - 1))
+          fi
+          idx=$((idx + 1))
+        done
+        
+        # Remove old blocked domains (using specific comment/tag if possible, but here we just append)
+        # Note: OpenWRT doesn't easily support 'address=' via UCI 'domain' section perfectly for blocking without a plugin
+        # BUT we can use 'dhcp.@domain' with ip='0.0.0.0' or just raw config
+        
+        # Clean way: Use 'ipset' for whitelist
+        uci add dhcp ipset
+        uci add_list dhcp.@ipset[-1].name='uspot_wlist'
+        ${domainsList.map(d => `uci add_list dhcp.@ipset[-1].domain='${d}'`).join('\n        ')}
+        
+        # Clean way: Use 'domain' for blocklist (Sinkhole to 0.0.0.0)
+        # First clear old blocked domains (by iterating? risky if shared. We'll append for now)
+        # Better: Write a dedicated dnsmasq.conf file for uspot
+        
+        mkdir -p /tmp/dnsmasq.d
+        cat > /tmp/dnsmasq.d/uspot_access.conf << 'EOF'
+        # uSpot Access Control (Generated)
+        ${blockList.map(d => `address=/${d}/`).join('\n')}
+        EOF
+        
+        # 3. Apply Changes
+        # ----------------
+        uci commit firewall
+        uci commit dhcp
+        
+        # Restart
+        /etc/init.d/firewall restart
+        /etc/init.d/dnsmasq restart
+      `;
+
+      await this.exec(routerId, 'sh', 60000).catch(() => {}); // Run via shell
+      // Since exec takes cmd + params, we need to pipe the script or write it
+      // Let's write to file then exec
+      await this.exec(routerId, `cat > /tmp/uspot_access_setup.sh << 'EOF'
+${script}
+EOF`);
+      await this.exec(routerId, 'sh /tmp/uspot_access_setup.sh');
+      
+      return { step: 'access_control', status: 'success', message: 'Access control updated' };
+    } catch (e: any) {
+      return { step: 'access_control', status: 'error', message: e.message };
+    }
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
