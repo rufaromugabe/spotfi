@@ -519,39 +519,42 @@ export class UspotSetupService {
       const installed = results.filter(r => r.status === 'success').length;
       const skipped = results.filter(r => r.status === 'skipped').length;
       
-      // Ensure radcli dictionary is properly set up (required for RADIUS authentication)
-      // This fixes: "rc_read_dictionary couldn't open dictionary /etc/radcli/dictionary"
+      // Create radcli dictionary for uspot RADIUS authentication
+      // uspot uses radcli library which requires specific type names:
+      //   - 'ipaddr' for IPv4 (not 'ipv4addr')
+      //   - 'integer' for numbers
+      //   - 'string' for text
       try {
         await this.exec(routerId, 'mkdir -p /etc/radcli');
-        // Remove any broken symlink first (OpenWRT creates a symlink to non-existent file)
         await this.exec(routerId, 'rm -f /etc/radcli/dictionary 2>/dev/null || true');
-        // Create the full RADIUS dictionary file
         await this.exec(routerId, `cat > /etc/radcli/dictionary << 'DICTEOF'
 #
-# RADIUS Dictionary for radcli - SpotFi Setup
-# Based on livingston-radius-2.01 and RFC 2865/2866
+# RADIUS Dictionary for radcli/uspot - SpotFi Setup
+# Based on RFC 2865/2866 with radcli-compatible type names
+# See: https://github.com/f00b4r0/uspot - radcli dictionary format
 #
 ATTRIBUTE	User-Name		1	string
 ATTRIBUTE	Password		2	string
 ATTRIBUTE	CHAP-Password		3	string
-ATTRIBUTE	NAS-IP-Address		4	ipv4addr
-ATTRIBUTE	NAS-Port-Id		5	integer
+ATTRIBUTE	NAS-IP-Address		4	ipaddr
+ATTRIBUTE	NAS-Port		5	integer
 ATTRIBUTE	Service-Type		6	integer
 ATTRIBUTE	Framed-Protocol		7	integer
-ATTRIBUTE	Framed-IP-Address	8	ipv4addr
-ATTRIBUTE	Framed-IP-Netmask	9	ipv4addr
+ATTRIBUTE	Framed-IP-Address	8	ipaddr
+ATTRIBUTE	Framed-IP-Netmask	9	ipaddr
 ATTRIBUTE	Framed-Routing		10	integer
 ATTRIBUTE	Filter-Id		11	string
 ATTRIBUTE	Framed-MTU		12	integer
 ATTRIBUTE	Framed-Compression	13	integer
-ATTRIBUTE	Login-IP-Host		14	ipv4addr
+ATTRIBUTE	Login-IP-Host		14	ipaddr
 ATTRIBUTE	Login-Service		15	integer
 ATTRIBUTE	Login-TCP-Port		16	integer
 ATTRIBUTE	Reply-Message		18	string
 ATTRIBUTE	Callback-Number		19	string
 ATTRIBUTE	Callback-Id		20	string
+ATTRIBUTE	Expiration		21	date
 ATTRIBUTE	Framed-Route		22	string
-ATTRIBUTE	Framed-IPX-Network	23	ipv4addr
+ATTRIBUTE	Framed-IPX-Network	23	integer
 ATTRIBUTE	State			24	string
 ATTRIBUTE	Class			25	string
 ATTRIBUTE	Vendor-Specific		26	string
@@ -582,7 +585,7 @@ ATTRIBUTE	Acct-Multi-Session-Id	50	string
 ATTRIBUTE	Acct-Link-Count		51	integer
 ATTRIBUTE	Acct-Input-Gigawords	52	integer
 ATTRIBUTE	Acct-Output-Gigawords	53	integer
-ATTRIBUTE	Event-Timestamp		55	integer
+ATTRIBUTE	Event-Timestamp		55	date
 ATTRIBUTE	Egress-VLANID		56	string
 ATTRIBUTE	Ingress-Filters		57	integer
 ATTRIBUTE	Egress-VLAN-Name	58	string
@@ -591,8 +594,8 @@ ATTRIBUTE	CHAP-Challenge		60	string
 ATTRIBUTE	NAS-Port-Type		61	integer
 ATTRIBUTE	Port-Limit		62	integer
 ATTRIBUTE	Login-LAT-Port		63	integer
-ATTRIBUTE	Tunnel-Type		64	string
-ATTRIBUTE	Tunnel-Medium-Type	65	string
+ATTRIBUTE	Tunnel-Type		64	integer
+ATTRIBUTE	Tunnel-Medium-Type	65	integer
 ATTRIBUTE	Tunnel-Client-Endpoint	66	string
 ATTRIBUTE	Tunnel-Server-Endpoint	67	string
 ATTRIBUTE	Acct-Tunnel-Connection	68	string
@@ -610,30 +613,29 @@ ATTRIBUTE	EAP-Message		79	string
 ATTRIBUTE	Message-Authenticator	80	string
 ATTRIBUTE	Tunnel-Private-Group-ID	81	string
 ATTRIBUTE	Tunnel-Assignment-ID	82	string
-ATTRIBUTE	Tunnel-Preference	83	string
+ATTRIBUTE	Tunnel-Preference	83	integer
 ATTRIBUTE	ARAP-Challenge-Response	84	string
 ATTRIBUTE	Acct-Interim-Interval	85	integer
 ATTRIBUTE	Acct-Tunnel-Packets-Lost	86	integer
-ATTRIBUTE	NAS-Port-Id-String	87	string
+ATTRIBUTE	NAS-Port-Id		87	string
 ATTRIBUTE	Framed-Pool		88	string
 ATTRIBUTE	Chargeable-User-Identity	89	string
 ATTRIBUTE	Tunnel-Client-Auth-ID	90	string
 ATTRIBUTE	Tunnel-Server-Auth-ID	91	string
 ATTRIBUTE	NAS-Filter-Rule		92	string
 ATTRIBUTE	Originating-Line-Info	94	string
-ATTRIBUTE	NAS-IPv6-Address	95	ipv6addr
+ATTRIBUTE	NAS-IPv6-Address	95	string
 ATTRIBUTE	Framed-Interface-Id	96	string
-ATTRIBUTE	Framed-IPv6-Prefix	97	ipv6prefix
-ATTRIBUTE	Login-IPv6-Host		98	ipv6addr
+ATTRIBUTE	Framed-IPv6-Prefix	97	string
+ATTRIBUTE	Login-IPv6-Host		98	string
 ATTRIBUTE	Framed-IPv6-Route	99	string
 ATTRIBUTE	Framed-IPv6-Pool	100	string
 ATTRIBUTE	Error-Cause		101	integer
 ATTRIBUTE	EAP-Key-Name		102	string
-ATTRIBUTE	Delegated-IPv6-Prefix	123	ipv6prefix
-ATTRIBUTE	Framed-IPv6-Address	168	ipv6addr
-ATTRIBUTE	DNS-Server-IPv6-Address	169	ipv6addr
-ATTRIBUTE	Route-IPv6-Information	170	ipv6prefix
-ATTRIBUTE	Expiration		21	date
+ATTRIBUTE	Delegated-IPv6-Prefix	123	string
+ATTRIBUTE	Framed-IPv6-Address	168	string
+ATTRIBUTE	DNS-Server-IPv6-Address	169	string
+ATTRIBUTE	Route-IPv6-Information	170	string
 ATTRIBUTE	Auth-Type		1000	integer
 VALUE	Service-Type	Login-User	1
 VALUE	Service-Type	Framed-User	2
@@ -700,13 +702,11 @@ DICTEOF`);
           throw new Error(`Dictionary file incomplete: only ${lineCount} lines`);
         }
         
-        // Verify it's a real file (not a broken symlink)
-        const fileType = await this.exec(routerId, 'file /etc/radcli/dictionary 2>/dev/null || echo "unknown"');
-        if (fileType.includes('symbolic link') || fileType.includes('broken')) {
-          throw new Error('Dictionary is a broken symlink');
-        }
+        // Set proper permissions
+        await this.exec(routerId, 'chmod 644 /etc/radcli/dictionary');
         
-        this.logger.info(`[Setup] radcli dictionary created and verified (${lineCount} lines)`);
+        this.logger.info(`[Setup] radcli dictionary created (${lineCount} lines)`);
+
       } catch (radcliErr: any) {
         this.logger.warn(`[Setup] Could not configure radcli dictionary: ${radcliErr.message}`);
       }
@@ -769,16 +769,22 @@ DICTEOF`);
       this.logger.info(`[Setup] Found ${radios.length} wireless radio(s): ${radios.join(', ')}`);
 
       // Step 3: Delete ALL existing wifi-iface sections (clean slate)
-      let deleteIdx = 0;
-      while (deleteIdx < 10) {
+      // First, count how many exist
+      let ifaceCount = 0;
+      try {
+        const countOutput = await this.exec(routerId, "uci show wireless | grep -c '=wifi-iface' || echo '0'");
+        ifaceCount = parseInt(countOutput.trim()) || 0;
+      } catch {}
+      
+      // Delete all wifi-iface sections (always delete index 0 as they shift down)
+      for (let i = 0; i < ifaceCount + 5; i++) { // +5 buffer for safety
         try {
-          await this.exec(routerId, `uci delete wireless.@wifi-iface[0]`);
-          deleteIdx++;
+          await this.exec(routerId, 'uci delete wireless.@wifi-iface[0]');
         } catch { 
-          break; 
+          break; // No more interfaces to delete
         }
       }
-      this.logger.info(`[Setup] Removed ${deleteIdx} existing wifi-iface sections`);
+      this.logger.info(`[Setup] Removed all existing wifi-iface sections`);
 
       // Step 4: Configure each radio with dual SSIDs
       for (const radio of radios) {
