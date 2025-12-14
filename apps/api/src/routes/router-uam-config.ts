@@ -415,42 +415,111 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       }
 
       // For UAM mode: Add UAM server to firewall whitelist so unauthenticated clients can reach it
+      // This handles both static IPs and Cloudflare-proxied domains
       if (authMode === 'uam' && body.uamServerUrl) {
         try {
           const uamUrlObj = new URL(body.uamServerUrl);
           const uamHost = uamUrlObj.hostname;
           
-          // Add UAM server hostname/IP to whitelist ipset
-          // The router will resolve DNS and add to the ipset
-          fastify.log.info(`[UAM Config] Adding ${uamHost} to firewall whitelist`);
+          // Resolve hostname to IP address
+          let uamIp = '';
+          try {
+            const dns = await import('dns');
+            const { promisify } = await import('util');
+            const lookup = promisify(dns.lookup);
+            const result = await lookup(uamHost);
+            uamIp = result.address;
+            fastify.log.info(`[UAM Config] Resolved ${uamHost} to ${uamIp}`);
+          } catch (dnsErr) {
+            fastify.log.warn(`[UAM Config] Could not resolve ${uamHost} - will rely on dynamic DNS ipset`);
+          }
           
-          // First, clear existing entries from uspot_wlist
+          fastify.log.info(`[UAM Config] Adding ${uamHost} (IP: ${uamIp}) to firewall whitelist`);
+          
+          // Add UAM server to whitelist using two methods:
+          // 1. Static IP entry (for immediate access)
+          // 2. dnsmasq ipset (for Cloudflare/dynamic IPs - resolves on DNS query)
+          const addToWhitelist = `
+#!/bin/sh
+echo "=== Configuring UAM whitelist for ${uamHost} ==="
+
+# STEP 1: Add static IP to firewall ipset
+idx=0
+found=""
+while uci get firewall.@ipset[$idx] >/dev/null 2>&1; do
+  name=$(uci get firewall.@ipset[$idx].name 2>/dev/null)
+  if [ "$name" = "uspot_wlist" ]; then
+    found=$idx
+    break
+  fi
+  idx=$((idx + 1))
+done
+
+if [ -n "$found" ]; then
+  echo "Found firewall whitelist ipset at index $found"
+  uci delete firewall.@ipset[$found].entry 2>/dev/null || true
+  ${uamIp ? `uci add_list firewall.@ipset[$found].entry='${uamIp}'` : 'echo "WARNING: No IP resolved"'}
+  echo "Added static IP: ${uamIp || 'none'}"
+else
+  echo "WARNING: Could not find uspot_wlist firewall ipset"
+fi
+
+# STEP 2: Configure dnsmasq dynamic ipset (for Cloudflare/changing IPs)
+# This makes dnsmasq add resolved IPs to the ipset on DNS queries
+echo "Configuring dnsmasq dynamic ipset..."
+
+# Check if dnsmasq ipset for uspot_wlist already exists
+dhcp_ipset_exists=""
+idx=0
+while uci get dhcp.@ipset[$idx] >/dev/null 2>&1; do
+  names=$(uci get dhcp.@ipset[$idx].name 2>/dev/null)
+  if echo "$names" | grep -q "uspot_wlist"; then
+    dhcp_ipset_exists=$idx
+    break
+  fi
+  idx=$((idx + 1))
+done
+
+if [ -n "$dhcp_ipset_exists" ]; then
+  echo "Updating existing dnsmasq ipset at index $dhcp_ipset_exists"
+  uci delete dhcp.@ipset[$dhcp_ipset_exists].domain 2>/dev/null || true
+  uci add_list dhcp.@ipset[$dhcp_ipset_exists].domain='${uamHost}'
+else
+  echo "Creating new dnsmasq ipset"
+  uci add dhcp ipset
+  uci add_list dhcp.@ipset[-1].name='uspot_wlist'
+  uci add_list dhcp.@ipset[-1].domain='${uamHost}'
+fi
+
+# Commit all changes
+uci commit firewall
+uci commit dhcp
+
+# Restart services
+/etc/init.d/firewall restart
+/etc/init.d/dnsmasq restart
+
+echo "=== Whitelist configured ==="
+echo "Static IP: ${uamIp || 'none'}"
+echo "Dynamic DNS domain: ${uamHost}"
+`;
+          
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
-            params: ['-c', `
-              # Find and clear the whitelist ipset entries
-              section=$(uci show firewall 2>/dev/null | grep "name='uspot_wlist'" | head -1 | cut -d. -f1-2)
-              if [ -n "$section" ]; then
-                uci delete "\${section}.entry" 2>/dev/null || true
-                # Add UAM server hostname - firewall4 will resolve it
-                uci add_list "\${section}.entry='${uamHost}'"
-                uci commit firewall
-                /etc/init.d/firewall restart
-              fi
-            `]
+            params: ['-c', addToWhitelist]
           });
           
-          // Also extract base URL for RFC8908 API endpoint
+          fastify.log.info(`[UAM Config] Whitelist configured for ${uamHost} (IP: ${uamIp || 'dynamic'})`);
+          
+          // Also configure DHCP Option 114 for RFC8908 Captive Portal API
           const dhcpApiUrl = `${uamUrlObj.origin}/api`;
-          const dhcpConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'dhcp', section: 'captive' });
-          if (dhcpConfig) {
-            await routerRpcService.rpcCall(id, 'uci', 'set', {
-              config: 'dhcp',
-              section: 'captive',
-              option: 'dhcp_option',
-              value: `114,${dhcpApiUrl}`
+          try {
+            await routerRpcService.rpcCall(id, 'file', 'exec', {
+              command: 'sh',
+              params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp`]
             });
-            await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'dhcp' });
+          } catch {
+            // DHCP section might not exist, that's OK
           }
         } catch (wlistErr: unknown) {
           const errMsg = wlistErr instanceof Error ? wlistErr.message : 'Unknown error';
