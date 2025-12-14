@@ -1251,6 +1251,16 @@ DICTEOF`);
       await this.exec(routerId, `uci set firewall.@ipset[-1].enabled='1'`);
       this.logger.info(`[Setup] Created whitelist ipset '${whitelistName}'`);
       
+      // Block QUIC (UDP 443) - Force browsers to fall back to TCP/HTTPS
+      // This prevents "ERR_QUIC_PROTOCOL_ERROR" in walled gardens
+      await this.exec(routerId, 'uci add firewall rule');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Block-QUIC-hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="443"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
+
       // Allow traffic to whitelist (must come BEFORE authenticated-only rule)
       await this.exec(routerId, 'uci add firewall rule');
       await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-Whitelist-hotspot"');
