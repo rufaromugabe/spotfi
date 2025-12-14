@@ -740,7 +740,13 @@ DICTEOF`);
     const guestSSID = options.ssid || 'SpotFi';
     const guestPassword = options.password || '';
     const mgmtSSID = `${guestSSID}-Admin`;
-    const mgmtPassword = guestPassword || 'spotfi-admin'; // Require password for management
+    // Admin password must be at least 8 characters for WPA2
+    let mgmtPassword = guestPassword && guestPassword.length >= 8 ? guestPassword : 'spotfi-admin123';
+    
+    // Ensure admin password meets WPA2 requirements (8+ chars)
+    if (mgmtPassword.length < 8) {
+      mgmtPassword = 'spotfi-admin123';
+    }
 
     try {
       // Step 1: Check if wireless exists
@@ -809,9 +815,11 @@ DICTEOF`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${mgmtSSID}'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='lan'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].hidden='1'`); // Hidden SSID
-        // Use WPA/WPA2 Mixed (psk) for broader compatibility ("basic security")
-        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk'`);
-        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${mgmtPassword}'`);
+        // Use WPA2-only (psk2) for proper security on admin network
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+        // Properly escape password for shell command
+        const escapedMgmtPassword = mgmtPassword.replace(/'/g, "'\"'\"'");
+        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${escapedMgmtPassword}'`);
 
         this.logger.info(`[Setup] Configured ${radio} (${bandInfo}): Guest='${guestSSID}', Admin='${mgmtSSID}' (hidden)`);
       }
