@@ -1135,14 +1135,15 @@ DICTEOF`);
 
       // ============================================================
       // STEP 2: CREATE HOTSPOT ZONE
-      // input=REJECT, forward=REJECT - block everything by default
+      // Matches uspot docs exactly: input=REJECT, forward=REJECT
       // ============================================================
       await this.exec(routerId, 'uci add firewall zone');
       await this.exec(routerId, 'uci set firewall.@zone[-1].name="hotspot"');
       await this.exec(routerId, 'uci set firewall.@zone[-1].input="REJECT"');
       await this.exec(routerId, 'uci set firewall.@zone[-1].output="ACCEPT"');
       await this.exec(routerId, 'uci set firewall.@zone[-1].forward="REJECT"');
-      await this.exec(routerId, 'uci set firewall.@zone[-1].network="hotspot"');
+      // Use list format as per docs
+      await this.exec(routerId, 'uci add_list firewall.@zone[-1].network="hotspot"');
       await this.exec(routerId, 'uci set firewall.@zone[-1].mtu_fix="1"');
       this.logger.info('[Setup] Created hotspot zone with REJECT defaults');
 
@@ -1157,54 +1158,80 @@ DICTEOF`);
       this.logger.info(`[Setup] Created ipset '${setName}'`);
 
       // ============================================================
-      // STEP 4: ALLOW ESSENTIAL SERVICES (INPUT rules)
-      // These allow clients to get DHCP, DNS, and access the portal
+      // STEP 4: CPD REDIRECT - Hijack HTTP for unauthenticated clients
+      // Matches uspot docs: Redirect-unauth-captive-CPD
+      // ============================================================
+      await this.exec(routerId, 'uci add firewall redirect');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-unauth-hotspot-CPD"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="80"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="tcp"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].reflection="0"');
+      // Match uspot docs format: ipset='!uspot' (not '!uspot src_mac')
+      await this.exec(routerId, `uci set firewall.@redirect[-1].ipset='!${setName}'`);
+      this.logger.info('[Setup] Created CPD redirect for unauthenticated clients');
+
+      // ============================================================
+      // STEP 5: ALLOW ESSENTIAL SERVICES (INPUT rules)
+      // Order matters! DHCP must come before Restrict-input rule
       // ============================================================
       
-      // Allow DHCP (UDP 67) for all clients
+      // Allow DHCP and NTP (UDP 67, 123) for all clients
       await this.exec(routerId, 'uci add firewall rule');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-Hotspot-DHCP"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-DHCP-NTP-hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="67"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="67 123"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
       
-      // Allow DNS (UDP/TCP 53) for all clients
+      // Prevent access to LAN-side services (weak host model protection)
+      // Must come AFTER DHCP rule since DHCP uses broadcast
       await this.exec(routerId, 'uci add firewall rule');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-Hotspot-DNS"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Restrict-input-hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp tcp"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_ip="!hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="DROP"');
+      
+      // Allow CPD/Web/UAM ports (TCP 80, 443, 3990) for all clients
+      await this.exec(routerId, 'uci add firewall rule');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-hotspot-CPD-WEB-UAM"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      
+      // Allow DNS (UDP/TCP 53) for all clients - use list format as per docs
+      await this.exec(routerId, 'uci add firewall rule');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-DNS-hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+      await this.exec(routerId, 'uci add_list firewall.@rule[-1].proto="udp"');
+      await this.exec(routerId, 'uci add_list firewall.@rule[-1].proto="tcp"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="53"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
       
-      // Allow portal/UAM ports (TCP 80, 443, 3990) for all clients
-      await this.exec(routerId, 'uci add firewall rule');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-Hotspot-Portal"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      
-      this.logger.info('[Setup] Created INPUT rules for DHCP, DNS, Portal');
+      this.logger.info('[Setup] Created INPUT rules for DHCP, NTP, DNS, Portal');
 
       // ============================================================
-      // STEP 5: FORWARD RULE - ONLY AUTHENTICATED CLIENTS GET INTERNET
-      // This is the key rule that blocks unauthenticated users
+      // STEP 6: FORWARD RULE - ONLY AUTHENTICATED CLIENTS GET INTERNET
+      // Matches uspot docs: Forward-auth-captive
       // ============================================================
       await this.exec(routerId, 'uci add firewall rule');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Forward-Hotspot-Authenticated"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Forward-auth-hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="any"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      await this.exec(routerId, `uci set firewall.@rule[-1].ipset='${setName} src_mac'`);
+      // Match uspot docs format: ipset='uspot' (not 'uspot src_mac')
+      await this.exec(routerId, `uci set firewall.@rule[-1].ipset='${setName}'`);
       this.logger.info('[Setup] Created forward rule for authenticated clients only');
 
       // ============================================================
-      // STEP 6: BLOCK HOTSPOT -> LAN (prevent access to admin network)
+      // STEP 7: BLOCK HOTSPOT -> LAN (prevent access to admin network)
+      // Optional but recommended for security
       // ============================================================
       await this.exec(routerId, 'uci add firewall rule');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Block-Hotspot-to-LAN"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Block-hotspot-to-LAN"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest="lan"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].proto="all"');
