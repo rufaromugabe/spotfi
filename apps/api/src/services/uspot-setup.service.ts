@@ -1166,17 +1166,22 @@ DICTEOF`);
       // ============================================================
       // STEP 4: CPD REDIRECT - Hijack HTTP for unauthenticated clients
       // Matches uspot docs: Redirect-unauth-captive-CPD
+      // Redirects HTTP traffic to local uhttpd on hotspot interface
       // ============================================================
+      const hotspotIp = this.HOTSPOT_IP;
       await this.exec(routerId, 'uci add firewall redirect');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-unauth-hotspot-CPD"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="80"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="tcp"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
+      // Redirect to local uhttpd on hotspot interface
+      await this.exec(routerId, `uci set firewall.@redirect[-1].dest_ip='${hotspotIp}'`);
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].dest_port="80"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].reflection="0"');
-      // Match uspot docs format: ipset='!uspot' (not '!uspot src_mac')
+      // Match uspot docs format: ipset='!uspot' - only redirect unauthenticated clients
       await this.exec(routerId, `uci set firewall.@redirect[-1].ipset='!${setName}'`);
-      this.logger.info('[Setup] Created CPD redirect for unauthenticated clients');
+      this.logger.info(`[Setup] Created CPD redirect to ${hotspotIp}:80 for unauthenticated clients`);
 
       // ============================================================
       // STEP 5: ALLOW ESSENTIAL SERVICES (INPUT rules)
