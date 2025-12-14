@@ -4,6 +4,7 @@ import { routerRpcService } from '../services/router-rpc.service.js';
 import { routerAccessService } from '../services/router-access.service.js';
 import { UspotSetupService } from '../services/uspot-setup.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
+import { generateWhitelistScript, validateWhitelistConfig, type WhitelistConfig } from '../utils/portal-whitelist.js';
 
 export async function routerUamConfigRoutes(fastify: FastifyInstance) {
   // Async uSpot setup endpoint - returns job ID immediately
@@ -134,64 +135,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     };
   });
 
-  // Full uSpot setup endpoint (synchronous) - kept for backward compatibility
-  fastify.post('/api/routers/:id/uspot/setup', {
-    preHandler: [fastify.authenticate, requireAdmin],
-    schema: {
-      tags: ['router-management'],
-      summary: 'Complete uSpot setup (sync - may timeout on slow connections)',
-      security: [{ bearerAuth: [] }],
-      description: 'Admin only - Installs uSpot packages and configures network, firewall, and portal remotely. Use /async endpoint for slow connections.',
-      body: {
-        type: 'object',
-        properties: {
-          combinedSSID: { type: 'boolean', description: 'Create combined 2.4GHz and 5GHz wireless network' },
-          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
-          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
-        }
-      }
-    }
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
-    assertAuthenticated(request);
-    const { id } = request.params as { id: string };
-    const body = request.body as { combinedSSID?: boolean, ssid?: string, password?: string } || {};
-
-    if (body.combinedSSID) {
-      body.ssid = body.ssid || 'SpotFi';
-      body.password = body.password || 'none';
-    }
-
-    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
-
-    try {
-      const setupService = new UspotSetupService(fastify.log);
-      const result = await setupService.setup(id, body);
-
-      if (!result.success) {
-        return reply.code(503).send({
-          routerId: id,
-          success: false,
-          message: result.message,
-          results: result
-        });
-      }
-
-      return {
-        routerId: id,
-        success: true,
-        message: result.message,
-        results: result
-      };
-
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      fastify.log.error(`[uSpot Setup] Failed: ${errorMessage}`);
-      return reply.code(503).send({ error: errorMessage });
-    }
-  });
 
   fastify.post('/api/routers/:id/uam/configure', {
     preHandler: [fastify.authenticate, requireAdmin],
@@ -202,12 +145,12 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       description: 'Admin only - Configure uspot auth mode and settings. Use authMode to switch between click-to-continue (simple), uam (RADIUS UAM), radius (RADIUS credentials), or credentials (local users).',
       body: {
         type: 'object',
+        required: ['authMode'],
         properties: {
           authMode: {
             type: 'string',
             enum: ['click-to-continue', 'uam', 'radius', 'credentials'],
-            default: 'uam',
-            description: 'Authentication mode: click-to-continue (accept & go), uam (RADIUS UAM with external portal), radius (RADIUS with local login), credentials (local username/password)'
+            description: 'Authentication mode (required): click-to-continue (accept & go), uam (RADIUS UAM with external portal), radius (RADIUS with local login), credentials (local username/password)'
           },
           uamServerUrl: { 
             type: 'string', 
@@ -282,19 +225,53 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         params: ['-c', `uci -q show uspot.${sectionName} || (uci set uspot.${sectionName}=uspot && uci set uspot.${sectionName}.enabled=1 && uci set uspot.${sectionName}.interface=${sectionName} && uci set uspot.${sectionName}.setname=uspot_${sectionName} && uci commit uspot)`]
       });
 
-      // Determine auth mode (default to 'uam' for backward compatibility)
-      const authMode = body.authMode || 'uam';
-      
-      // Validate required fields based on auth mode
-      if ((authMode === 'uam' || authMode === 'radius') && (!body.radiusServer || !body.radiusSecret)) {
+      // Require explicit auth mode - no defaults
+      if (!body.authMode) {
         return reply.code(400).send({ 
-          error: `radiusServer and radiusSecret are required for auth_mode '${authMode}'` 
+          error: 'authMode is required. Must be one of: click-to-continue, uam, radius, credentials' 
         });
       }
-      if (authMode === 'uam' && !body.uamServerUrl) {
-        return reply.code(400).send({ 
-          error: "uamServerUrl is required for auth_mode 'uam'" 
-        });
+      
+      const authMode = body.authMode;
+      
+      // Strict validation: require all necessary fields based on auth mode
+      if (authMode === 'uam') {
+        if (!body.radiusServer || !body.radiusSecret) {
+          return reply.code(400).send({ 
+            error: 'radiusServer and radiusSecret are required for auth_mode "uam"' 
+          });
+        }
+        if (!body.uamServerUrl) {
+          return reply.code(400).send({ 
+            error: 'uamServerUrl is required for auth_mode "uam"' 
+          });
+        }
+        // Validate UAM URL format
+        try {
+          new URL(body.uamServerUrl);
+        } catch {
+          return reply.code(400).send({ 
+            error: 'uamServerUrl must be a valid URL (e.g., https://api.spotfi.com/uam/login)' 
+          });
+        }
+        // Validate RADIUS server format (IP:port)
+        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) {
+          return reply.code(400).send({ 
+            error: 'radiusServer must be in format IP:port (e.g., 192.168.1.100:1812)' 
+          });
+        }
+      } else if (authMode === 'radius') {
+        if (!body.radiusServer || !body.radiusSecret) {
+          return reply.code(400).send({ 
+            error: 'radiusServer and radiusSecret are required for auth_mode "radius"' 
+          });
+        }
+        // Validate RADIUS server format (IP:port)
+        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) {
+          return reply.code(400).send({ 
+            error: 'radiusServer must be in format IP:port (e.g., 192.168.1.100:1812)' 
+          });
+        }
       }
       
       // Build UCI commands using named section
@@ -350,17 +327,23 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         
         // UAM mode specific settings
         if (authMode === 'uam') {
-          // Generate a challenge secret for CHAP (use RADIUS secret or generate one)
+          // Use RADIUS secret as challenge secret for CHAP
           // The challenge is: MD5(challenge_secret + formatted_mac)
-          const challengeSecret = body.radiusSecret || 'spotfi-challenge-secret';
+          // CRITICAL: challenge option is required for CHAP authentication
+          // Without this, challenge=false is passed to UAM server and auth fails
+          if (!body.radiusSecret) {
+            return reply.code(400).send({ 
+              error: 'radiusSecret is required for UAM mode (used for CHAP challenge)' 
+            });
+          }
+          
+          const challengeSecret = body.radiusSecret;
           
           uciCommands.push(
             `uci set uspot.${sectionName}.uam_port='3990'`,
             `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
-            // CRITICAL: challenge option is required for CHAP authentication
-            // Without this, challenge=false is passed to UAM server and auth fails
             `uci set uspot.${sectionName}.challenge='${challengeSecret}'`,
-            // uam_secret is used for UAM URL MD5 verification (optional but recommended)
+            // uam_secret is used for UAM URL MD5 verification (recommended for security)
             `uci set uspot.${sectionName}.uam_secret='${challengeSecret}'`
           );
         }
@@ -414,109 +397,86 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // For UAM mode: Add UAM server to firewall whitelist so unauthenticated clients can reach it
-      // This handles both static IPs and Cloudflare-proxied domains
-      if (authMode === 'uam' && body.uamServerUrl) {
+      // For UAM mode: ALWAYS configure comprehensive firewall whitelist for unauthenticated users
+      // Best practice: Whitelist portal URLs, DNS, NTP, OS detection URLs, and router UAM IP
+      // This is REQUIRED for UAM mode to function properly
+      if (authMode === 'uam') {
+        // uamServerUrl is already validated above, so it's safe to use here
+        const uamServerUrl = body.uamServerUrl!;
         try {
-          const uamUrlObj = new URL(body.uamServerUrl);
-          const uamHost = uamUrlObj.hostname;
+          const uamUrlObj = new URL(uamServerUrl);
+          const uamOrigin = uamUrlObj.origin;
           
-          // Resolve hostname to IP address
-          let uamIp = '';
+          // Get router UAM IP and port (reuse hotspot IP detection from earlier)
+          let routerUamIp = '10.1.30.1'; // Default
           try {
-            const dns = await import('dns');
-            const { promisify } = await import('util');
-            const lookup = promisify(dns.lookup);
-            const result = await lookup(uamHost);
-            uamIp = result.address;
-            fastify.log.info(`[UAM Config] Resolved ${uamHost} to ${uamIp}`);
-          } catch (dnsErr) {
-            fastify.log.warn(`[UAM Config] Could not resolve ${uamHost} - will rely on dynamic DNS ipset`);
+            const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+              command: 'sh',
+              params: ['-c', "uci -q get network.hotspot.ipaddr || echo '10.1.30.1'"]
+            });
+            routerUamIp = (ipResult?.stdout || '10.1.30.1').trim();
+          } catch {
+            // Use default
+          }
+          const routerUamPort = '3990';
+          
+          // Build comprehensive whitelist configuration
+          // Portal URLs - include login page and all API endpoints
+          const portalUrls: string[] = [
+            uamServerUrl,                         // Main login page
+            `${uamOrigin}/api`,                    // RFC 8908 API endpoint
+            `${uamOrigin}/generate_204`,           // Android detection
+            `${uamOrigin}/hotspot-detect.html`    // iOS/macOS detection
+          ];
+          
+          // Get DNS servers from router config (or use defaults)
+          let dnsServers: string[] | undefined;
+          try {
+            const dnsResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
+              command: 'sh',
+              params: ['-c', "uci -q get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\\n' | grep -v '^$' || echo ''"]
+            });
+            const routerDns = (dnsResult?.stdout || '').trim().split('\n').filter(Boolean);
+            if (routerDns.length > 0) {
+              dnsServers = routerDns;
+            }
+          } catch {
+            // Use defaults if can't read router DNS config
           }
           
-          fastify.log.info(`[UAM Config] Adding ${uamHost} (IP: ${uamIp}) to firewall whitelist`);
+          // Build whitelist config
+          const whitelistConfig: WhitelistConfig = {
+            portalUrls,
+            dnsServers,
+            ntpServers: undefined, // Will use defaults
+            routerUamIp,
+            routerUamPort
+          };
           
-          // Add UAM server to whitelist using two methods:
-          // 1. Static IP entry (for immediate access)
-          // 2. dnsmasq ipset (for Cloudflare/dynamic IPs - resolves on DNS query)
-          const addToWhitelist = `
-#!/bin/sh
-echo "=== Configuring UAM whitelist for ${uamHost} ==="
-
-# STEP 1: Add static IP to firewall ipset
-idx=0
-found=""
-while uci get firewall.@ipset[$idx] >/dev/null 2>&1; do
-  name=$(uci get firewall.@ipset[$idx].name 2>/dev/null)
-  if [ "$name" = "uspot_wlist" ]; then
-    found=$idx
-    break
-  fi
-  idx=$((idx + 1))
-done
-
-if [ -n "$found" ]; then
-  echo "Found firewall whitelist ipset at index $found"
-  uci delete firewall.@ipset[$found].entry 2>/dev/null || true
-  ${uamIp ? `uci add_list firewall.@ipset[$found].entry='${uamIp}'` : 'echo "WARNING: No IP resolved"'}
-  echo "Added static IP: ${uamIp || 'none'}"
-else
-  echo "WARNING: Could not find uspot_wlist firewall ipset"
-fi
-
-# STEP 2: Configure dnsmasq dynamic ipset (for Cloudflare/changing IPs)
-# This makes dnsmasq add resolved IPs to the ipset on DNS queries
-echo "Configuring dnsmasq dynamic ipset..."
-
-# Check if dnsmasq ipset for uspot_wlist already exists
-dhcp_ipset_exists=""
-idx=0
-while uci get dhcp.@ipset[$idx] >/dev/null 2>&1; do
-  names=$(uci get dhcp.@ipset[$idx].name 2>/dev/null)
-  if echo "$names" | grep -q "uspot_wlist"; then
-    dhcp_ipset_exists=$idx
-    break
-  fi
-  idx=$((idx + 1))
-done
-
-if [ -n "$dhcp_ipset_exists" ]; then
-  echo "Updating existing dnsmasq ipset at index $dhcp_ipset_exists"
-  uci delete dhcp.@ipset[$dhcp_ipset_exists].domain 2>/dev/null || true
-  uci add_list dhcp.@ipset[$dhcp_ipset_exists].domain='${uamHost}'
-else
-  echo "Creating new dnsmasq ipset"
-  uci add dhcp ipset
-  uci add_list dhcp.@ipset[-1].name='uspot_wlist'
-  uci add_list dhcp.@ipset[-1].domain='${uamHost}'
-fi
-
-# Commit all changes
-uci commit firewall
-uci commit dhcp
-
-# Restart services
-/etc/init.d/firewall restart
-/etc/init.d/dnsmasq restart
-
-echo "=== Whitelist configured ==="
-echo "Static IP: ${uamIp || 'none'}"
-echo "Dynamic DNS domain: ${uamHost}"
-`;
+          // Validate configuration
+          const validation = validateWhitelistConfig(whitelistConfig);
+          if (!validation.valid) {
+            fastify.log.warn(`[UAM Config] Whitelist validation errors: ${validation.errors.join(', ')}`);
+          }
+          
+          // Generate whitelist script
+          const whitelistScript = generateWhitelistScript(whitelistConfig);
+          
+          fastify.log.info(`[UAM Config] Configuring comprehensive firewall whitelist...`);
           
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
-            params: ['-c', addToWhitelist]
+            params: ['-c', whitelistScript]
           });
           
-          fastify.log.info(`[UAM Config] Whitelist configured for ${uamHost} (IP: ${uamIp || 'dynamic'})`);
+          fastify.log.info(`[UAM Config] Whitelist configured with ${portalUrls.length} portal URLs`);
           
           // Also configure DHCP Option 114 for RFC8908 Captive Portal API
-          const dhcpApiUrl = `${uamUrlObj.origin}/api`;
+          const dhcpApiUrl = `${uamOrigin}/api`;
           try {
             await routerRpcService.rpcCall(id, 'file', 'exec', {
               command: 'sh',
-              params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp`]
+              params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp; /etc/init.d/dnsmasq restart`]
             });
           } catch {
             // DHCP section might not exist, that's OK
