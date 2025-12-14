@@ -1123,9 +1123,15 @@ DICTEOF`);
           [ -n "$section" ] && uci delete "$section" 2>/dev/null || break
         done
         
-        # Delete ipset
+        # Delete authenticated ipset
         while uci show firewall 2>/dev/null | grep -q "name='${setName}'"; do
           section=$(uci show firewall | grep "name='${setName}'" | head -1 | cut -d. -f1-2)
+          [ -n "$section" ] && uci delete "$section" 2>/dev/null || break
+        done
+        
+        # Delete whitelist ipset
+        while uci show firewall 2>/dev/null | grep -q "name='uspot_wlist'"; do
+          section=$(uci show firewall | grep "name='uspot_wlist'" | head -1 | cut -d. -f1-2)
           [ -n "$section" ] && uci delete "$section" 2>/dev/null || break
         done
         
@@ -1213,7 +1219,29 @@ DICTEOF`);
       this.logger.info('[Setup] Created INPUT rules for DHCP, NTP, DNS, Portal');
 
       // ============================================================
-      // STEP 6: FORWARD RULE - ONLY AUTHENTICATED CLIENTS GET INTERNET
+      // STEP 6: WHITELIST IPSET FOR UAM SERVER
+      // Allows unauthenticated clients to reach external UAM server
+      // As per uspot docs: "optional whitelist for e.g. remote UAM host"
+      // ============================================================
+      const whitelistName = 'uspot_wlist';
+      await this.exec(routerId, 'uci add firewall ipset');
+      await this.exec(routerId, `uci set firewall.@ipset[-1].name='${whitelistName}'`);
+      await this.exec(routerId, `uci add_list firewall.@ipset[-1].match='dest_ip'`);
+      await this.exec(routerId, `uci set firewall.@ipset[-1].enabled='1'`);
+      this.logger.info(`[Setup] Created whitelist ipset '${whitelistName}'`);
+      
+      // Allow traffic to whitelist (must come BEFORE authenticated-only rule)
+      await this.exec(routerId, 'uci add firewall rule');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-Whitelist-hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="any"');
+      await this.exec(routerId, `uci set firewall.@rule[-1].ipset='${whitelistName}'`);
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
+      this.logger.info('[Setup] Created whitelist rule for UAM server access');
+
+      // ============================================================
+      // STEP 7: FORWARD RULE - ONLY AUTHENTICATED CLIENTS GET INTERNET
       // Matches uspot docs: Forward-auth-captive
       // ============================================================
       await this.exec(routerId, 'uci add firewall rule');
@@ -1227,7 +1255,7 @@ DICTEOF`);
       this.logger.info('[Setup] Created forward rule for authenticated clients only');
 
       // ============================================================
-      // STEP 7: BLOCK HOTSPOT -> LAN (prevent access to admin network)
+      // STEP 8: BLOCK HOTSPOT -> LAN (prevent access to admin network)
       // Optional but recommended for security
       // ============================================================
       await this.exec(routerId, 'uci add firewall rule');
@@ -1238,7 +1266,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
 
       // ============================================================
-      // STEP 7: COMMIT AND DONE
+      // STEP 9: COMMIT AND DONE
       // ============================================================
       await this.exec(routerId, 'uci commit firewall');
       this.logger.info('[Setup] Firewall configured: unauthenticated clients blocked');

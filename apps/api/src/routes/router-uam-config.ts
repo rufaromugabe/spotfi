@@ -414,10 +414,33 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Extract base URL from UAM server URL for RFC8908 API endpoint (only for UAM mode)
+      // For UAM mode: Add UAM server to firewall whitelist so unauthenticated clients can reach it
       if (authMode === 'uam' && body.uamServerUrl) {
         try {
           const uamUrlObj = new URL(body.uamServerUrl);
+          const uamHost = uamUrlObj.hostname;
+          
+          // Add UAM server hostname/IP to whitelist ipset
+          // The router will resolve DNS and add to the ipset
+          fastify.log.info(`[UAM Config] Adding ${uamHost} to firewall whitelist`);
+          
+          // First, clear existing entries from uspot_wlist
+          await routerRpcService.rpcCall(id, 'file', 'exec', {
+            command: 'sh',
+            params: ['-c', `
+              # Find and clear the whitelist ipset entries
+              section=$(uci show firewall 2>/dev/null | grep "name='uspot_wlist'" | head -1 | cut -d. -f1-2)
+              if [ -n "$section" ]; then
+                uci delete "\${section}.entry" 2>/dev/null || true
+                # Add UAM server hostname - firewall4 will resolve it
+                uci add_list "\${section}.entry='${uamHost}'"
+                uci commit firewall
+                /etc/init.d/firewall restart
+              fi
+            `]
+          });
+          
+          // Also extract base URL for RFC8908 API endpoint
           const dhcpApiUrl = `${uamUrlObj.origin}/api`;
           const dhcpConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'dhcp', section: 'captive' });
           if (dhcpConfig) {
@@ -429,8 +452,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
             });
             await routerRpcService.rpcCall(id, 'uci', 'commit', { config: 'dhcp' });
           }
-        } catch {
-          // DHCP captive section doesn't exist, skip Option 114
+        } catch (wlistErr: unknown) {
+          const errMsg = wlistErr instanceof Error ? wlistErr.message : 'Unknown error';
+          fastify.log.warn(`[UAM Config] Could not update whitelist: ${errMsg}`);
         }
       }
 
