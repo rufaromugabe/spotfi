@@ -4,6 +4,11 @@ export const renderLoginPage = (props: {
   uamport: string; 
   userurl: string; 
   error?: string;
+  // Additional uspot parameters
+  challenge?: string;
+  mac?: string;
+  nasid?: string;
+  sessionid?: string;
 }) => `
 <!DOCTYPE html>
 <html lang="en">
@@ -29,6 +34,10 @@ export const renderLoginPage = (props: {
             <input type="hidden" name="uamip" value="${props.uamip}">
             <input type="hidden" name="uamport" value="${props.uamport}">
             <input type="hidden" name="userurl" value="${props.userurl}">
+            ${props.challenge ? `<input type="hidden" name="challenge" value="${props.challenge}">` : ''}
+            ${props.mac ? `<input type="hidden" name="mac" value="${props.mac}">` : ''}
+            ${props.nasid ? `<input type="hidden" name="nasid" value="${props.nasid}">` : ''}
+            ${props.sessionid ? `<input type="hidden" name="sessionid" value="${props.sessionid}">` : ''}
             
             <label>Username</label>
             <input type="text" name="username" required autofocus autocomplete="username">

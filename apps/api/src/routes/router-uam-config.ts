@@ -350,9 +350,18 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         
         // UAM mode specific settings
         if (authMode === 'uam') {
+          // Generate a challenge secret for CHAP (use RADIUS secret or generate one)
+          // The challenge is: MD5(challenge_secret + formatted_mac)
+          const challengeSecret = body.radiusSecret || 'spotfi-challenge-secret';
+          
           uciCommands.push(
             `uci set uspot.${sectionName}.uam_port='3990'`,
-            `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`
+            `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
+            // CRITICAL: challenge option is required for CHAP authentication
+            // Without this, challenge=false is passed to UAM server and auth fails
+            `uci set uspot.${sectionName}.challenge='${challengeSecret}'`,
+            // uam_secret is used for UAM URL MD5 verification (optional but recommended)
+            `uci set uspot.${sectionName}.uam_secret='${challengeSecret}'`
           );
         }
         
