@@ -1172,6 +1172,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci add firewall redirect');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-unauth-hotspot-CPD"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].dest="hotspot"'); // Destination zone (required by firewall4)
       await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="80"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="tcp"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
