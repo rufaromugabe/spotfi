@@ -21,6 +21,9 @@ export interface WhitelistConfig {
   // Portal URLs - must be accessible without authentication
   portalUrls: string[];
   
+  // Custom allowed domains (e.g. google.com, facebook.com)
+  allowedDomains?: string[];
+
   // DNS servers - required for DNS resolution
   dnsServers?: string[];
   
@@ -153,10 +156,11 @@ export async function extractWhitelistDomains(config: WhitelistConfig): Promise<
 
 /**
  * Generates OpenWRT firewall whitelist configuration script
- * Uses both static IPs and dynamic DNS (dnsmasq ipset) for maximum compatibility
+ * Uses robust DNS-based IPSet whitelisting via dnsmasq
  */
 export function generateWhitelistScript(config: WhitelistConfig): string {
   const portalUrls = config.portalUrls || [];
+  const allowedDomains = config.allowedDomains || [];
   const dnsServers = config.dnsServers || DEFAULT_DNS_SERVERS;
   const ntpServers = config.ntpServers || DEFAULT_NTP_SERVERS;
   
@@ -179,6 +183,9 @@ export function generateWhitelistScript(config: WhitelistConfig): string {
     }
   });
   
+  // Add custom allowed domains
+  allowedDomains.forEach(d => domains.push(d));
+
   // Add OS detection domains
   OS_DETECTION_URLS.forEach(d => domains.push(d));
   
@@ -211,11 +218,13 @@ export function generateWhitelistScript(config: WhitelistConfig): string {
   
   return `
 #!/bin/sh
-echo "=== Configuring Captive Portal Whitelist ==="
+echo "=== Configuring Captive Portal Whitelist (DNS-Based) ==="
 echo "Domains to whitelist: ${uniqueDomains.length}"
 echo "IPs to whitelist: ${uniqueIps.length}"
 
+# ============================================================
 # STEP 1: Ensure firewall ipset exists
+# ============================================================
 idx=0
 found=""
 while uci get firewall.@ipset[$idx] >/dev/null 2>&1; do
@@ -236,39 +245,41 @@ if [ -z "$found" ]; then
   found=$(($(uci show firewall | grep -c 'firewall.@ipset') - 1))
 fi
 
-# STEP 2: Add static IPs to firewall ipset
-echo "Adding static IPs to firewall ipset..."
-uci delete firewall.@ipset[$found].entry 2>/dev/null || true
-${uniqueIps.map(ip => `uci add_list firewall.@ipset[$found].entry='${ip}'`).join('\n')}
-
-# STEP 3: Configure dnsmasq dynamic ipset (for Cloudflare/dynamic IPs)
-# This makes dnsmasq add resolved IPs to the ipset on DNS queries
+# ============================================================
+# STEP 2: Configure dnsmasq for Dynamic Whitelisting
+# Use 'ipset' option to add resolved IPs to uspot_wlist automatically
+# ============================================================
 echo "Configuring dnsmasq dynamic ipset..."
 
-# Check if dnsmasq ipset for uspot_wlist already exists
-dhcp_ipset_exists=""
+# First, remove any existing ipset entries to ensure clean state
+# (Only remove uspot_wlist entries to avoid breaking other configs)
 idx=0
 while uci get dhcp.@ipset[$idx] >/dev/null 2>&1; do
   names=$(uci get dhcp.@ipset[$idx].name 2>/dev/null)
   if echo "$names" | grep -q "uspot_wlist"; then
-    dhcp_ipset_exists=$idx
-    break
+    uci delete dhcp.@ipset[$idx] 2>/dev/null || true
+    # Decrement index since we removed an entry
+    idx=$((idx - 1))
   fi
   idx=$((idx + 1))
 done
 
-if [ -n "$dhcp_ipset_exists" ]; then
-  echo "Updating existing dnsmasq ipset at index $dhcp_ipset_exists"
-  uci delete dhcp.@ipset[$dhcp_ipset_exists].domain 2>/dev/null || true
-${uniqueDomains.map(domain => `  uci add_list dhcp.@ipset[$dhcp_ipset_exists].domain='${domain}'`).join('\n')}
-else
-  echo "Creating new dnsmasq ipset"
-  uci add dhcp ipset
-  uci add_list dhcp.@ipset[-1].name='uspot_wlist'
-${uniqueDomains.map(domain => `  uci add_list dhcp.@ipset[-1].domain='${domain}'`).join('\n')}
-fi
+# Create new dnsmasq ipset entry
+# This tells dnsmasq: "When resolving these domains, add IPs to 'uspot_wlist' ipset"
+uci add dhcp ipset
+uci add_list dhcp.@ipset[-1].name='uspot_wlist'
+${uniqueDomains.map(domain => `uci add_list dhcp.@ipset[-1].domain='${domain}'`).join('\n')}
 
-# STEP 4: Ensure firewall rule uses the ipset
+# ============================================================
+# STEP 3: Add Static IPs directly to Firewall IPSet
+# ============================================================
+echo "Adding static IPs to firewall ipset..."
+uci delete firewall.@ipset[$found].entry 2>/dev/null || true
+${uniqueIps.map(ip => `uci add_list firewall.@ipset[$found].entry='${ip}'`).join('\n')}
+
+# ============================================================
+# STEP 4: Ensure Firewall Rule Exists
+# ============================================================
 # Check if firewall rule exists
 rule_idx=0
 rule_found=""
@@ -285,7 +296,7 @@ done
 if [ -z "$rule_found" ]; then
   echo "Creating firewall rule for whitelist..."
   uci add firewall rule
-  uci set firewall.@rule[-1].name='Allow Portal Access'
+  uci set firewall.@rule[-1].name='Allow-Whitelist-hotspot'
   uci set firewall.@rule[-1].src='hotspot'
   uci set firewall.@rule[-1].dest='wan'
   uci set firewall.@rule[-1].ipset='uspot_wlist'
@@ -293,23 +304,19 @@ if [ -z "$rule_found" ]; then
   uci set firewall.@rule[-1].enabled='1'
 fi
 
-# Commit all changes
+# ============================================================
+# STEP 5: Commit and Restart
+# ============================================================
 uci commit firewall
 uci commit dhcp
 
-# Restart services
-echo "Restarting firewall and dnsmasq..."
+echo "Restarting services..."
 /etc/init.d/firewall restart
 /etc/init.d/dnsmasq restart
 
-echo "=== Whitelist configured ==="
-echo "Static IPs: ${uniqueIps.length}"
-echo "Dynamic domains: ${uniqueDomains.length}"
-echo ""
-echo "Whitelisted domains:"
-${uniqueDomains.map(d => `echo "  - ${d}"`).join('\n')}
-echo ""
-echo "Whitelisted IPs:"
+echo "=== Whitelist Configured Successfully ==="
+echo "Access allowed to:"
+${uniqueDomains.map(d => `echo "  - *.${d} (and subdomains)"`).join('\n')}
 ${uniqueIps.map(ip => `echo "  - ${ip}"`).join('\n')}
 `;
 }

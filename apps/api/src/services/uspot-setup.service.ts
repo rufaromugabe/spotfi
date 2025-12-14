@@ -1253,13 +1253,23 @@ DICTEOF`);
       
       // Block QUIC (UDP 443) - Force browsers to fall back to TCP/HTTPS
       // This prevents "ERR_QUIC_PROTOCOL_ERROR" in walled gardens
+      // Use DROP instead of REJECT to avoid RST packets that might confuse browsers
       await this.exec(routerId, 'uci add firewall rule');
       await this.exec(routerId, 'uci set firewall.@rule[-1].name="Block-QUIC-hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="443"');
-      await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="DROP"');
+
+      // Also block other QUIC ports that browsers might try
+      await this.exec(routerId, 'uci add firewall rule');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].name="Block-QUIC-alt-hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest="wan"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80"');
+      await this.exec(routerId, 'uci set firewall.@rule[-1].target="DROP"');
 
       // Allow traffic to whitelist (must come BEFORE authenticated-only rule)
       await this.exec(routerId, 'uci add firewall rule');
@@ -1297,7 +1307,35 @@ DICTEOF`);
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="REJECT"');
 
       // ============================================================
-      // STEP 9: COMMIT AND DONE
+      // STEP 9: DEBUG - Add known portal IPs directly to whitelist
+      // ============================================================
+      // If we have a known external portal IP, add it directly to avoid DNS issues
+      const knownPortalIPs = ['31.97.217.241']; // Add your portal IP here
+      for (const ip of knownPortalIPs) {
+        try {
+          // Find the whitelist ipset and add the IP
+          const result = await this.exec(routerId, `
+            idx=0
+            while uci get firewall.@ipset[$idx] >/dev/null 2>&1; do
+              name=$(uci get firewall.@ipset[$idx].name 2>/dev/null)
+              if [ "$name" = "uspot_wlist" ]; then
+                uci add_list firewall.@ipset[$idx].entry='${ip}'
+                echo "added"
+                break
+              fi
+              idx=$((idx + 1))
+            done
+          `);
+          if (result.includes('added')) {
+            this.logger.info(`[Setup] Added known portal IP ${ip} to whitelist`);
+          }
+        } catch (e) {
+          // IP might already be in the list or ipset not found
+        }
+      }
+
+      // ============================================================
+      // STEP 10: COMMIT AND DONE
       // ============================================================
       await this.exec(routerId, 'uci commit firewall');
       this.logger.info('[Setup] Firewall configured: unauthenticated clients blocked');

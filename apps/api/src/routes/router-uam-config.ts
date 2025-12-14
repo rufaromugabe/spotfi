@@ -168,6 +168,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
             type: 'string', 
             description: 'RADIUS accounting server IP:port (optional). Example: 192.168.1.100:1813' 
           },
+          allowedDomains: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Additional domains to whitelist (e.g. google.com, facebook.com). Supports subdomains automatically.'
+          },
           restartUspot: { type: 'boolean', default: true, description: 'Restart uspot and uhttpd services after configuration' },
           combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
           ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
@@ -184,6 +189,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       radiusServer?: string;
       radiusSecret?: string;
       radiusServer2?: string;
+      allowedDomains?: string[];
       restartUspot?: boolean;
       combinedSSID?: boolean;
       ssid?: string;
@@ -450,7 +456,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
             dnsServers,
             ntpServers: undefined, // Will use defaults
             routerUamIp,
-            routerUamPort
+            routerUamPort,
+            allowedDomains: body.allowedDomains // Pass custom domains
           };
           
           // Validate configuration
@@ -469,7 +476,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
             params: ['-c', whitelistScript]
           });
           
-          fastify.log.info(`[UAM Config] Whitelist configured with ${portalUrls.length} portal URLs`);
+          fastify.log.info(`[UAM Config] Whitelist configured with ${portalUrls.length} portal URLs and ${body.allowedDomains?.length || 0} custom domains`);
           
           // Also configure DHCP Option 114 for RFC8908 Captive Portal API
           const dhcpApiUrl = `${uamOrigin}/api`;
