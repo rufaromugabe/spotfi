@@ -706,6 +706,16 @@ DICTEOF`);
         await this.exec(routerId, 'chmod 644 /etc/radcli/dictionary');
         
         this.logger.info(`[Setup] radcli dictionary created (${lineCount} lines)`);
+        
+        // Restart uspot to reload dictionary (uspot-radius caches dictionary at startup)
+        // This ensures the new dictionary with correct types is loaded
+        try {
+          await this.exec(routerId, '/etc/init.d/uspot restart 2>/dev/null || true');
+          this.logger.info('[Setup] Restarted uspot to reload dictionary');
+        } catch (restartErr: any) {
+          // uspot might not be running yet, that's okay - it will load on next start
+          this.logger.debug(`[Setup] Could not restart uspot (may not be running yet): ${restartErr.message}`);
+        }
 
       } catch (radcliErr: any) {
         this.logger.warn(`[Setup] Could not configure radcli dictionary: ${radcliErr.message}`);
