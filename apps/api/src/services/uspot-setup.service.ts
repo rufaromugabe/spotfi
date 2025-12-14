@@ -1169,6 +1169,21 @@ DICTEOF`);
       // Redirects HTTP traffic to local uhttpd on hotspot interface
       // ============================================================
       const hotspotIp = this.HOTSPOT_IP;
+
+      // 4a. DNS HIJACKING - Force all DNS to router
+      // Critical for Walled Garden (ipset) to work as dnsmasq must see queries
+      await this.exec(routerId, 'uci add firewall redirect');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-DNS-hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="53"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="udp tcp"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
+      await this.exec(routerId, `uci set firewall.@redirect[-1].dest_ip='${hotspotIp}'`);
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].dest_port="53"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].reflection="0"');
+      this.logger.info(`[Setup] Created DNS redirect to ${hotspotIp} for ipset population`);
+
+      // 4b. HTTP Redirect (CPD)
       await this.exec(routerId, 'uci add firewall redirect');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-unauth-hotspot-CPD"');
       await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
