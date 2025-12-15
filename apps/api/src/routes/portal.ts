@@ -6,10 +6,8 @@ import {
   validateAndSanitizeUserUrl,
   validateRouterIp,
   validateRouterPort,
-  escapeHtml,
   checkRedirectLoop,
-  clearRedirectState,
-  getCSPHeader
+  clearRedirectState
 } from '../utils/portal-security.js';
 
 interface PortalQuery {
@@ -79,14 +77,14 @@ export async function portalRoutes(fastify: FastifyInstance) {
       return reply.code(400).send("Redirect loop detected. Please clear your browser cache and try again.");
     }
 
-    // SECURITY: Escape HTML in error messages (prevents XSS)
+    // Error message handling
     let errorMessage: string | undefined;
     if (error) {
-      errorMessage = escapeHtml(error);
+      errorMessage = error;
     } else if (res === 'reject') {
-      errorMessage = escapeHtml(radiusReply || 'Authentication failed. Please check your credentials.');
+      errorMessage = radiusReply || 'Authentication failed. Please check your credentials.';
     } else if (res === 'failed') {
-      errorMessage = escapeHtml(reason || 'Authentication failed. Please try again.');
+      errorMessage = reason || 'Authentication failed. Please try again.';
     } else if (res === 'logoff') {
       errorMessage = 'You have been logged off.';
     }
@@ -108,11 +106,6 @@ export async function portalRoutes(fastify: FastifyInstance) {
       nasid,
       sessionid
     });
-
-    // SECURITY: Add Content Security Policy header
-    reply.header('Content-Security-Policy', getCSPHeader());
-    reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('X-Frame-Options', 'DENY');
     
     reply.type('text/html').send(html);
   });
@@ -144,7 +137,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
     // Helper to avoid infinite redirect loops
     const safeRedirect = (errorMessage: string) => {
-      const errorParam = encodeURIComponent(escapeHtml(errorMessage));
+      const errorParam = encodeURIComponent(errorMessage);
       return reply.redirect(`${uamServerUrl}?uamip=${encodeURIComponent(uamip)}&uamport=${encodeURIComponent(validatedPort)}&userurl=${encodeURIComponent(sanitizedUserUrl)}&error=${errorParam}`);
     };
 
