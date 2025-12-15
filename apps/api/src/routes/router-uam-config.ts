@@ -6,20 +6,19 @@ import { UspotSetupService } from '../services/uspot-setup.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
 
 export async function routerUamConfigRoutes(fastify: FastifyInstance) {
-  // Async uSpot setup endpoint - returns job ID immediately
+  // Async uSpot setup
   fastify.post('/api/routers/:id/uspot/setup/async', {
     preHandler: [fastify.authenticate, requireAdmin],
     schema: {
       tags: ['router-management'],
-      summary: 'Start async uSpot setup (recommended for slow connections)',
+      summary: 'Start async uSpot setup',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Starts setup in background. Use GET /api/routers/:id/uspot/setup/status to check progress.',
       body: {
         type: 'object',
         properties: {
-          combinedSSID: { type: 'boolean', description: 'Create combined 2.4GHz and 5GHz wireless network' },
-          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
-          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
+          combinedSSID: { type: 'boolean' },
+          ssid: { type: 'string', default: 'SpotFi' },
+          password: { type: 'string', default: 'none' }
         }
       }
     }
@@ -34,9 +33,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
+    if (!router) return reply.code(404).send({ error: 'Router not found' });
 
     try {
       const setupService = new UspotSetupService(fastify.log);
@@ -46,42 +43,35 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         routerId: id,
         jobId,
         status: 'pending',
-        message: 'Setup started. Poll /api/routers/:id/uspot/setup/status or /api/setup/jobs/:jobId for progress.',
+        message: 'Setup started. Poll status endpoint for progress.',
         statusUrl: `/api/routers/${id}/uspot/setup/status`,
         jobUrl: `/api/setup/jobs/${jobId}`
       });
-
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      fastify.log.error(`[uSpot Setup Async] Failed to start: ${errorMessage}`);
-      return reply.code(500).send({ error: errorMessage });
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`[uSpot Setup] Failed: ${msg}`);
+      return reply.code(500).send({ error: msg });
     }
   });
 
-  // Get setup job status by router ID
+  // Get setup status by router ID
   fastify.get('/api/routers/:id/uspot/setup/status', {
     preHandler: [fastify.authenticate],
     schema: {
       tags: ['router-management'],
-      summary: 'Get uSpot setup status for a router',
-      security: [{ bearerAuth: [] }],
-      description: 'Returns the current setup job status for a router (if any)'
+      summary: 'Get uSpot setup status',
+      security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
+    if (!router) return reply.code(404).send({ error: 'Router not found' });
 
     const job = UspotSetupService.getJobByRouterId(id);
     if (!job) {
-      return reply.code(404).send({ 
-        error: 'No setup job found for this router',
-        message: 'Start a setup using POST /api/routers/:id/uspot/setup/async'
-      });
+      return reply.code(404).send({ error: 'No setup job found' });
     }
 
     return {
@@ -97,29 +87,23 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     };
   });
 
-  // Get setup job status by job ID
+  // Get setup status by job ID
   fastify.get('/api/setup/jobs/:jobId', {
     preHandler: [fastify.authenticate],
     schema: {
       tags: ['router-management'],
-      summary: 'Get setup job status by job ID',
-      security: [{ bearerAuth: [] }],
-      description: 'Returns the current status of a setup job'
+      summary: 'Get setup job status',
+      security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
     const { jobId } = request.params as { jobId: string };
 
     const job = UspotSetupService.getJobStatus(jobId);
-    if (!job) {
-      return reply.code(404).send({ error: 'Setup job not found' });
-    }
+    if (!job) return reply.code(404).send({ error: 'Job not found' });
 
-    // Verify user has access to this router
     const router = await routerAccessService.verifyRouterAccess(job.routerId, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(403).send({ error: 'Access denied' });
-    }
+    if (!router) return reply.code(403).send({ error: 'Access denied' });
 
     return {
       routerId: job.routerId,
@@ -134,49 +118,28 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     };
   });
 
-
+  // Configure UAM
   fastify.post('/api/routers/:id/uam/configure', {
     preHandler: [fastify.authenticate, requireAdmin],
     schema: {
       tags: ['router-management'],
-      summary: 'Configure uspot captive portal settings',
+      summary: 'Configure uspot captive portal',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Configure uspot auth mode and settings. RADIUS secret is automatically injected from server configuration (RADIUS_MASTER_SECRET). Use authMode to switch between click-to-continue (simple), uam (RADIUS UAM), radius (RADIUS credentials), or credentials (local users).',
+      description: 'Configure uspot auth mode. RADIUS secret injected from RADIUS_MASTER_SECRET env.',
       body: {
         type: 'object',
         required: ['authMode'],
         properties: {
-          authMode: {
-            type: 'string',
-            enum: ['click-to-continue', 'uam', 'radius', 'credentials'],
-            description: 'Authentication mode (required): click-to-continue (accept & go), uam (RADIUS UAM with external portal), radius (RADIUS with local login), credentials (local username/password)'
-          },
-          uamServerUrl: { 
-            type: 'string', 
-            description: 'UAM portal URL (required for uam mode). Example: https://api.spotfi.com/uam/login' 
-          },
-          radiusServer: { 
-            type: 'string', 
-            description: 'RADIUS authentication server IP:port (required for uam/radius modes). Example: 192.168.1.100:1812' 
-          },
-          radiusServer2: { 
-            type: 'string', 
-            description: 'RADIUS accounting server IP:port (optional). Example: 192.168.1.100:1813' 
-          },
-          allowedDomains: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Domains to whitelist (Walled Garden). Unauthenticated users can access these.'
-          },
-          blockedDomains: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Domains to block (Content Filter). No users can access these.'
-          },
-          restartUspot: { type: 'boolean', default: true, description: 'Restart uspot and uhttpd services after configuration' },
-          combinedSSID: { type: 'boolean', default: false, description: 'Create combined 2.4GHz and 5GHz wireless network' },
-          ssid: { type: 'string', default: 'SpotFi', description: 'SSID for the wireless network' },
-          password: { type: 'string', default: 'none', description: 'Password for the wireless network (use "none" for open network)' }
+          authMode: { type: 'string', enum: ['click-to-continue', 'uam', 'radius', 'credentials'] },
+          uamServerUrl: { type: 'string' },
+          radiusServer: { type: 'string', description: 'IP:port format' },
+          radiusServer2: { type: 'string', description: 'Accounting server IP:port' },
+          allowedDomains: { type: 'array', items: { type: 'string' } },
+          blockedDomains: { type: 'array', items: { type: 'string' } },
+          restartUspot: { type: 'boolean', default: true },
+          combinedSSID: { type: 'boolean', default: false },
+          ssid: { type: 'string', default: 'SpotFi' },
+          password: { type: 'string', default: 'none' }
         }
       }
     }
@@ -196,22 +159,10 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       password?: string;
     };
 
-    // ============================================================
-    // DUAL SECRET ARCHITECTURE
-    // ============================================================
-    // 1. Master Secret (from ENV): Used for RADIUS auth (router <-> FreeRADIUS)
-    // 2. Unique UAM Secret (from DB): Used for portal/CHAP verification (router <-> API)
-    //
-    // This provides security isolation - if one router is compromised,
-    // the attacker cannot spoof the portal for other routers.
-    // ============================================================
+    // Secrets: masterSecret for RADIUS, uniqueUamSecret for portal CHAP
     const masterSecret = process.env.RADIUS_MASTER_SECRET;
-    
     if (!masterSecret) {
-      fastify.log.error('[UAM Config] CRITICAL: RADIUS_MASTER_SECRET is not set in environment');
-      return reply.code(500).send({ 
-        error: 'Server misconfiguration: RADIUS_MASTER_SECRET not configured. Contact administrator.' 
-      });
+      return reply.code(500).send({ error: 'RADIUS_MASTER_SECRET not configured' });
     }
 
     if (body.combinedSSID) {
@@ -220,21 +171,15 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
+    if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    // Get the unique UAM secret from database (auto-generated per router)
     const uniqueUamSecret = router.radiusSecret;
     if (!uniqueUamSecret) {
-      fastify.log.error(`[UAM Config] Router ${id} has no UAM secret configured`);
-      return reply.code(500).send({ 
-        error: 'Router configuration incomplete: Missing UAM secret. Try re-registering the router.' 
-      });
+      return reply.code(500).send({ error: 'Router missing UAM secret. Re-register router.' });
     }
 
     try {
-      // If wireless settings are provided, update them
+      // Configure wireless if requested
       if (body.combinedSSID) {
         const setupService = new UspotSetupService(fastify.log);
         await setupService.configureWireless(id, {
@@ -244,78 +189,40 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Ensure /www-uspot directory exists (required by uhttpd)
+      // Ensure www-uspot directory exists
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
         params: ['-c', 'mkdir -p /www-uspot && [ -f /www-uspot/index.html ] || echo \'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/hotspot"></head><body>Redirecting...</body></html>\' > /www-uspot/index.html']
       });
 
-      // Check if uspot named section exists, create if needed
-      // uspot uses named sections: config uspot 'sectionname' (NOT config instance)
+      // Ensure uspot section exists
       const sectionName = 'hotspot';
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
         params: ['-c', `uci -q show uspot.${sectionName} || (uci set uspot.${sectionName}=uspot && uci set uspot.${sectionName}.enabled=1 && uci set uspot.${sectionName}.interface=${sectionName} && uci set uspot.${sectionName}.setname=uspot_${sectionName} && uci commit uspot)`]
       });
 
-      // Require explicit auth mode - no defaults
       if (!body.authMode) {
-        return reply.code(400).send({ 
-          error: 'authMode is required. Must be one of: click-to-continue, uam, radius, credentials' 
-        });
+        return reply.code(400).send({ error: 'authMode is required' });
       }
       
       const authMode = body.authMode;
       
-      // Strict validation: require all necessary fields based on auth mode
-      // Note: radiusSecret is NOT required from client - it's injected from env
+      // Validate required fields per mode
       if (authMode === 'uam') {
-        if (!body.radiusServer) {
-          return reply.code(400).send({ 
-            error: 'radiusServer is required for auth_mode "uam"' 
-          });
-        }
-        if (!body.uamServerUrl) {
-          return reply.code(400).send({ 
-            error: 'uamServerUrl is required for auth_mode "uam"' 
-          });
-        }
-        // Validate UAM URL format
-        try {
-          new URL(body.uamServerUrl);
-        } catch {
-          return reply.code(400).send({ 
-            error: 'uamServerUrl must be a valid URL (e.g., https://api.spotfi.com/uam/login)' 
-          });
-        }
-        // Validate RADIUS server format (IP:port)
-        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) {
-          return reply.code(400).send({ 
-            error: 'radiusServer must be in format IP:port (e.g., 192.168.1.100:1812)' 
-          });
-        }
+        if (!body.radiusServer) return reply.code(400).send({ error: 'radiusServer required for UAM' });
+        if (!body.uamServerUrl) return reply.code(400).send({ error: 'uamServerUrl required for UAM' });
+        try { new URL(body.uamServerUrl); } catch { return reply.code(400).send({ error: 'Invalid uamServerUrl' }); }
+        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) return reply.code(400).send({ error: 'radiusServer format: IP:port' });
       } else if (authMode === 'radius') {
-        if (!body.radiusServer) {
-          return reply.code(400).send({ 
-            error: 'radiusServer is required for auth_mode "radius"' 
-          });
-        }
-        // Validate RADIUS server format (IP:port)
-        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) {
-          return reply.code(400).send({ 
-            error: 'radiusServer must be in format IP:port (e.g., 192.168.1.100:1812)' 
-          });
-        }
+        if (!body.radiusServer) return reply.code(400).send({ error: 'radiusServer required for RADIUS' });
+        if (!/^[\d.]+:\d+$/.test(body.radiusServer)) return reply.code(400).send({ error: 'radiusServer format: IP:port' });
       }
       
-      // Build UCI commands using named section
-      let uciCommands = [
-        `uci set uspot.${sectionName}.auth_mode='${authMode}'`
-      ];
+      let uciCommands = [`uci set uspot.${sectionName}.auth_mode='${authMode}'`];
       
-      // For click-to-continue mode, just set auth_mode and we're done
       if (authMode === 'click-to-continue') {
-        // Remove RADIUS settings if switching to click-to-continue
+        // Clear RADIUS settings
         uciCommands.push(
           `uci delete uspot.${sectionName}.uam_server 2>/dev/null || true`,
           `uci delete uspot.${sectionName}.auth_server 2>/dev/null || true`,
@@ -325,27 +232,23 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           `uci delete uspot.${sectionName}.acct_secret 2>/dev/null || true`
         );
       } else {
-        // For uam/radius modes, configure RADIUS settings
-        // SECURITY: Use masterSecret from environment, NOT from request body
+        // RADIUS modes
         const radiusHost = body.radiusServer!.split(':')[0];
         const radiusPort = body.radiusServer!.split(':')[1] || '1812';
         
-        // Get router MAC for nasmac (required by uspot for RADIUS modes)
-        let nasmac = '';
+        // Get router MAC
+        let nasmac = '00:00:00:00:00:00';
         try {
           const macResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
             params: ['-c', "cat /sys/class/net/br-lan/address 2>/dev/null || cat /sys/class/net/eth0/address 2>/dev/null || echo '00:00:00:00:00:00'"]
           });
-          nasmac = (macResult?.stdout || '').trim().toUpperCase();
-        } catch {
-          nasmac = '00:00:00:00:00:00';
-        }
+          nasmac = (macResult?.stdout || '').trim().toUpperCase() || '00:00:00:00:00:00';
+        } catch {}
         
-        // Generate nasid from router name or use default
         const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
         
-        // Get hotspot IP for uhttpd UAM listener
+        // Get hotspot IP
         let hotspotIp = '10.1.30.1';
         try {
           const ipResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
@@ -355,7 +258,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
         } catch {}
         
-        // SECURITY: Inject master secret from environment
+        // RADIUS auth settings (master secret)
         uciCommands.push(
           `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
           `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
@@ -364,16 +267,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           `uci set uspot.${sectionName}.nasmac='${nasmac}'`
         );
         
-        // UAM mode specific settings
+        // UAM mode: portal/CHAP settings (unique secret per router)
         if (authMode === 'uam') {
-          // ============================================================
-          // DUAL SECRET USAGE:
-          // - Master Secret: For RADIUS auth (auth_secret, acct_secret)
-          // - Unique Secret: For portal verification (uam_secret, challenge)
-          // ============================================================
-          // challenge: Used for CHAP authentication (MD5 challenge response)
-          // uam_secret: Used for UAM URL MD5 verification
-          // Both use the UNIQUE per-router secret so each router has isolated security
           uciCommands.push(
             `uci set uspot.${sectionName}.uam_port='3990'`,
             `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
@@ -382,7 +277,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           );
         }
         
-        // Accounting server (optional)
+        // Accounting server (master secret)
         if (body.radiusServer2) {
           const acctHost = body.radiusServer2.split(':')[0];
           const acctPort = body.radiusServer2.split(':')[1] || '1813';
@@ -393,52 +288,44 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           );
         }
         
-        // Configure uhttpd UAM listener on port 3990 (required for UAM mode)
+        // Configure uhttpd UAM listener
         if (authMode === 'uam') {
-          const uhttpdUamCommands = [
-            `uci set uhttpd.uam3990=uhttpd`,
-            `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
-            `uci set uhttpd.uam3990.redirect_https='0'`,
-            `uci set uhttpd.uam3990.max_requests='5'`,
-            `uci set uhttpd.uam3990.no_dirlists='1'`,
-            `uci set uhttpd.uam3990.home='/www-uspot'`,
-            `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
-            `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
-            `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
-            `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
-            `uci commit uhttpd`
-          ];
-          
-          // Configure uhttpd UAM listener
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
-            params: ['-c', uhttpdUamCommands.join(' && ')]
+            params: ['-c', [
+              `uci set uhttpd.uam3990=uhttpd`,
+              `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
+              `uci set uhttpd.uam3990.redirect_https='0'`,
+              `uci set uhttpd.uam3990.max_requests='5'`,
+              `uci set uhttpd.uam3990.no_dirlists='1'`,
+              `uci set uhttpd.uam3990.home='/www-uspot'`,
+              `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
+              `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
+              `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
+              `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
+              `uci commit uhttpd`
+            ].join(' && ')]
           });
         }
-      } // End of RADIUS modes block
+      }
 
       uciCommands.push('uci commit uspot');
-
-      // Execute all UCI commands in one shell call
       await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: 'sh',
         params: ['-c', uciCommands.join(' && ')]
       });
 
       if (body.restartUspot !== false) {
-        // Restart both uhttpd (for UAM listener) and uspot
         await routerRpcService.rpcCall(id, 'file', 'exec', {
           command: 'sh',
           params: ['-c', '/etc/init.d/uhttpd restart && /etc/init.d/uspot restart']
         });
       }
 
-      // Configure Access Control (Whitelist & Blocklist)
-      // This uses the clean service method instead of inline scripts
+      // Configure access control for UAM
       if (authMode === 'uam') {
         const setupService = new UspotSetupService(fastify.log);
         
-        // Get DNS servers from router config (or use defaults)
         let dnsServers: string[] | undefined;
         try {
           const dnsResult = await routerRpcService.rpcCall(id, 'file', 'exec', {
@@ -446,12 +333,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
             params: ['-c', "uci -q get dhcp.@dnsmasq[0].server 2>/dev/null | tr ' ' '\\n' | grep -v '^$' || echo ''"]
           });
           const routerDns = (dnsResult?.stdout || '').trim().split('\n').filter(Boolean);
-          if (routerDns.length > 0) {
-            dnsServers = routerDns;
-          }
-        } catch {
-          // Use defaults
-        }
+          if (routerDns.length > 0) dnsServers = routerDns;
+        } catch {}
 
         await setupService.configureAccessControl(id, {
           whitelist: body.allowedDomains,
@@ -460,10 +343,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           dnsServers
         });
         
-        // Also configure DHCP Option 114 for RFC8908 Captive Portal API
-        const uamUrlObj = new URL(body.uamServerUrl!);
-        const dhcpApiUrl = `${uamUrlObj.origin}/api`;
+        // Configure DHCP Option 114 for RFC8908
         try {
+          const dhcpApiUrl = `${new URL(body.uamServerUrl!).origin}/api`;
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
             params: ['-c', `uci set dhcp.hotspot.dhcp_option="114,${dhcpApiUrl}" 2>/dev/null || true; uci commit dhcp; /etc/init.d/dnsmasq restart`]
@@ -471,69 +353,52 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         } catch {}
       }
 
-      // Return config with unique UAM secret visible (needed for portal integration)
-      // SECURITY: Master RADIUS secret is never exposed
       return {
         routerId: id,
         success: true,
-        message: `uspot configured with auth_mode '${authMode}'`,
+        message: `Configured with auth_mode '${authMode}'`,
         config: {
           authMode,
           uamServerUrl: body.uamServerUrl,
           radiusServer: body.radiusServer,
           radiusServer2: body.radiusServer2,
-          // Unique UAM secret is safe to expose (per-router, used for portal verification)
           uamSecret: uniqueUamSecret,
-          // Master RADIUS secret is NEVER exposed
           radiusSecret: '********'
         }
       };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      fastify.log.error(`[UAM Config] Failed: ${errorMessage}`);
-      return reply.code(503).send({ error: errorMessage });
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`[UAM Config] Failed: ${msg}`);
+      return reply.code(503).send({ error: msg });
     }
   });
 
+  // Get current UAM config
   fastify.get('/api/routers/:id/uam/config', {
     preHandler: [fastify.authenticate],
     schema: {
       tags: ['router-management'],
-      summary: 'Get current UAM and RADIUS configuration',
-      security: [{ bearerAuth: [] }],
-      description: 'Returns the current UAM configuration. The unique UAM secret (per-router) is exposed for portal integration. The master RADIUS secret is always masked.'
+      summary: 'Get UAM configuration',
+      security: [{ bearerAuth: [] }]
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
-    if (!router) {
-      return reply.code(404).send({ error: 'Router not found' });
-    }
+    if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    // Get the unique UAM secret from database (this is safe to expose)
     const uniqueUamSecret = router.radiusSecret;
 
     try {
       const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
       const values = uspotConfig?.values || uspotConfig || {};
       
-      // Find uspot sections (named sections of type 'uspot')
-      // UCI dump returns sections by name (e.g. 'hotspot') or ID (e.g. cfg123456)
       const sectionKey = Object.keys(values).find(key => 
-        values[key]['.type'] === 'uspot' || 
-        key === 'hotspot' ||
-        key === 'captive'
+        values[key]['.type'] === 'uspot' || key === 'hotspot' || key === 'captive'
       );
-      
       const section = sectionKey ? values[sectionKey] : {};
 
-      // ============================================================
-      // DUAL SECRET RESPONSE:
-      // - uamSecret: Exposed (unique per-router, used for portal verification)
-      // - radiusSecret: MASKED (master secret, never exposed)
-      // ============================================================
       return {
         routerId: id,
         config: {
@@ -546,18 +411,15 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           nasmac: section.nasmac || section['nasmac'],
           interface: section.interface || section['interface'],
           setname: section.setname || section['setname'],
-          // Unique UAM secret - EXPOSED (safe, per-router isolation)
           uamSecret: uniqueUamSecret,
-          // Master RADIUS secret - ALWAYS MASKED (never expose)
           radiusSecret: '********',
           authSecret: '********',
-          acctSecret: (section.acct_server) ? '********' : undefined
+          acctSecret: section.acct_server ? '********' : undefined
         }
       };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      return reply.code(503).send({ error: errorMessage });
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return reply.code(503).send({ error: msg });
     }
   });
 }
-

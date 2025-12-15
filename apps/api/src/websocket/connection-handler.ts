@@ -14,14 +14,10 @@ export class RouterConnectionHandler {
   private nasService: NasService;
   private lastPongTime: number;
   private healthCheckInterval: NodeJS.Timeout | null = null;
-  private readonly PING_INTERVAL = 30000; // 30 seconds
-  private readonly PONG_TIMEOUT = 60000; // 60 seconds - mark offline if no pong
+  private readonly PING_INTERVAL = 30000;
+  private readonly PONG_TIMEOUT = 60000;
 
-  constructor(
-    routerId: string,
-    socket: WebSocket,
-    logger: FastifyBaseLogger
-  ) {
+  constructor(routerId: string, socket: WebSocket, logger: FastifyBaseLogger) {
     this.routerId = routerId;
     this.socket = socket;
     this.logger = logger;
@@ -30,58 +26,42 @@ export class RouterConnectionHandler {
   }
 
   async initialize(clientIp: string, routerName?: string): Promise<void> {
-    // DUAL SECRET ARCHITECTURE:
-    // - Master Secret (from ENV): Used for RADIUS auth (NasService fetches it internally)
-    // - Unique UAM Secret (from DB): Used for portal/CHAP verification (router <-> API)
-    //
-    // The DB radiusSecret column stores the UNIQUE UAM secret per router
-    // We do NOT overwrite it - it's set at router creation time
-
     const router = await prisma.router.findUnique({
       where: { id: this.routerId },
       select: { nasipaddress: true, name: true }
     });
 
-    if (!router) {
-      throw new Error('Router not found');
-    }
+    if (!router) throw new Error('Router not found');
 
     const ipChanged = router.nasipaddress && router.nasipaddress !== clientIp;
-    const nameChanged = routerName && routerName.trim() && router.name !== routerName.trim();
+    const nameChanged = routerName?.trim() && router.name !== routerName.trim();
 
-    // Record initial heartbeat in Redis (immediate, no DB write)
-    await recordRouterHeartbeat(this.routerId).catch((err) => {
-      this.logger.warn(`Failed to record initial heartbeat for router ${this.routerId}: ${err.message}`);
+    await recordRouterHeartbeat(this.routerId).catch(err => {
+      this.logger.warn(`Failed to record heartbeat: ${err.message}`);
     });
 
-    // Update router status, IP, name
-    // NOTE: radiusSecret is NOT updated here - it's the unique UAM secret set at creation
     await prisma.router.update({
       where: { id: this.routerId },
       data: {
         status: 'ONLINE',
         lastSeen: new Date(),
         nasipaddress: clientIp,
-        ...(nameChanged && { name: routerName.trim() })
+        ...(nameChanged && { name: routerName!.trim() })
       }
     });
 
     if (nameChanged) {
-      this.logger.info(`Router ${this.routerId} name updated to: ${routerName.trim()}`);
+      this.logger.info(`Router ${this.routerId} name updated: ${routerName!.trim()}`);
     }
 
-    // Get updated router info
     const updatedRouter = await prisma.router.findUnique({
       where: { id: this.routerId },
       select: { name: true }
     });
 
-    if (!updatedRouter) {
-      throw new Error('Router configuration incomplete');
-    }
+    if (!updatedRouter) throw new Error('Router configuration incomplete');
 
-    // Handle NAS entries
-    // DUAL SECRET ARCHITECTURE: NasService uses master secret from ENV internally
+    // Sync NAS entry (uses master secret from ENV internally)
     if (ipChanged && router.nasipaddress) {
       await this.nasService.handleIpChange(
         router.nasipaddress,
@@ -98,120 +78,85 @@ export class RouterConnectionHandler {
 
     this.logger.info(`Router ${this.routerId} connected from ${clientIp}`);
 
-    // Reconcile sessions after router reconnects (async, don't block)
-    // This ensures any sessions that should be terminated are properly handled
+    // Background session reconciliation
     setImmediate(async () => {
       try {
-        // Queue any failed disconnects for retry
         await queueFailedDisconnectsForRetry(this.routerId, this.logger);
-        
-        // Reconcile sessions (compare DB state with router state)
         const result = await reconcileRouterSessions(this.routerId, this.logger);
         if (result.mismatches > 0) {
-          this.logger.info(
-            `[Reconciliation] Router ${this.routerId}: ${result.mismatches} mismatches found, ` +
-            `${result.kicked} sessions kicked, ${result.errors} errors`
-          );
+          this.logger.info(`[Reconciliation] ${this.routerId}: ${result.mismatches} mismatches, ${result.kicked} kicked`);
         }
       } catch (error: any) {
-        this.logger.error(`[Reconciliation] Error during router ${this.routerId} reconciliation: ${error.message}`);
+        this.logger.error(`[Reconciliation] Error: ${error.message}`);
       }
     });
   }
 
   setupMessageHandlers(): void {
-    // Handle native WebSocket pong frames (more efficient than application-level)
     this.socket.on('pong', async () => {
       this.lastPongTime = Date.now();
-      // Record heartbeat in Redis (memory, sub-ms latency, no DB write)
-      await recordRouterHeartbeat(this.routerId).catch((err) => {
-        this.logger.warn(`Failed to record heartbeat for router ${this.routerId}: ${err.message}`);
-      });
+      await recordRouterHeartbeat(this.routerId).catch(() => {});
     });
 
     this.socket.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString());
-        this.logger.debug(`[Router ${this.routerId}] Received message type: ${message.type}`);
         
         switch (message.type) {
           case 'metrics':
-            // Metrics indicate connection is alive
             this.lastPongTime = Date.now();
-            // Record heartbeat in Redis (metrics indicate router is active)
-            await recordRouterHeartbeat(this.routerId).catch((err) => {
-              this.logger.warn(`Failed to record heartbeat for router ${this.routerId}: ${err.message}`);
-            });
+            await recordRouterHeartbeat(this.routerId).catch(() => {});
             await this.handleMetrics(message.metrics);
             break;
-
           case 'x-data':
-            // Forward x data from router to frontend client
             this.handlexData(message);
             break;
-
           case 'x-started':
-            // Router confirmed x session started
-            this.logger.info(`[Router ${this.routerId}] x session ${message.sessionId} confirmed started by router`);
+            this.logger.info(`[Router ${this.routerId}] x session ${message.sessionId} started`);
             break;
-
           case 'x-error':
-            // Router reported x error
-            this.logger.error(`[Router ${this.routerId}] x error for session ${message.sessionId}: ${message.error}`);
+            this.logger.error(`[Router ${this.routerId}] x error: ${message.error}`);
             break;
-
           case 'rpc-result':
-            // Handle RPC call result (generic ubus response)
-            if (message.id) {
-              commandManager.handleResponse(message.id, message);
-            }
+            if (message.id) commandManager.handleResponse(message.id, message);
             break;
-
           case 'update-router-name':
-            // Handle router name update from bridge
             await this.handleRouterNameUpdate(message.name);
             break;
-
           default:
-            this.logger.warn(`[Router ${this.routerId}] Unknown message type: ${message.type}`);
+            this.logger.warn(`[Router ${this.routerId}] Unknown message: ${message.type}`);
         }
       } catch (error) {
-        this.logger.error(`[Router ${this.routerId}] Message handling error: ${error}`);
+        this.logger.error(`[Router ${this.routerId}] Message error: ${error}`);
       }
     });
 
     this.socket.on('close', async () => {
       this.cleanup();
-      // Mark offline in Redis (immediate) and Postgres (for persistence)
       await Promise.all([
         markRouterOffline(this.routerId).catch(() => {}),
         this.markOfflineInPostgres()
       ]);
-      // Close all x sessions for this router
       xTunnelManager.closeRouterSessions(this.routerId);
       this.logger.info(`Router ${this.routerId} disconnected`);
     });
 
     this.socket.on('error', async (error: Error) => {
-      this.logger.error(`Router ${this.routerId} socket error: ${error.message}`);
+      this.logger.error(`Router ${this.routerId} error: ${error.message}`);
       this.cleanup();
-      // Mark offline in Redis (immediate) and Postgres (for persistence)
       await Promise.all([
         markRouterOffline(this.routerId).catch(() => {}),
         this.markOfflineInPostgres()
       ]);
     });
 
-    // Start health check with native ping/pong
     this.startHealthCheck();
   }
 
   private startHealthCheck(): void {
     this.healthCheckInterval = setInterval(async () => {
-      // Check if connection is still alive
       if (this.socket.readyState !== WebSocket.OPEN) {
         this.cleanup();
-        // Mark offline in Redis (immediate) and Postgres (for persistence)
         await Promise.all([
           markRouterOffline(this.routerId).catch(() => {}),
           this.markOfflineInPostgres()
@@ -219,12 +164,10 @@ export class RouterConnectionHandler {
         return;
       }
 
-      // Check if we haven't received a pong in too long
       const timeSinceLastPong = Date.now() - this.lastPongTime;
       if (timeSinceLastPong > this.PONG_TIMEOUT) {
-        this.logger.warn(`Router ${this.routerId} appears dead (no pong for ${timeSinceLastPong}ms)`);
+        this.logger.warn(`Router ${this.routerId} dead (no pong for ${timeSinceLastPong}ms)`);
         this.cleanup();
-        // Mark offline in Redis (immediate) and Postgres (for persistence)
         await Promise.all([
           markRouterOffline(this.routerId).catch(() => {}),
           this.markOfflineInPostgres()
@@ -233,13 +176,10 @@ export class RouterConnectionHandler {
         return;
       }
 
-      // Use native WebSocket ping frame (more efficient than JSON message)
       try {
         this.socket.ping();
-      } catch (error) {
-        this.logger.error(`Failed to send ping to router ${this.routerId}: ${error}`);
+      } catch {
         this.cleanup();
-        // Mark offline in Redis (immediate) and Postgres (for persistence)
         await Promise.all([
           markRouterOffline(this.routerId).catch(() => {}),
           this.markOfflineInPostgres()
@@ -255,7 +195,7 @@ export class RouterConnectionHandler {
         data: { status: 'OFFLINE' }
       });
     } catch (err) {
-      this.logger.error(`Failed to mark router ${this.routerId} offline in Postgres: ${err}`);
+      this.logger.error(`Failed to mark router offline: ${err}`);
     }
   }
 
@@ -264,56 +204,38 @@ export class RouterConnectionHandler {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
-    // Clear pending commands for this router
     commandManager.clearAll(this.routerId);
   }
 
-  private async handleMetrics(metrics: any): Promise<void> {
-    // Metrics indicate router is active - heartbeat already recorded in Redis
-    // No need to update Postgres here (handled by periodic sync job)
+  private async handleMetrics(_metrics: any): Promise<void> {
+    // Heartbeat already recorded
   }
 
   private handlexData(message: any): void {
-    try {
-      const { sessionId, data } = message;
-      
-      if (!sessionId || !data) {
-        this.logger.warn(`[Router ${this.routerId}] Invalid x data message: missing sessionId or data`);
-        return;
-      }
+    const { sessionId, data } = message;
+    if (!sessionId || !data) return;
 
-      this.logger.debug(`[Router ${this.routerId}] Received x-data from router for session ${sessionId} (data length: ${typeof data === 'string' ? data.length : 'unknown'})`);
-
-      // Get x session
-      const session = xTunnelManager.getSession(sessionId);
-      if (!session) {
-        this.logger.warn(`[Router ${this.routerId}] x session not found: ${sessionId}`);
-        return;
-      }
-
-      // Decode base64 data and forward to frontend client
-      const binaryData = Buffer.from(data, 'base64');
-      this.logger.debug(`[Router ${this.routerId}] Decoded ${binaryData.length} bytes from router, forwarding to client session ${sessionId}`);
-      session.sendToClient(binaryData);
-    } catch (error) {
-      this.logger.error(`[Router ${this.routerId}] Error handling x data: ${error}`);
+    const session = xTunnelManager.getSession(sessionId);
+    if (!session) {
+      this.logger.warn(`x session not found: ${sessionId}`);
+      return;
     }
+
+    const binaryData = Buffer.from(data, 'base64');
+    session.sendToClient(binaryData);
   }
 
   private async handleRouterNameUpdate(name: string): Promise<void> {
-    if (!name || !name.trim()) {
-      this.logger.warn(`[Router ${this.routerId}] Invalid router name update: empty name`);
-      return;
-    }
+    if (!name?.trim()) return;
 
     try {
       await prisma.router.update({
         where: { id: this.routerId },
         data: { name: name.trim() }
       });
-      this.logger.info(`[Router ${this.routerId}] Router name updated to: ${name.trim()}`);
+      this.logger.info(`Router ${this.routerId} name updated: ${name.trim()}`);
     } catch (error) {
-      this.logger.error(`[Router ${this.routerId}] Failed to update router name: ${error}`);
+      this.logger.error(`Failed to update router name: ${error}`);
     }
   }
 
@@ -325,4 +247,3 @@ export class RouterConnectionHandler {
     }));
   }
 }
-
