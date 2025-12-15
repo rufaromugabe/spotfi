@@ -9,6 +9,7 @@ import {
   checkRedirectLoop,
   clearRedirectState
 } from '../utils/portal-security.js';
+import crypto from 'crypto';
 
 interface PortalQuery {
   // uspot UAM redirect parameters (from uspot documentation)
@@ -36,6 +37,29 @@ interface UamLoginBody {
   uamport?: string;
   userurl?: string;
   nasid?: string;
+  // CHAP authentication fields
+  challenge?: string;
+  mac?: string;
+  sessionid?: string;
+}
+
+/**
+ * Compute CHAP response for uspot authentication
+ * Response = MD5(0x00 + password + hexDecode(challenge))
+ * This is the standard CHAP response format used by uspot/CoovaChilli
+ */
+function computeChapResponse(password: string, challenge: string): string {
+  // Decode hex challenge string to bytes
+  const challengeBytes = Buffer.from(challenge, 'hex');
+  
+  // CHAP response: MD5(0x00 + password + challenge)
+  // The 0x00 is the CHAP identifier (typically 0 for uspot)
+  const hash = crypto.createHash('md5');
+  hash.update(Buffer.from([0x00])); // CHAP identifier
+  hash.update(password, 'utf8');
+  hash.update(challengeBytes);
+  
+  return hash.digest('hex');
 }
 
 export async function portalRoutes(fastify: FastifyInstance) {
@@ -121,7 +145,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const uamport = body.uamport || query.uamport;
     const userurl = body.userurl || query.userurl;
     const nasid = body.nasid || query.nasid;
-    const sessionid = query.sessionid || query.mac || query.ip;
+    const sessionid = body.sessionid || query.sessionid || query.mac || query.ip;
+    // CHAP challenge - from form body (preferred) or query string
+    const challenge = body.challenge || query.challenge;
 
     // SECURITY: Validate router IP
     if (!uamip || !validateRouterIp(uamip)) {
@@ -197,14 +223,23 @@ export async function portalRoutes(fastify: FastifyInstance) {
       //   - PAP mode: /logon?username=X&password=Y (password in plaintext)
       //   - CHAP mode: /logon?username=X&response=Y (CHAP response hash)
       // 
-      // Since we've already authenticated with RADIUS, we pass the password for uspot
-      // to re-authenticate. uspot will validate with RADIUS using PAP mode.
+      // IMPORTANT: If router provides a challenge, we MUST use CHAP mode
+      // Otherwise the router will reject the authentication with res=reject
       // 
-      // IMPORTANT: Password is URL encoded and sent over HTTP to router's local network only
       // SECURITY: Use sanitized user URL to prevent open redirect
-      const logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
+      let logonUrl: string;
       
-      fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting to router logon`);
+      if (challenge) {
+        // CHAP mode: compute response = MD5(0x00 + password + challenge)
+        const chapResponse = computeChapResponse(password, challenge);
+        logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&response=${chapResponse}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
+        fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting with CHAP response`);
+      } else {
+        // PAP mode: send password in plaintext (only for local network)
+        logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
+        fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting with PAP password`);
+      }
+      
       return reply.redirect(logonUrl);
     } catch (error: any) {
       fastify.log.error(`[UAM] Error processing login: ${error.message}`);
