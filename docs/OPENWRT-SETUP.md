@@ -867,8 +867,18 @@ passwd
 2. **Via API:**
 
    ```bash
-   # Setup uSpot remotely
-   curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
+   # Setup uSpot remotely (async - returns job ID immediately)
+   curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup/async \
+     -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "combinedSSID": true,
+       "ssid": "SpotFi",
+       "password": "none"
+     }'
+   
+   # Check setup progress
+   curl http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup/status \
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 
    # Configure UAM/RADIUS
@@ -876,8 +886,9 @@ passwd
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
+       "authMode": "uam",
        "uamServerUrl": "https://api.spotfi.com/uam/login",
-       "radiusServer": "YOUR_RADIUS_IP",
+       "radiusServer": "YOUR_RADIUS_IP:1812",
        "radiusSecret": "YOUR_RADIUS_SECRET"
      }'
    ```
