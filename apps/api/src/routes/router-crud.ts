@@ -160,13 +160,16 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ error: 'Invalid MAC address' });
     }
 
-    // Create router
+ 
+    const uniqueUamSecret = randomBytes(16).toString('hex');
+
+    // Create router with unique UAM secret
     const router = await prisma.router.create({
       data: {
         name: body.name,
         hostId: body.hostId,
         token: randomBytes(32).toString('hex'),
-        radiusSecret: randomBytes(16).toString('hex'),
+        radiusSecret: uniqueUamSecret, // Unique per-router UAM secret
         macAddress: formattedMac,
         location: body.location,
         status: 'OFFLINE'

@@ -141,7 +141,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       tags: ['router-management'],
       summary: 'Configure uspot captive portal settings',
       security: [{ bearerAuth: [] }],
-      description: 'Admin only - Configure uspot auth mode and settings. Use authMode to switch between click-to-continue (simple), uam (RADIUS UAM), radius (RADIUS credentials), or credentials (local users).',
+      description: 'Admin only - Configure uspot auth mode and settings. RADIUS secret is automatically injected from server configuration (RADIUS_MASTER_SECRET). Use authMode to switch between click-to-continue (simple), uam (RADIUS UAM), radius (RADIUS credentials), or credentials (local users).',
       body: {
         type: 'object',
         required: ['authMode'],
@@ -158,10 +158,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           radiusServer: { 
             type: 'string', 
             description: 'RADIUS authentication server IP:port (required for uam/radius modes). Example: 192.168.1.100:1812' 
-          },
-          radiusSecret: { 
-            type: 'string', 
-            description: 'RADIUS shared secret (required for uam/radius modes)' 
           },
           radiusServer2: { 
             type: 'string', 
@@ -191,7 +187,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       authMode?: 'click-to-continue' | 'uam' | 'radius' | 'credentials';
       uamServerUrl?: string;
       radiusServer?: string;
-      radiusSecret?: string;
       radiusServer2?: string;
       allowedDomains?: string[];
       blockedDomains?: string[];
@@ -201,6 +196,24 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       password?: string;
     };
 
+    // ============================================================
+    // DUAL SECRET ARCHITECTURE
+    // ============================================================
+    // 1. Master Secret (from ENV): Used for RADIUS auth (router <-> FreeRADIUS)
+    // 2. Unique UAM Secret (from DB): Used for portal/CHAP verification (router <-> API)
+    //
+    // This provides security isolation - if one router is compromised,
+    // the attacker cannot spoof the portal for other routers.
+    // ============================================================
+    const masterSecret = process.env.RADIUS_MASTER_SECRET;
+    
+    if (!masterSecret) {
+      fastify.log.error('[UAM Config] CRITICAL: RADIUS_MASTER_SECRET is not set in environment');
+      return reply.code(500).send({ 
+        error: 'Server misconfiguration: RADIUS_MASTER_SECRET not configured. Contact administrator.' 
+      });
+    }
+
     if (body.combinedSSID) {
       body.ssid = body.ssid || 'SpotFi';
       body.password = body.password || 'none';
@@ -209,6 +222,15 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    // Get the unique UAM secret from database (auto-generated per router)
+    const uniqueUamSecret = router.radiusSecret;
+    if (!uniqueUamSecret) {
+      fastify.log.error(`[UAM Config] Router ${id} has no UAM secret configured`);
+      return reply.code(500).send({ 
+        error: 'Router configuration incomplete: Missing UAM secret. Try re-registering the router.' 
+      });
     }
 
     try {
@@ -246,10 +268,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       const authMode = body.authMode;
       
       // Strict validation: require all necessary fields based on auth mode
+      // Note: radiusSecret is NOT required from client - it's injected from env
       if (authMode === 'uam') {
-        if (!body.radiusServer || !body.radiusSecret) {
+        if (!body.radiusServer) {
           return reply.code(400).send({ 
-            error: 'radiusServer and radiusSecret are required for auth_mode "uam"' 
+            error: 'radiusServer is required for auth_mode "uam"' 
           });
         }
         if (!body.uamServerUrl) {
@@ -272,9 +295,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           });
         }
       } else if (authMode === 'radius') {
-        if (!body.radiusServer || !body.radiusSecret) {
+        if (!body.radiusServer) {
           return reply.code(400).send({ 
-            error: 'radiusServer and radiusSecret are required for auth_mode "radius"' 
+            error: 'radiusServer is required for auth_mode "radius"' 
           });
         }
         // Validate RADIUS server format (IP:port)
@@ -296,10 +319,14 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         uciCommands.push(
           `uci delete uspot.${sectionName}.uam_server 2>/dev/null || true`,
           `uci delete uspot.${sectionName}.auth_server 2>/dev/null || true`,
-          `uci delete uspot.${sectionName}.auth_secret 2>/dev/null || true`
+          `uci delete uspot.${sectionName}.auth_secret 2>/dev/null || true`,
+          `uci delete uspot.${sectionName}.challenge 2>/dev/null || true`,
+          `uci delete uspot.${sectionName}.uam_secret 2>/dev/null || true`,
+          `uci delete uspot.${sectionName}.acct_secret 2>/dev/null || true`
         );
       } else {
         // For uam/radius modes, configure RADIUS settings
+        // SECURITY: Use masterSecret from environment, NOT from request body
         const radiusHost = body.radiusServer!.split(':')[0];
         const radiusPort = body.radiusServer!.split(':')[1] || '1812';
         
@@ -328,34 +355,30 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
         } catch {}
         
+        // SECURITY: Inject master secret from environment
         uciCommands.push(
           `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
           `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
-          `uci set uspot.${sectionName}.auth_secret='${body.radiusSecret}'`,
+          `uci set uspot.${sectionName}.auth_secret='${masterSecret}'`,
           `uci set uspot.${sectionName}.nasid='${nasid}'`,
           `uci set uspot.${sectionName}.nasmac='${nasmac}'`
         );
         
         // UAM mode specific settings
         if (authMode === 'uam') {
-          // Use RADIUS secret as challenge secret for CHAP
-          // The challenge is: MD5(challenge_secret + formatted_mac)
-          // CRITICAL: challenge option is required for CHAP authentication
-          // Without this, challenge=false is passed to UAM server and auth fails
-          if (!body.radiusSecret) {
-            return reply.code(400).send({ 
-              error: 'radiusSecret is required for UAM mode (used for CHAP challenge)' 
-            });
-          }
-          
-          const challengeSecret = body.radiusSecret;
-          
+          // ============================================================
+          // DUAL SECRET USAGE:
+          // - Master Secret: For RADIUS auth (auth_secret, acct_secret)
+          // - Unique Secret: For portal verification (uam_secret, challenge)
+          // ============================================================
+          // challenge: Used for CHAP authentication (MD5 challenge response)
+          // uam_secret: Used for UAM URL MD5 verification
+          // Both use the UNIQUE per-router secret so each router has isolated security
           uciCommands.push(
             `uci set uspot.${sectionName}.uam_port='3990'`,
             `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
-            `uci set uspot.${sectionName}.challenge='${challengeSecret}'`,
-            // uam_secret is used for UAM URL MD5 verification (recommended for security)
-            `uci set uspot.${sectionName}.uam_secret='${challengeSecret}'`
+            `uci set uspot.${sectionName}.challenge='${uniqueUamSecret}'`,
+            `uci set uspot.${sectionName}.uam_secret='${uniqueUamSecret}'`
           );
         }
         
@@ -363,9 +386,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         if (body.radiusServer2) {
           const acctHost = body.radiusServer2.split(':')[0];
           const acctPort = body.radiusServer2.split(':')[1] || '1813';
-          uciCommands.push(`uci set uspot.${sectionName}.acct_server='${acctHost}'`);
-          uciCommands.push(`uci set uspot.${sectionName}.acct_port='${acctPort}'`);
-          uciCommands.push(`uci set uspot.${sectionName}.acct_secret='${body.radiusSecret}'`);
+          uciCommands.push(
+            `uci set uspot.${sectionName}.acct_server='${acctHost}'`,
+            `uci set uspot.${sectionName}.acct_port='${acctPort}'`,
+            `uci set uspot.${sectionName}.acct_secret='${masterSecret}'`
+          );
         }
         
         // Configure uhttpd UAM listener on port 3990 (required for UAM mode)
@@ -446,6 +471,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
         } catch {}
       }
 
+      // Return config with unique UAM secret visible (needed for portal integration)
+      // SECURITY: Master RADIUS secret is never exposed
       return {
         routerId: id,
         success: true,
@@ -454,7 +481,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           authMode,
           uamServerUrl: body.uamServerUrl,
           radiusServer: body.radiusServer,
-          radiusServer2: body.radiusServer2
+          radiusServer2: body.radiusServer2,
+          // Unique UAM secret is safe to expose (per-router, used for portal verification)
+          uamSecret: uniqueUamSecret,
+          // Master RADIUS secret is NEVER exposed
+          radiusSecret: '********'
         }
       };
     } catch (error: unknown) {
@@ -469,7 +500,8 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     schema: {
       tags: ['router-management'],
       summary: 'Get current UAM and RADIUS configuration',
-      security: [{ bearerAuth: [] }]
+      security: [{ bearerAuth: [] }],
+      description: 'Returns the current UAM configuration. The unique UAM secret (per-router) is exposed for portal integration. The master RADIUS secret is always masked.'
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
@@ -479,6 +511,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
+
+    // Get the unique UAM secret from database (this is safe to expose)
+    const uniqueUamSecret = router.radiusSecret;
 
     try {
       const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
@@ -494,6 +529,11 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       
       const section = sectionKey ? values[sectionKey] : {};
 
+      // ============================================================
+      // DUAL SECRET RESPONSE:
+      // - uamSecret: Exposed (unique per-router, used for portal verification)
+      // - radiusSecret: MASKED (master secret, never exposed)
+      // ============================================================
       return {
         routerId: id,
         config: {
@@ -502,11 +542,16 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           uamPort: section.uam_port || section['uam_port'],
           authServer: section.auth_server || section['auth_server'],
           acctServer: section.acct_server || section['acct_server'],
-          authSecret: (section.auth_secret || section['auth_secret']) ? '***' : undefined,
           nasid: section.nasid || section['nasid'],
           nasmac: section.nasmac || section['nasmac'],
           interface: section.interface || section['interface'],
-          setname: section.setname || section['setname']
+          setname: section.setname || section['setname'],
+          // Unique UAM secret - EXPOSED (safe, per-router isolation)
+          uamSecret: uniqueUamSecret,
+          // Master RADIUS secret - ALWAYS MASKED (never expose)
+          radiusSecret: '********',
+          authSecret: '********',
+          acctSecret: (section.acct_server) ? '********' : undefined
         }
       };
     } catch (error: unknown) {

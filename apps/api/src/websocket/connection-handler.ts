@@ -1,6 +1,5 @@
 import { WebSocket } from 'ws';
 import { FastifyBaseLogger } from 'fastify';
-import { randomBytes } from 'crypto';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
@@ -31,9 +30,16 @@ export class RouterConnectionHandler {
   }
 
   async initialize(clientIp: string, routerName?: string): Promise<void> {
+    // DUAL SECRET ARCHITECTURE:
+    // - Master Secret (from ENV): Used for RADIUS auth (NasService fetches it internally)
+    // - Unique UAM Secret (from DB): Used for portal/CHAP verification (router <-> API)
+    //
+    // The DB radiusSecret column stores the UNIQUE UAM secret per router
+    // We do NOT overwrite it - it's set at router creation time
+
     const router = await prisma.router.findUnique({
       where: { id: this.routerId },
-      select: { nasipaddress: true, name: true, radiusSecret: true }
+      select: { nasipaddress: true, name: true }
     });
 
     if (!router) {
@@ -48,17 +54,15 @@ export class RouterConnectionHandler {
       this.logger.warn(`Failed to record initial heartbeat for router ${this.routerId}: ${err.message}`);
     });
 
-    // Update router status, IP, and optionally name in Postgres (for persistence)
+    // Update router status, IP, name
+    // NOTE: radiusSecret is NOT updated here - it's the unique UAM secret set at creation
     await prisma.router.update({
       where: { id: this.routerId },
       data: {
         status: 'ONLINE',
         lastSeen: new Date(),
         nasipaddress: clientIp,
-        ...(nameChanged && { name: routerName.trim() }),
-        ...(!router.radiusSecret && { 
-          radiusSecret: randomBytes(16).toString('hex') 
-        })
+        ...(nameChanged && { name: routerName.trim() })
       }
     });
 
@@ -66,29 +70,29 @@ export class RouterConnectionHandler {
       this.logger.info(`Router ${this.routerId} name updated to: ${routerName.trim()}`);
     }
 
-    // Get updated router info (with generated secret if needed)
+    // Get updated router info
     const updatedRouter = await prisma.router.findUnique({
       where: { id: this.routerId },
-      select: { name: true, radiusSecret: true }
+      select: { name: true }
     });
 
-    if (!updatedRouter || !updatedRouter.radiusSecret) {
+    if (!updatedRouter) {
       throw new Error('Router configuration incomplete');
     }
 
     // Handle NAS entries
+    // DUAL SECRET ARCHITECTURE: NasService uses master secret from ENV internally
     if (ipChanged && router.nasipaddress) {
       await this.nasService.handleIpChange(
         router.nasipaddress,
         clientIp,
-        { id: this.routerId, name: updatedRouter.name, radiusSecret: updatedRouter.radiusSecret }
+        { id: this.routerId, name: updatedRouter.name }
       );
     } else {
       await this.nasService.upsertNasEntry({
         id: this.routerId,
         name: updatedRouter.name,
-        nasipaddress: clientIp,
-        radiusSecret: updatedRouter.radiusSecret
+        nasipaddress: clientIp
       });
     }
 

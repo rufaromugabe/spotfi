@@ -45,18 +45,25 @@ interface UamLoginBody {
 
 /**
  * Compute CHAP response for uspot authentication
- * Response = MD5(0x00 + password + hexDecode(challenge))
- * This is the standard CHAP response format used by uspot/CoovaChilli
+ * Response = MD5(0x00 + password + secret + hexDecode(challenge))
+ * 
+ * DUAL SECRET ARCHITECTURE:
+ * - The uam_secret (per-router) is used for portal verification
+ * - This provides security isolation between routers
  */
-function computeChapResponse(password: string, challenge: string): string {
+function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
   // Decode hex challenge string to bytes
   const challengeBytes = Buffer.from(challenge, 'hex');
   
-  // CHAP response: MD5(0x00 + password + challenge)
+  // CHAP response: MD5(0x00 + password + [uam_secret] + challenge)
   // The 0x00 is the CHAP identifier (typically 0 for uspot)
+  // The uam_secret must match the router's configured uam_secret
   const hash = crypto.createHash('md5');
   hash.update(Buffer.from([0x00])); // CHAP identifier
   hash.update(password, 'utf8');
+  if (uamSecret) {
+    hash.update(uamSecret, 'utf8');
+  }
   hash.update(challengeBytes);
   
   return hash.digest('hex');
@@ -64,8 +71,14 @@ function computeChapResponse(password: string, challenge: string): string {
 
 export async function portalRoutes(fastify: FastifyInstance) {
   const radiusServer1 = process.env.RADIUS_SERVER_1 || '';
-  const radiusSecret = process.env.RADIUS_SECRET || '';
+  // SECURITY: Use Master Secret from environment for all RADIUS authentication
+  // This is the single source of truth for RADIUS shared secret
+  const masterSecret = process.env.RADIUS_MASTER_SECRET || '';
   const uamServerUrl = process.env.UAM_SERVER_URL || 'https://api.spotfi.com/uam/login';
+  
+  if (!masterSecret) {
+    fastify.log.warn('[Portal] RADIUS_MASTER_SECRET not set - RADIUS authentication will fail');
+  }
 
   // Extract path from UAM_SERVER_URL for route registration
   let uamServerPath: string;
@@ -172,7 +185,10 @@ export async function portalRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Get router config for RADIUS authentication
+      // Get router config for RADIUS authentication and UAM secret
+      // DUAL SECRET ARCHITECTURE:
+      // - masterSecret (from ENV): Used for RADIUS authentication
+      // - uniqueUamSecret (from DB): Used for CHAP response calculation
       let routerConfig = null;
       if (nasid) {
         routerConfig = await prisma.router.findUnique({
@@ -188,12 +204,15 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
       const radiusServer = radiusServer1 || 'localhost';
       const radiusPort = parseInt(process.env.RADIUS_PORT || '1812', 10);
-      const routerRadiusSecret = routerConfig?.radiusSecret || radiusSecret;
       const nasIp = routerConfig?.nasipaddress || uamip;
       const nasId = routerConfig?.id || nasid;
+      // Unique UAM secret for CHAP calculation (per-router isolation)
+      const uniqueUamSecret = routerConfig?.radiusSecret;
 
-      if (!routerRadiusSecret) {
-        fastify.log.error(`[UAM] No RADIUS secret configured`);
+      // SECURITY: Always use Master Secret from environment
+      // Never use per-router secrets - all routers share the same secret
+      if (!masterSecret) {
+        fastify.log.error(`[UAM] CRITICAL: RADIUS_MASTER_SECRET not configured in environment`);
         return safeRedirect('Server configuration error');
       }
 
@@ -202,7 +221,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
         password,
         nasIp,
         nasId,
-        secret: routerRadiusSecret,
+        secret: masterSecret, // SECURITY: Use master secret from environment
         server: radiusServer,
         port: radiusPort,
         logger: fastify.log
@@ -226,14 +245,25 @@ export async function portalRoutes(fastify: FastifyInstance) {
       // IMPORTANT: If router provides a challenge, we MUST use CHAP mode
       // Otherwise the router will reject the authentication with res=reject
       // 
+      // DUAL SECRET ARCHITECTURE for CHAP:
+      // - Master Secret: Used for RADIUS authentication (above)
+      // - Unique UAM Secret: Used for CHAP response calculation (per-router)
+      // 
       // SECURITY: Use sanitized user URL to prevent open redirect
       let logonUrl: string;
       
-      if (challenge) {
-        // CHAP mode: compute response = MD5(0x00 + password + challenge)
+      if (challenge && uniqueUamSecret) {
+        // CHAP mode: compute response = MD5(0x00 + password + uam_secret + challenge)
+        // The unique UAM secret provides per-router security isolation
+        const chapResponse = computeChapResponse(password, challenge, uniqueUamSecret);
+        logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&response=${chapResponse}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
+        fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting with CHAP response (unique secret)`);
+      } else if (challenge) {
+        // CHAP mode without unique secret (fallback to standard CHAP)
+        fastify.log.warn(`[UAM] Router ${nasId} has no unique UAM secret, using standard CHAP`);
         const chapResponse = computeChapResponse(password, challenge);
         logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&response=${chapResponse}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
-        fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting with CHAP response`);
+        fastify.log.info(`[UAM] Authentication successful for ${username}, redirecting with CHAP response (standard)`);
       } else {
         // PAP mode: send password in plaintext (only for local network)
         logonUrl = `http://${uamip}:${validatedPort}/logon?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
