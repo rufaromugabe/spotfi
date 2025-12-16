@@ -189,11 +189,22 @@ interface RedirectState {
   lastRedirect: number;
   sessionId: string;
   url: string; // Track the URL to detect same-URL loops
+  normalizedUrl: string; // Normalized URL (without query params) for better detection
 }
 
 const redirectStates = new Map<string, RedirectState>();
 const MAX_REDIRECT_ATTEMPTS = 5; // Increased to allow legitimate retries
 const REDIRECT_WINDOW_MS = 30000; // 30 seconds - shorter window for faster detection
+
+/**
+ * Normalizes URL by removing query parameters to detect loops even when params vary
+ */
+function normalizeUrl(url: string): string {
+  if (!url) return '';
+  // Extract just the pathname to detect loops even if query params change
+  // Fastify request.url is in format "/path?query", so we just take the path part
+  return url.split('?')[0];
+}
 
 /**
  * Rate limiting for login attempts
@@ -220,34 +231,43 @@ const BLOCK_DURATION_MS = 30 * 60 * 1000; // 30 minutes block after max attempts
 export function checkRedirectLoop(sessionId: string, currentUrl?: string): boolean {
   const state = redirectStates.get(sessionId);
   const now = Date.now();
+  const url = currentUrl || '';
+  const normalizedUrl = normalizeUrl(url);
 
   if (!state) {
     redirectStates.set(sessionId, {
       attempts: 1,
       lastRedirect: now,
       sessionId,
-      url: currentUrl || ''
+      url: url,
+      normalizedUrl: normalizedUrl
     });
     return false;
   }
 
-  // Reset if outside time window
+  // Reset if outside time window (allows legitimate retries after delay)
   if (now - state.lastRedirect > REDIRECT_WINDOW_MS) {
     state.attempts = 1;
     state.lastRedirect = now;
-    state.url = currentUrl || '';
+    state.url = url;
+    state.normalizedUrl = normalizedUrl;
     return false;
   }
 
-  // Detect same-URL loops (more dangerous)
-  if (currentUrl && state.url === currentUrl) {
+  // Detect same-URL loops (most dangerous - exact same URL)
+  if (url && state.url === url) {
     state.attempts += 2; // Penalize same-URL loops more heavily
+  }
+  // Detect same-path loops (URL path matches even if query params differ)
+  else if (normalizedUrl && state.normalizedUrl === normalizedUrl) {
+    state.attempts += 1.5; // Penalize same-path loops moderately
   } else {
     state.attempts++;
   }
   
   state.lastRedirect = now;
-  state.url = currentUrl || '';
+  state.url = url;
+  state.normalizedUrl = normalizedUrl;
 
   if (state.attempts > MAX_REDIRECT_ATTEMPTS) {
     return true; // Loop detected
@@ -261,6 +281,13 @@ export function checkRedirectLoop(sessionId: string, currentUrl?: string): boole
  */
 export function clearRedirectState(sessionId: string): void {
   redirectStates.delete(sessionId);
+}
+
+/**
+ * Gets redirect state without modifying it (for checking before clearing)
+ */
+export function getRedirectState(sessionId: string): RedirectState | undefined {
+  return redirectStates.get(sessionId);
 }
 
 /**

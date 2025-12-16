@@ -8,6 +8,7 @@ import {
   validateRouterPort,
   checkRedirectLoop,
   clearRedirectState,
+  getRedirectState,
   checkLoginRateLimit,
   clearLoginRateLimit,
   getRemainingBlockTime,
@@ -146,7 +147,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
     const validatedPort = validateRouterPort(uamport, '3990');
     const sanitizedUserUrl = validateAndSanitizeUserUrl(userurl);
-    const sessionKey = sessionid || mac || ip || 'anonymous';
+    // Create more unique session key to reduce collisions in NAT scenarios
+    // Combine multiple identifiers when available for better uniqueness
+    const sessionKey = sessionid || (mac && ip ? `${mac}-${ip}` : mac || ip) || request.ip || 'anonymous';
     
     // Build current URL for redirect loop detection
     const currentUrl = `${request.url}`;
@@ -155,10 +158,17 @@ export async function portalRoutes(fastify: FastifyInstance) {
       fastify.log.info(`[UAM] res=${res}, mac=${mac}, ip=${ip}, secondsRemaining=${finalSecondsRemaining}, bytesRemaining=${finalBytesRemaining}`);
     }
 
-    // Check redirect loop BEFORE processing (except for success page)
-    if (res !== 'success' && checkRedirectLoop(sessionKey, currentUrl)) {
-      fastify.log.warn(`[UAM] Redirect loop detected for session: ${sessionKey}`);
+    // Check redirect loop BEFORE processing (including success to catch router loops)
+    // This prevents infinite loops if router keeps redirecting even after authentication
+    const isLoopDetected = checkRedirectLoop(sessionKey, currentUrl);
+    
+    // For success responses, allow first attempt but detect rapid repeated success responses as loops
+    // This catches cases where router keeps redirecting with res=success
+    if (isLoopDetected) {
+      fastify.log.warn(`[UAM] Redirect loop detected for session: ${sessionKey}, res=${res}, url=${currentUrl}`);
       setSecurityHeaders(reply);
+      // Clear state to prevent further loops
+      clearRedirectState(sessionKey);
       return reply.code(400).type('text/html').send(`
         <!DOCTYPE html>
         <html>
@@ -174,9 +184,15 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
     // Show success page if authenticated
     if (res === 'success') {
-      // Clear redirect state immediately on success
+      // Only clear redirect state on first/legitimate success (low attempt count)
+      // If attempts are high, keep tracking to detect loops from repeated success responses
       if (sessionKey) {
-        clearRedirectState(sessionKey);
+        const redirectState = getRedirectState(sessionKey);
+        // Only clear if this looks like first/legitimate success (<= 2 attempts in window)
+        // Higher attempts indicate a potential loop pattern - keep tracking
+        if (!redirectState || redirectState.attempts <= 2) {
+          clearRedirectState(sessionKey);
+        }
         clearLoginRateLimit(sessionKey);
       }
       
