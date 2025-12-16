@@ -41,31 +41,20 @@ interface UamLoginBody {
 }
 
 /**
- * Compute CHAP response for CoovaChilli/uspot
+ * Compute CHAP response for uspot (OpenWrt captive portal)
  * 
- * When uamSecret is configured, CoovaChilli XORs the random challenge with MD5(uamSecret)
- * before sending it. We need to reverse this to get the original challenge bytes.
+ * uspot challenge is already: MD5(challenge_secret + formatted_mac)
+ * The uamSecret is NOT used in response calculation - it's already in the challenge.
  * 
- * Algorithm:
- * 1. If uamSecret present: original_challenge = received_challenge XOR MD5(uamSecret)
- * 2. CHAP response = MD5(0x00 + password + original_challenge)
+ * CHAP response = MD5(0x00 + password + challenge_bytes)
+ * 
+ * Reference: https://github.com/openwrt/uspot
  */
-function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
-  let challengeBytes = Buffer.from(challenge, 'hex');
-  
-  // If uamSecret is present, the received challenge is XOR'd with MD5(uamSecret)
-  // We need to XOR it back to get the original random challenge
-  if (uamSecret) {
-    const secretHash = crypto.createHash('md5').update(uamSecret, 'utf8').digest();
-    const decrypted = Buffer.alloc(challengeBytes.length);
-    for (let i = 0; i < challengeBytes.length; i++) {
-      decrypted[i] = challengeBytes[i] ^ secretHash[i % secretHash.length];
-    }
-    challengeBytes = decrypted;
-  }
+function computeChapResponse(password: string, challenge: string, _uamSecret?: string): string {
+  const challengeBytes = Buffer.from(challenge, 'hex');
   
   // CHAP response: MD5(ident + password + challenge)
-  // ident is 0x00 for CoovaChilli
+  // ident is 0x00 for uspot/CoovaChilli
   const hash = crypto.createHash('md5');
   hash.update(Buffer.from([0x00]));
   hash.update(password, 'utf8');
