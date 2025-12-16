@@ -169,7 +169,7 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
         name: body.name,
         hostId: body.hostId,
         token: randomBytes(32).toString('hex'),
-        radiusSecret: uniqueUamSecret, // Unique per-router UAM secret
+        uamSecret: uniqueUamSecret, // Unique per-router UAM secret
         macAddress: formattedMac,
         location: body.location,
         status: 'OFFLINE'

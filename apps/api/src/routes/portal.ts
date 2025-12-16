@@ -156,18 +156,18 @@ export async function portalRoutes(fastify: FastifyInstance) {
       if (nasid) {
         routerConfig = await prisma.router.findUnique({
           where: { id: nasid },
-          select: { id: true, nasipaddress: true, radiusSecret: true }
+          select: { id: true, nasipaddress: true, uamSecret: true }
         });
       } else if (uamip) {
         routerConfig = await prisma.router.findFirst({
           where: { nasipaddress: uamip },
-          select: { id: true, nasipaddress: true, radiusSecret: true }
+          select: { id: true, nasipaddress: true, uamSecret: true }
         });
       }
 
       const nasIp = routerConfig?.nasipaddress || uamip;
       const nasId = routerConfig?.id || nasid;
-      const uniqueUamSecret = routerConfig?.radiusSecret ?? undefined;
+      const uniqueUamSecret = routerConfig?.uamSecret ?? undefined;
 
       // Authenticate with RADIUS using master secret
       const authResult = await authenticateUser({

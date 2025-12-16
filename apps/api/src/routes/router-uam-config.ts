@@ -173,7 +173,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    const uniqueUamSecret = router.radiusSecret;
+    const uniqueUamSecret = router.uamSecret;
     if (!uniqueUamSecret) {
       return reply.code(500).send({ error: 'Router missing UAM secret. Re-register router.' });
     }
@@ -388,7 +388,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    const uniqueUamSecret = router.radiusSecret;
+    const uniqueUamSecret = router.uamSecret;
 
     try {
       const uspotConfig = await routerRpcService.rpcCall(id, 'uci', 'get', { config: 'uspot' });
