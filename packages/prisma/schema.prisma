@@ -29,7 +29,7 @@ model Router {
   hostId       String
   host         User      @relation(fields: [hostId], references: [id], onDelete: Cascade)
   token        String    @unique
-  uamSecret    String?   @unique @map("radiusSecret") // Unique UAM secret for portal/CHAP
+  uamSecret    String?   @unique @map("uam_secret") // Unique UAM secret for portal/CHAP
   status       RouterStatus @default(OFFLINE)
   lastSeen     DateTime?
   totalUsage   Decimal   @default(0) @db.Decimal(12, 2)
