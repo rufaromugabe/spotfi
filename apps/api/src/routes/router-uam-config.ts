@@ -246,7 +246,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           nasmac = (macResult?.stdout || '').trim().toUpperCase() || '00:00:00:00:00:00';
         } catch {}
         
-        const nasid = router.name?.replace(/[^a-zA-Z0-9-]/g, '-') || `spotfi-${id.slice(0, 8)}`;
+        // Use router ID as NAS-ID for reliable, unique identification
+        // This enables direct database lookup without name/IP matching issues
+        const nasid = id;
         
         // Get hotspot IP
         let hotspotIp = '10.1.30.1';

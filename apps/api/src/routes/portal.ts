@@ -18,7 +18,7 @@ interface PortalQuery {
   challenge?: string;
   mac?: string;
   ip?: string;
-  called?: string;
+  called?: string;  // Router/AP MAC address
   nasid?: string;
   sessionid?: string;
   timeleft?: string;
@@ -42,33 +42,19 @@ interface UamLoginBody {
 
 /**
  * Compute CHAP response for uspot (OpenWrt captive portal)
- * 
- * Based on uspot source code (uam.c):
- * - chap_challenge(challenge, secret) = MD5(challenge_bytes + secret_string) as hex
- * 
- * Algorithm:
- * 1. Receive challenge (hex): MD5(challenge_config + formatted_mac) (already done by uspot)
- * 2. If uam_secret exists: transform challenge = MD5(challenge_bytes + uam_secret) (as hex)
- * 3. Convert transformed challenge hex to bytes
- * 4. Compute response: MD5(0x00 + password + transformed_challenge_bytes)
- * 
- * Reference: uspot uam.c uc_challenge() function
+ * Algorithm: MD5(0x00 + password + transformed_challenge)
+ * If uam_secret exists, challenge is transformed: MD5(challenge_bytes + uam_secret)
  */
 function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
   let challengeBytes = Buffer.from(challenge, 'hex');
   
-  // If uam_secret is configured, transform challenge using chap_challenge()
-  // chap_challenge(challenge, secret) = MD5(challenge_bytes + secret_string) as hex
   if (uamSecret) {
     const transformHash = crypto.createHash('md5');
     transformHash.update(challengeBytes);
     transformHash.update(uamSecret, 'utf8');
-    const transformedHex = transformHash.digest('hex');
-    challengeBytes = Buffer.from(transformedHex, 'hex');
+    challengeBytes = Buffer.from(transformHash.digest('hex'), 'hex');
   }
   
-  // CHAP response: MD5(ident + password + challenge)
-  // ident is 0x00 for uspot/CoovaChilli
   const hash = crypto.createHash('md5');
   hash.update(Buffer.from([0x00]));
   hash.update(password, 'utf8');
@@ -147,6 +133,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const nasid = body.nasid || query.nasid;
     const sessionid = body.sessionid || query.sessionid || query.mac || query.ip;
     const challenge = body.challenge || query.challenge;
+    const called = query.called;
 
     if (!uamip || !validateRouterIp(uamip)) {
       return reply.code(400).send('Invalid Access: No valid NAS IP detected.');
@@ -172,34 +159,25 @@ export async function portalRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Find router to get unique UAM secret
-      // nasid is the router name (e.g., "Rufaro-Main-"), not the database ID
+      // Find router by ID (nasid) or MAC address (called) to get UAM secret
       let routerConfig = null;
+      
       if (nasid) {
-        // Try to find by name (nasid is router name)
-        routerConfig = await prisma.router.findFirst({
-          where: { 
-            name: { 
-              contains: nasid.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 20),
-              mode: 'insensitive'
-            }
-          },
+        routerConfig = await prisma.router.findUnique({
+          where: { id: nasid },
           select: { id: true, nasipaddress: true, uamSecret: true, name: true }
         });
       }
       
-      // Fallback to IP lookup if not found by name
-      if (!routerConfig && uamip) {
+      if (!routerConfig && called) {
         routerConfig = await prisma.router.findFirst({
-          where: { nasipaddress: uamip },
+          where: { macAddress: { equals: called.toUpperCase(), mode: 'insensitive' } },
           select: { id: true, nasipaddress: true, uamSecret: true, name: true }
         });
       }
       
-      if (routerConfig) {
-        fastify.log.info(`[UAM] Found router: ${routerConfig.name} (${routerConfig.id}), uamSecret: ${routerConfig.uamSecret ? 'present' : 'missing'}`);
-      } else {
-        fastify.log.warn(`[UAM] Router not found for nasid=${nasid}, uamip=${uamip}`);
+      if (!routerConfig) {
+        fastify.log.error(`[UAM] Router not found: nasid=${nasid}, called=${called}`);
       }
 
       const nasIp = routerConfig?.nasipaddress || uamip;
