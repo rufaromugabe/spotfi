@@ -43,15 +43,29 @@ interface UamLoginBody {
 /**
  * Compute CHAP response for uspot (OpenWrt captive portal)
  * 
- * uspot challenge is already: MD5(challenge_secret + formatted_mac)
- * The uamSecret is NOT used in response calculation - it's already in the challenge.
+ * Based on uspot source code (uam.c):
+ * - chap_challenge(challenge, secret) = MD5(challenge_bytes + secret_string) as hex
  * 
- * CHAP response = MD5(0x00 + password + challenge_bytes)
+ * Algorithm:
+ * 1. Receive challenge (hex): MD5(challenge_config + formatted_mac) (already done by uspot)
+ * 2. If uam_secret exists: transform challenge = MD5(challenge_bytes + uam_secret) (as hex)
+ * 3. Convert transformed challenge hex to bytes
+ * 4. Compute response: MD5(0x00 + password + transformed_challenge_bytes)
  * 
- * Reference: https://github.com/openwrt/uspot
+ * Reference: uspot uam.c uc_challenge() function
  */
-function computeChapResponse(password: string, challenge: string, _uamSecret?: string): string {
-  const challengeBytes = Buffer.from(challenge, 'hex');
+function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
+  let challengeBytes = Buffer.from(challenge, 'hex');
+  
+  // If uam_secret is configured, transform challenge using chap_challenge()
+  // chap_challenge(challenge, secret) = MD5(challenge_bytes + secret_string) as hex
+  if (uamSecret) {
+    const transformHash = crypto.createHash('md5');
+    transformHash.update(challengeBytes);
+    transformHash.update(uamSecret, 'utf8');
+    const transformedHex = transformHash.digest('hex');
+    challengeBytes = Buffer.from(transformedHex, 'hex');
+  }
   
   // CHAP response: MD5(ident + password + challenge)
   // ident is 0x00 for uspot/CoovaChilli
@@ -159,17 +173,33 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
     try {
       // Find router to get unique UAM secret
+      // nasid is the router name (e.g., "Rufaro-Main-"), not the database ID
       let routerConfig = null;
       if (nasid) {
-        routerConfig = await prisma.router.findUnique({
-          where: { id: nasid },
-          select: { id: true, nasipaddress: true, uamSecret: true }
+        // Try to find by name (nasid is router name)
+        routerConfig = await prisma.router.findFirst({
+          where: { 
+            name: { 
+              contains: nasid.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 20),
+              mode: 'insensitive'
+            }
+          },
+          select: { id: true, nasipaddress: true, uamSecret: true, name: true }
         });
-      } else if (uamip) {
+      }
+      
+      // Fallback to IP lookup if not found by name
+      if (!routerConfig && uamip) {
         routerConfig = await prisma.router.findFirst({
           where: { nasipaddress: uamip },
-          select: { id: true, nasipaddress: true, uamSecret: true }
+          select: { id: true, nasipaddress: true, uamSecret: true, name: true }
         });
+      }
+      
+      if (routerConfig) {
+        fastify.log.info(`[UAM] Found router: ${routerConfig.name} (${routerConfig.id}), uamSecret: ${routerConfig.uamSecret ? 'present' : 'missing'}`);
+      } else {
+        fastify.log.warn(`[UAM] Router not found for nasid=${nasid}, uamip=${uamip}`);
       }
 
       const nasIp = routerConfig?.nasipaddress || uamip;
@@ -202,7 +232,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       if (challenge) {
         const chapResponse = computeChapResponse(password, challenge, uniqueUamSecret);
         logonUrl = `http://${uamip}:${validatedPort}/logon?${baseParams}&response=${chapResponse}`;
-        fastify.log.info(`[UAM] ${username} authenticated, CHAP redirect`);
+        fastify.log.info(`[UAM] ${username} authenticated, CHAP redirect (challenge=${challenge.substring(0, 16)}..., uamSecret=${uniqueUamSecret ? 'present' : 'none'})`);
       } else {
         logonUrl = `http://${uamip}:${validatedPort}/logon?${baseParams}&password=${encodeURIComponent(password)}`;
         fastify.log.info(`[UAM] ${username} authenticated, PAP redirect`);

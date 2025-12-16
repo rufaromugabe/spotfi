@@ -267,14 +267,20 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           `uci set uspot.${sectionName}.nasmac='${nasmac}'`
         );
         
-        // UAM mode: portal/CHAP settings (unique secret per router)
+        // UAM mode: portal/CHAP settings
+        // challenge config is required for generating challenges
+        // uam_secret is optional - only used if present to transform challenge for CHAP
         if (authMode === 'uam') {
           uciCommands.push(
             `uci set uspot.${sectionName}.uam_port='3990'`,
             `uci set uspot.${sectionName}.uam_server='${body.uamServerUrl}'`,
-            `uci set uspot.${sectionName}.challenge='${uniqueUamSecret}'`,
-            `uci set uspot.${sectionName}.uam_secret='${uniqueUamSecret}'`
+            `uci set uspot.${sectionName}.challenge='${uniqueUamSecret}'`
           );
+          // uam_secret is optional - only set if we want CHAP transformation
+          // If not set, CHAP will work without transformation
+          if (uniqueUamSecret) {
+            uciCommands.push(`uci set uspot.${sectionName}.uam_secret='${uniqueUamSecret}'`);
+          }
         }
         
         // Accounting server (master secret)
