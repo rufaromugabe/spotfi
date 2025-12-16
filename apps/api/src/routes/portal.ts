@@ -41,16 +41,34 @@ interface UamLoginBody {
 }
 
 /**
- * Compute CHAP response: MD5(0x00 + password + [uamSecret] + challenge)
+ * Compute CHAP response for CoovaChilli/uspot
+ * 
+ * When uamSecret is configured, CoovaChilli XORs the random challenge with MD5(uamSecret)
+ * before sending it. We need to reverse this to get the original challenge bytes.
+ * 
+ * Algorithm:
+ * 1. If uamSecret present: original_challenge = received_challenge XOR MD5(uamSecret)
+ * 2. CHAP response = MD5(0x00 + password + original_challenge)
  */
 function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
-  const challengeBytes = Buffer.from(challenge, 'hex');
+  let challengeBytes = Buffer.from(challenge, 'hex');
+  
+  // If uamSecret is present, the received challenge is XOR'd with MD5(uamSecret)
+  // We need to XOR it back to get the original random challenge
+  if (uamSecret) {
+    const secretHash = crypto.createHash('md5').update(uamSecret, 'utf8').digest();
+    const decrypted = Buffer.alloc(challengeBytes.length);
+    for (let i = 0; i < challengeBytes.length; i++) {
+      decrypted[i] = challengeBytes[i] ^ secretHash[i % secretHash.length];
+    }
+    challengeBytes = decrypted;
+  }
+  
+  // CHAP response: MD5(ident + password + challenge)
+  // ident is 0x00 for CoovaChilli
   const hash = crypto.createHash('md5');
   hash.update(Buffer.from([0x00]));
   hash.update(password, 'utf8');
-  if (uamSecret) {
-    hash.update(uamSecret, 'utf8');
-  }
   hash.update(challengeBytes);
   return hash.digest('hex');
 }
