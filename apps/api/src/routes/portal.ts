@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { renderLoginPage } from '../templates/login-page.js';
+import { renderLoginPage, renderSuccessPage, renderLogonForm } from '../templates/login-page.js';
 import { authenticateUser } from '../services/radius-client.js';
 import { prisma } from '../lib/prisma.js';
 import {
@@ -79,9 +79,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
     throw new Error(`Invalid UAM_SERVER_URL: ${uamServerUrl}`);
   }
 
-  // GET - Show login page
+  // GET - Show login page or success page
   fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
-    const { res, uamip, uamport, challenge, mac, ip, nasid, sessionid, userurl, reply: radiusReply, reason, error } = request.query;
+    const { res, uamip, uamport, challenge, mac, ip, nasid, sessionid, timeleft, userurl, reply: radiusReply, reason, error } = request.query;
 
     if (!uamip || !validateRouterIp(uamip)) {
       return reply.code(400).send('Invalid Access: No valid NAS IP detected.');
@@ -90,6 +90,87 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const validatedPort = validateRouterPort(uamport, '3990');
     const sanitizedUserUrl = validateAndSanitizeUserUrl(userurl);
     const sessionKey = sessionid || mac || ip || 'anonymous';
+
+    if (res) {
+      fastify.log.info(`[UAM] res=${res}, mac=${mac}, ip=${ip}, timeleft=${timeleft}`);
+    }
+
+    // Show success page if authenticated
+    if (res === 'success') {
+      if (sessionid) clearRedirectState(sessionid);
+      
+      // Look up session and user info for data balance and speed
+      let username: string | undefined;
+      let dataBalance: { used: bigint; total: bigint | null } | undefined;
+      let maxSpeed: { download: bigint | null; upload: bigint | null } | undefined;
+      
+      try {
+        // Find active session by MAC or session ID
+        const session = await prisma.radAcct.findFirst({
+          where: {
+            OR: [
+              { callingStationId: mac },
+              { acctSessionId: sessionid }
+            ],
+            acctStopTime: null
+          },
+          select: { userName: true }
+        });
+        
+        if (session?.userName) {
+          username = session.userName;
+          
+          // Get quota info (data balance)
+          const quota = await prisma.radQuota.findFirst({
+            where: {
+              username: session.userName,
+              periodEnd: { gt: new Date() },
+              periodStart: { lte: new Date() }
+            },
+            select: { usedOctets: true, maxOctets: true }
+          });
+          
+          if (quota) {
+            dataBalance = { used: quota.usedOctets, total: quota.maxOctets };
+          }
+          
+          // Get speed limits from radreply
+          const speedAttrs = await prisma.radReply.findMany({
+            where: {
+              userName: session.userName,
+              attribute: { in: ['WISPr-Bandwidth-Max-Down', 'WISPr-Bandwidth-Max-Up'] }
+            },
+            select: { attribute: true, value: true }
+          });
+          
+          const downloadSpeed = speedAttrs.find(a => a.attribute === 'WISPr-Bandwidth-Max-Down');
+          const uploadSpeed = speedAttrs.find(a => a.attribute === 'WISPr-Bandwidth-Max-Up');
+          
+          if (downloadSpeed || uploadSpeed) {
+            maxSpeed = {
+              download: downloadSpeed ? BigInt(downloadSpeed.value) : null,
+              upload: uploadSpeed ? BigInt(uploadSpeed.value) : null
+            };
+          }
+        }
+      } catch (err) {
+        fastify.log.warn(`[UAM] Failed to fetch user info: ${err}`);
+      }
+      
+      const html = renderSuccessPage({
+        uamip,
+        uamport: validatedPort,
+        userurl: sanitizedUserUrl,
+        mac,
+        ip,
+        timeleft,
+        sessionid,
+        username,
+        dataBalance,
+        maxSpeed
+      });
+      return reply.type('text/html').send(html);
+    }
 
     if (checkRedirectLoop(sessionKey)) {
       return reply.code(400).send('Redirect loop detected. Clear browser cache and try again.');
@@ -100,10 +181,6 @@ export async function portalRoutes(fastify: FastifyInstance) {
     else if (res === 'reject') errorMessage = radiusReply || 'Authentication failed.';
     else if (res === 'failed') errorMessage = reason || 'Authentication failed.';
     else if (res === 'logoff') errorMessage = 'You have been logged off.';
-
-    if (res) {
-      fastify.log.info(`[UAM] res=${res}, mac=${mac}, challenge=${challenge ? 'yes' : 'no'}`);
-    }
 
     const html = renderLoginPage({
       actionUrl: uamServerUrl,
@@ -204,19 +281,31 @@ export async function portalRoutes(fastify: FastifyInstance) {
       if (sessionid) clearRedirectState(sessionid);
 
       // Build logon URL - use CHAP if challenge present, else PAP
-      let logonUrl: string;
-      const baseParams = `username=${encodeURIComponent(username)}&userurl=${encodeURIComponent(sanitizedUserUrl)}`;
+      // Use form POST instead of redirect to avoid showing credentials in URL
+      const logonUrl = `http://${uamip}:${validatedPort}/logon`;
       
       if (challenge) {
         const chapResponse = computeChapResponse(password, challenge, uniqueUamSecret);
-        logonUrl = `http://${uamip}:${validatedPort}/logon?${baseParams}&response=${chapResponse}`;
-        fastify.log.info(`[UAM] ${username} authenticated, CHAP redirect (challenge=${challenge.substring(0, 16)}..., uamSecret=${uniqueUamSecret ? 'present' : 'none'})`);
+        fastify.log.info(`[UAM] ${username} authenticated, CHAP form (challenge=${challenge.substring(0, 16)}..., uamSecret=${uniqueUamSecret ? 'present' : 'none'})`);
+        
+        const html = renderLogonForm({
+          logonUrl,
+          username,
+          userurl: sanitizedUserUrl,
+          response: chapResponse
+        });
+        return reply.type('text/html').send(html);
       } else {
-        logonUrl = `http://${uamip}:${validatedPort}/logon?${baseParams}&password=${encodeURIComponent(password)}`;
-        fastify.log.info(`[UAM] ${username} authenticated, PAP redirect`);
+        fastify.log.info(`[UAM] ${username} authenticated, PAP form`);
+        
+        const html = renderLogonForm({
+          logonUrl,
+          username,
+          userurl: sanitizedUserUrl,
+          password
+        });
+        return reply.type('text/html').send(html);
       }
-      
-      return reply.redirect(logonUrl);
     } catch (error: any) {
       fastify.log.error(`[UAM] Login error: ${error.message}`);
       return safeRedirect('Server error');

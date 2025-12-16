@@ -1,0 +1,13 @@
+#!/bin/bash
+echo "=== Router Authentication Check ==="
+echo ""
+echo "Run this on the router to see authentication attempts:"
+echo ""
+echo "ssh root@10.1.30.1 'logread | grep -E \"(Access-|CHAP|logon|authenticated|reject|accept)\" | tail -20'"
+echo ""
+echo "=== Server Logs Check ==="
+echo ""
+echo "Check your API server logs for:"
+echo "  - [UAM] Found router by ID"
+echo "  - [RADIUS] Access-Accept"
+echo "  - [UAM] authenticated, CHAP redirect"
