@@ -1,4 +1,5 @@
 -- ============================================
+-- RUN_IN_SINGLE_TRANSACTION
 -- MATERIALIZED VIEW: DAILY ROUTER STATISTICS
 -- ============================================
 -- Pre-aggregated daily stats for fast dashboard queries

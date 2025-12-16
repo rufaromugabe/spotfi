@@ -56,9 +56,12 @@ async function runSingleMigration(migrationFile: string, force: boolean = false)
   console.log(`📄 Executing: ${migrationFile}`);
   const sql = readFileSync(filePath, 'utf-8');
 
+  // Check if this migration explicitly requests single transaction mode
+  const forceSingleTransaction = sql.includes('-- RUN_IN_SINGLE_TRANSACTION');
+
   // Check if this migration contains CONCURRENTLY statements
   // These cannot run inside a transaction block, so we need to run each statement separately
-  const hasConcurrently = sql.toUpperCase().includes('CONCURRENTLY');
+  const hasConcurrently = !forceSingleTransaction && sql.toUpperCase().includes('CONCURRENTLY');
 
   const client = await getDbClient();
   try {
