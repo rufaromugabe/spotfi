@@ -512,7 +512,8 @@ export async function portalRoutes(fastify: FastifyInstance) {
     return reply.code(302).header('Location', portalUrl).send();
   });
 
-  // Windows alternative detection
+  // Windows 10+ captive portal detection (www.msftconnecttest.com)
+  // Windows checks this endpoint and expects "Microsoft Connect Test" response
   fastify.get('/connecttest.txt', async (request, reply) => {
     setSecurityHeaders(reply);
     const nasid = (request.query as { nasid?: string }).nasid;
@@ -530,7 +531,15 @@ export async function portalRoutes(fastify: FastifyInstance) {
     return reply.code(302).header('Location', portalUrl).send();
   });
 
-  // Firefox captive portal detection
+  // Firefox captive portal detection (primary endpoint)
+  fastify.get('/canonical.html', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Firefox captive portal detection (legacy/alternative endpoint)
   fastify.get('/success.txt', async (request, reply) => {
     setSecurityHeaders(reply);
     const nasid = (request.query as { nasid?: string }).nasid;
