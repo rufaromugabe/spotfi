@@ -217,7 +217,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       } else if (authMode === 'radius') {
         if (!body.radiusServer) return reply.code(400).send({ error: 'radiusServer required for RADIUS' });
         if (!/^[\d.]+:\d+$/.test(body.radiusServer)) return reply.code(400).send({ error: 'radiusServer format: IP:port' });
-      }
+        }
       
       let uciCommands = [`uci set uspot.${sectionName}.auth_mode='${authMode}'`];
       
@@ -293,17 +293,17 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           await routerRpcService.rpcCall(id, 'file', 'exec', {
             command: 'sh',
             params: ['-c', [
-              `uci set uhttpd.uam3990=uhttpd`,
-              `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
-              `uci set uhttpd.uam3990.redirect_https='0'`,
-              `uci set uhttpd.uam3990.max_requests='5'`,
-              `uci set uhttpd.uam3990.no_dirlists='1'`,
-              `uci set uhttpd.uam3990.home='/www-uspot'`,
-              `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
-              `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
-              `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
-              `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
-              `uci commit uhttpd`
+            `uci set uhttpd.uam3990=uhttpd`,
+            `uci set uhttpd.uam3990.listen_http='${hotspotIp}:3990'`,
+            `uci set uhttpd.uam3990.redirect_https='0'`,
+            `uci set uhttpd.uam3990.max_requests='5'`,
+            `uci set uhttpd.uam3990.no_dirlists='1'`,
+            `uci set uhttpd.uam3990.home='/www-uspot'`,
+            `uci delete uhttpd.uam3990.ucode_prefix 2>/dev/null || true`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logon=/usr/share/uspot/handler-uam.uc'`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logoff=/usr/share/uspot/handler-uam.uc'`,
+            `uci add_list uhttpd.uam3990.ucode_prefix='/logout=/usr/share/uspot/handler-uam.uc'`,
+            `uci commit uhttpd`
             ].join(' && ')]
           });
         }

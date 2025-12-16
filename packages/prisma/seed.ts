@@ -75,7 +75,7 @@ async function main() {
       secret: masterSecret,
       description: 'Master Secret - All routers',
     },
-  });
+    });
   console.log('✅ Created master NAS entry');
 
   // ============================================
@@ -292,17 +292,17 @@ async function main() {
     const existingEndUser = await prisma.endUser.findUnique({ where: { username: userData.username } });
 
     const endUser = existingEndUser || await prisma.endUser.create({
-      data: {
-        username: userData.username,
-        password: hashedPassword,
-        email: userData.email,
-        phone: userData.phone,
-        fullName: userData.fullName,
-        status: userData.status,
-        notes: userData.notes,
-        createdById: admin.id,
-      },
-    });
+        data: {
+          username: userData.username,
+          password: hashedPassword,
+          email: userData.email,
+          phone: userData.phone,
+          fullName: userData.fullName,
+          status: userData.status,
+          notes: userData.notes,
+          createdById: admin.id,
+        },
+      });
     createdEndUsers.push({ ...endUser, plainPassword: userData.password });
 
     // RADIUS entry
@@ -364,19 +364,19 @@ async function main() {
     });
 
     if (!existingUserPlan) {
-      await prisma.userPlan.create({
-        data: {
-          userId: endUser.id,
-          planId: plan.id,
-          status: 'ACTIVE',
-          activatedAt: new Date(),
-          expiresAt,
-          dataQuota: plan.dataQuota,
-          dataUsed: 0n,
-          autoRenew: assignment.autoRenew,
-          assignedById: admin.id,
-        },
-      });
+    await prisma.userPlan.create({
+      data: {
+        userId: endUser.id,
+        planId: plan.id,
+        status: 'ACTIVE',
+        activatedAt: new Date(),
+        expiresAt,
+        dataQuota: plan.dataQuota,
+        dataUsed: 0n,
+        autoRenew: assignment.autoRenew,
+        assignedById: admin.id,
+      },
+    });
     }
 
     if (plan.sessionTimeout) await upsertRadReply(assignment.username, 'Session-Timeout', plan.sessionTimeout.toString());

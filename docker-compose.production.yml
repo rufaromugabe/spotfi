@@ -92,7 +92,7 @@ services:
       # Or set to external RADIUS server IP/hostname in .env
       RADIUS_SERVER_1: ${RADIUS_SERVER_1:-freeradius}
       RADIUS_SERVER_2: ${RADIUS_SERVER_2:-}
-      RADIUS_SECRET: ${RADIUS_SECRET:-testing123}
+      RADIUS_MASTER_SECRET: ${RADIUS_MASTER_SECRET:-testing123}
       RADIUS_PORT: ${RADIUS_PORT:-1812}
       # Redis Configuration
       REDIS_HOST: ${REDIS_HOST:-redis}

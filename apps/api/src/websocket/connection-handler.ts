@@ -212,17 +212,17 @@ export class RouterConnectionHandler {
   }
 
   private handlexData(message: any): void {
-    const { sessionId, data } = message;
+      const { sessionId, data } = message;
     if (!sessionId || !data) return;
 
-    const session = xTunnelManager.getSession(sessionId);
-    if (!session) {
+      const session = xTunnelManager.getSession(sessionId);
+      if (!session) {
       this.logger.warn(`x session not found: ${sessionId}`);
-      return;
-    }
+        return;
+      }
 
-    const binaryData = Buffer.from(data, 'base64');
-    session.sendToClient(binaryData);
+      const binaryData = Buffer.from(data, 'base64');
+      session.sendToClient(binaryData);
   }
 
   private async handleRouterNameUpdate(name: string): Promise<void> {
