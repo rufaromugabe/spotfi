@@ -11,6 +11,42 @@ import {
 } from '../utils/portal-security.js';
 import crypto from 'crypto';
 
+// In-memory cache for username lookup (sessionid -> username)
+// Cleans up after 5 minutes
+const usernameCache = new Map<string, { username: string; expiresAt: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function cacheUsername(sessionid: string, username: string): void {
+  usernameCache.set(sessionid, {
+    username,
+    expiresAt: Date.now() + CACHE_TTL
+  });
+  
+  // Cleanup expired entries periodically
+  if (usernameCache.size > 100) {
+    const now = Date.now();
+    for (const [key, value] of usernameCache.entries()) {
+      if (value.expiresAt < now) {
+        usernameCache.delete(key);
+      }
+    }
+  }
+}
+
+function getCachedUsername(sessionid: string | undefined): string | undefined {
+  if (!sessionid) return undefined;
+  
+  const cached = usernameCache.get(sessionid);
+  if (!cached) return undefined;
+  
+  if (cached.expiresAt < Date.now()) {
+    usernameCache.delete(sessionid);
+    return undefined;
+  }
+  
+  return cached.username;
+}
+
 interface PortalQuery {
   res?: string;
   uamip?: string;
@@ -21,7 +57,9 @@ interface PortalQuery {
   called?: string;  // Router/AP MAC address
   nasid?: string;
   sessionid?: string;
-  timeleft?: string;
+  timeleft?: string;  // Legacy, use seconds-remaining instead
+  secondsRemaining?: string;  // RFC 8908: seconds-remaining
+  bytesRemaining?: string;    // RFC 8908: bytes-remaining
   userurl?: string;
   reply?: string;
   reason?: string;
@@ -80,8 +118,13 @@ export async function portalRoutes(fastify: FastifyInstance) {
   }
 
   // GET - Show login page or success page
-  fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery }>, reply: FastifyReply) => {
-    const { res, uamip, uamport, challenge, mac, ip, nasid, sessionid, timeleft, userurl, reply: radiusReply, reason, error } = request.query;
+  fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery & { 'bytes-remaining'?: string; 'seconds-remaining'?: string } }>, reply: FastifyReply) => {
+    const query = request.query;
+    const { res, uamip, uamport, challenge, mac, ip, nasid, sessionid, timeleft, secondsRemaining, bytesRemaining, userurl, reply: radiusReply, reason, error } = query;
+    
+    // Handle RFC 8908 parameters (uspot may send with hyphens)
+    const finalSecondsRemaining = secondsRemaining || query['seconds-remaining'] || timeleft;
+    const finalBytesRemaining = bytesRemaining || query['bytes-remaining'];
 
     if (!uamip || !validateRouterIp(uamip)) {
       return reply.code(400).send('Invalid Access: No valid NAS IP detected.');
@@ -92,52 +135,58 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const sessionKey = sessionid || mac || ip || 'anonymous';
 
     if (res) {
-      fastify.log.info(`[UAM] res=${res}, mac=${mac}, ip=${ip}, timeleft=${timeleft}`);
+      fastify.log.info(`[UAM] res=${res}, mac=${mac}, ip=${ip}, secondsRemaining=${finalSecondsRemaining}, bytesRemaining=${finalBytesRemaining}`);
     }
 
     // Show success page if authenticated
     if (res === 'success') {
       if (sessionid) clearRedirectState(sessionid);
       
-      // Look up session and user info for data balance and speed
+      // Use RFC 8908 parameters from uspot (bytes-remaining, seconds-remaining)
+      const bytesRemainingBigInt = finalBytesRemaining ? BigInt(finalBytesRemaining) : null;
+      const secondsRemainingNum = finalSecondsRemaining ? parseInt(finalSecondsRemaining) : null;
+      
+      // Look up username and speed limits (not provided by RFC 8908)
       let username: string | undefined;
-      let dataBalance: { used: bigint; total: bigint | null } | undefined;
       let maxSpeed: { download: bigint | null; upload: bigint | null } | undefined;
       
-      try {
-        // Find active session by MAC or session ID
-        const session = await prisma.radAcct.findFirst({
-          where: {
-            OR: [
-              { callingStationId: mac },
-              { acctSessionId: sessionid }
-            ],
-            acctStopTime: null
-          },
-          select: { userName: true }
-        });
-        
-        if (session?.userName) {
-          username = session.userName;
-          
-          // Get quota info (data balance)
-          const quota = await prisma.radQuota.findFirst({
+      // Try cache first (fastest, works even if accounting record doesn't exist yet)
+      username = getCachedUsername(sessionid);
+      if (username) {
+        fastify.log.debug(`[UAM] Found username from cache: ${username}`);
+      }
+      
+      // Fallback to database lookup if not in cache
+      if (!username) {
+        fastify.log.debug(`[UAM] Username not in cache, checking database: sessionid=${sessionid}, mac=${mac}`);
+        try {
+          // Find active session to get username
+          const session = await prisma.radAcct.findFirst({
             where: {
-              username: session.userName,
-              periodEnd: { gt: new Date() },
-              periodStart: { lte: new Date() }
+              OR: [
+                { callingStationId: mac },
+                { acctSessionId: sessionid }
+              ],
+              acctStopTime: null
             },
-            select: { usedOctets: true, maxOctets: true }
+            select: { userName: true },
+            orderBy: { acctStartTime: 'desc' }
           });
           
-          if (quota) {
-            dataBalance = { used: quota.usedOctets, total: quota.maxOctets };
+          if (session?.userName) {
+            username = session.userName;
           }
-          
-          // Get speed limits from radreply
+        } catch (err) {
+          fastify.log.warn(`[UAM] Failed to fetch username from DB: ${err}`);
+        }
+      }
+      
+      // Get speed limits if we have username
+      if (username) {
+        try {
           const speedAttrs = await prisma.radReply.findMany({
             where: {
-              userName: session.userName,
+              userName: username,
               attribute: { in: ['WISPr-Bandwidth-Max-Down', 'WISPr-Bandwidth-Max-Up'] }
             },
             select: { attribute: true, value: true }
@@ -152,9 +201,9 @@ export async function portalRoutes(fastify: FastifyInstance) {
               upload: uploadSpeed ? BigInt(uploadSpeed.value) : null
             };
           }
+        } catch (err) {
+          fastify.log.warn(`[UAM] Failed to fetch speed limits: ${err}`);
         }
-      } catch (err) {
-        fastify.log.warn(`[UAM] Failed to fetch user info: ${err}`);
       }
       
       const html = renderSuccessPage({
@@ -163,10 +212,10 @@ export async function portalRoutes(fastify: FastifyInstance) {
         userurl: sanitizedUserUrl,
         mac,
         ip,
-        timeleft,
+        secondsRemaining: secondsRemainingNum,
+        bytesRemaining: bytesRemainingBigInt,
         sessionid,
         username,
-        dataBalance,
         maxSpeed
       });
       return reply.type('text/html').send(html);
@@ -278,7 +327,11 @@ export async function portalRoutes(fastify: FastifyInstance) {
         return safeRedirect('Invalid username or password');
       }
 
-      if (sessionid) clearRedirectState(sessionid);
+      // Cache username for success page lookup
+      if (sessionid) {
+        cacheUsername(sessionid, username);
+        clearRedirectState(sessionid);
+      }
 
       // Build logon URL - use CHAP if challenge present, else PAP
       // Use form POST instead of redirect to avoid showing credentials in URL

@@ -110,27 +110,19 @@ export const renderSuccessPage = (props: {
   userurl?: string;
   mac?: string;
   ip?: string;
-  timeleft?: string;
+  secondsRemaining?: number | null;  // RFC 8908: seconds-remaining
+  bytesRemaining?: bigint | null;    // RFC 8908: bytes-remaining
   sessionid?: string;
   username?: string;
-  dataBalance?: { used: bigint; total: bigint | null };
   maxSpeed?: { download: bigint | null; upload: bigint | null };
 }) => {
-  const timeLeftMinutes = props.timeleft ? Math.floor(parseInt(props.timeleft) / 60) : null;
+  const timeLeftMinutes = props.secondsRemaining ? Math.floor(props.secondsRemaining / 60) : null;
   const logoutUrl = `http://${props.uamip}:${props.uamport}/logoff`;
   
-  // Calculate data usage percentage
-  let dataUsagePercent: number | null = null;
-  let dataRemaining: string | null = null;
-  if (props.dataBalance) {
-    if (props.dataBalance.total) {
-      dataUsagePercent = Math.min(100, Number(props.dataBalance.used * 100n / props.dataBalance.total));
-      const remaining = props.dataBalance.total - props.dataBalance.used;
-      dataRemaining = remaining > 0n ? formatBytes(remaining) : '0 B';
-    } else {
-      dataRemaining = 'Unlimited';
-    }
-  }
+  // Use bytes-remaining from RFC 8908 (provided by uspot)
+  const dataRemaining = props.bytesRemaining !== null && props.bytesRemaining !== undefined
+    ? formatBytes(props.bytesRemaining)
+    : null;
   
   // Format speeds
   const downloadSpeed = props.maxSpeed?.download ? formatSpeed(props.maxSpeed.download) : null;
@@ -184,15 +176,7 @@ export const renderSuccessPage = (props: {
         ` : ''}
         
         <div class="stats">
-          ${dataRemaining ? `
-          <div class="stat-row" style="flex-direction: column; gap: 0.25rem;">
-            <div style="display: flex; justify-content: space-between;">
-              <span class="stat-label">Data Balance</span>
-              <span class="stat-value">${dataRemaining}</span>
-            </div>
-            ${dataUsagePercent !== null ? `<div class="progress-bar"><div class="progress-fill" style="width: ${100 - dataUsagePercent}%"></div></div>` : ''}
-          </div>
-          ` : ''}
+          ${dataRemaining ? `<div class="stat-row"><span class="stat-label">Data Remaining</span><span class="stat-value">${dataRemaining}</span></div>` : ''}
           ${timeLeftMinutes !== null ? `<div class="stat-row"><span class="stat-label">Time Remaining</span><span class="stat-value">${timeLeftMinutes} min</span></div>` : ''}
           ${props.ip ? `<div class="stat-row"><span class="stat-label">Your IP</span><span class="stat-value">${props.ip}</span></div>` : ''}
         </div>
