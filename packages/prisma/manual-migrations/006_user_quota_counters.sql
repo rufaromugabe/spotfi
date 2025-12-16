@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS user_quota_usage (
     PRIMARY KEY (username, period_start)
 );
 
-CREATE INDEX idx_user_quota_usage_username ON user_quota_usage(username, period_start DESC);
-CREATE INDEX idx_user_quota_usage_period ON user_quota_usage(period_start DESC);
+CREATE INDEX IF NOT EXISTS idx_user_quota_usage_username ON user_quota_usage(username, period_start DESC);
+CREATE INDEX IF NOT EXISTS idx_user_quota_usage_period ON user_quota_usage(period_start DESC);
 
 -- ============================================
 -- 2. UPDATE get_user_total_usage() FUNCTION
