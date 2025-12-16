@@ -2,11 +2,12 @@ import { FastifyBaseLogger } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 
 /**
- * NAS (Network Access Server) management for FreeRADIUS.
- * Uses master secret from RADIUS_MASTER_SECRET env for all NAS entries.
+ * NAS management for FreeRADIUS.
+ * Uses wildcard entry (0.0.0.0/0) with master secret for all routers.
  */
 export class NasService {
   private logger: FastifyBaseLogger;
+  private static readonly WILDCARD_NAS_NAME = '0.0.0.0/0';
 
   constructor(logger: FastifyBaseLogger) {
     this.logger = logger;
@@ -25,22 +26,20 @@ export class NasService {
     
     try {
       await prisma.nas.upsert({
-        where: { nasName: router.nasipaddress },
+        where: { nasName: NasService.WILDCARD_NAS_NAME },
         update: {
-          shortName: `rtr-${router.id.substring(0, 8)}`,
           secret,
-          description: `${router.name} (Auto-managed)`,
-          type: 'other'
+          description: 'Master NAS entry (all routers) - Docker-compatible'
         },
         create: {
-          nasName: router.nasipaddress,
-          shortName: `rtr-${router.id.substring(0, 8)}`,
+          nasName: NasService.WILDCARD_NAS_NAME,
+          shortName: 'master',
           type: 'other',
           secret,
-          description: `${router.name} (Auto-managed)`
+          description: 'Master NAS entry (all routers) - Docker-compatible'
         }
       });
-      this.logger.info(`NAS entry synced for router ${router.id} at ${router.nasipaddress}`);
+      this.logger.info(`NAS entry synced (wildcard) for router ${router.id} at ${router.nasipaddress}`);
     } catch (error) {
       this.logger.error(`Failed to upsert NAS entry: ${error}`);
       throw error;
@@ -48,21 +47,10 @@ export class NasService {
   }
 
   async removeNasEntry(nasipaddress: string, routerId: string): Promise<void> {
-    try {
-      await prisma.nas.deleteMany({
-        where: {
-          nasName: nasipaddress,
-          shortName: { contains: routerId.substring(0, 8) }
-        }
-      });
-      this.logger.info(`NAS entry removed for ${nasipaddress}`);
-    } catch (error) {
-      this.logger.warn(`Failed to remove NAS entry: ${error}`);
-    }
+    this.logger.debug(`Skipping NAS entry removal (wildcard entry is shared): router ${routerId}`);
   }
 
   async handleIpChange(oldIp: string, newIp: string, router: { id: string; name: string }): Promise<void> {
-    await this.removeNasEntry(oldIp, router.id);
     await this.upsertNasEntry({ ...router, nasipaddress: newIp });
     this.logger.info(`Router ${router.id} IP changed: ${oldIp} → ${newIp}`);
   }

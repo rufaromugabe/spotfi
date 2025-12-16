@@ -61,20 +61,11 @@ export class RouterConnectionHandler {
 
     if (!updatedRouter) throw new Error('Router configuration incomplete');
 
-    // Sync NAS entry (uses master secret from ENV internally)
-    if (ipChanged && router.nasipaddress) {
-      await this.nasService.handleIpChange(
-        router.nasipaddress,
-        clientIp,
-        { id: this.routerId, name: updatedRouter.name }
-      );
-    } else {
-      await this.nasService.upsertNasEntry({
-        id: this.routerId,
-        name: updatedRouter.name,
-        nasipaddress: clientIp
-      });
-    }
+    await this.nasService.upsertNasEntry({
+      id: this.routerId,
+      name: updatedRouter.name,
+      nasipaddress: clientIp
+    });
 
     this.logger.info(`Router ${this.routerId} connected from ${clientIp}`);
 

@@ -61,19 +61,16 @@ async function main() {
   });
   console.log('✅ Created sample router:', router.name);
 
-  // ============================================
-  // 3. CREATE MASTER NAS ENTRY
-  // Single catch-all entry for all routers
-  // ============================================
+  // Create master NAS entry (wildcard for all routers)
   await prisma.nas.upsert({
     where: { nasName: '0.0.0.0/0' },
     update: { secret: masterSecret },
     create: {
       nasName: '0.0.0.0/0',
-      shortName: 'master-access',
+      shortName: 'master',
       type: 'other',
       secret: masterSecret,
-      description: 'Master Secret - All routers',
+      description: 'Master NAS entry (all routers) - Docker-compatible',
     },
     });
   console.log('✅ Created master NAS entry');
