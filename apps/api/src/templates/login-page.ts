@@ -1,3 +1,13 @@
+// HTML escape helper (defense in depth)
+const escapeHtmlAttr = (str: string): string => {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+};
+
 export const renderLogonForm = (props: {
   logonUrl: string;
   username: string;
@@ -23,11 +33,11 @@ export const renderLogonForm = (props: {
         <div class="spinner"></div>
         <p>Connecting...</p>
     </div>
-    <form id="logonForm" method="GET" action="${props.logonUrl}">
-        <input type="hidden" name="username" value="${props.username}">
-        <input type="hidden" name="userurl" value="${props.userurl}">
-        ${props.response ? `<input type="hidden" name="response" value="${props.response}">` : ''}
-        ${props.password ? `<input type="hidden" name="password" value="${props.password}">` : ''}
+    <form id="logonForm" method="GET" action="${escapeHtmlAttr(props.logonUrl)}">
+        <input type="hidden" name="username" value="${escapeHtmlAttr(props.username)}">
+        <input type="hidden" name="userurl" value="${escapeHtmlAttr(props.userurl)}">
+        ${props.response ? `<input type="hidden" name="response" value="${escapeHtmlAttr(props.response)}">` : ''}
+        ${props.password ? `<input type="hidden" name="password" value="${escapeHtmlAttr(props.password)}">` : ''}
     </form>
     <script>
         // Auto-submit form to avoid showing credentials in POST response URL
@@ -46,7 +56,19 @@ export const renderLoginPage = (props: {
   mac?: string;
   nasid?: string;
   sessionid?: string;
-}) => `
+}) => {
+  // Build portal URL with current parameters for redirect fallback
+  const portalParams = new URLSearchParams();
+  if (props.uamip) portalParams.set('uamip', props.uamip);
+  if (props.uamport) portalParams.set('uamport', props.uamport);
+  if (props.userurl) portalParams.set('userurl', props.userurl);
+  if (props.challenge) portalParams.set('challenge', props.challenge);
+  if (props.mac) portalParams.set('mac', props.mac);
+  if (props.nasid) portalParams.set('nasid', props.nasid);
+  if (props.sessionid) portalParams.set('sessionid', props.sessionid);
+  const portalUrl = `${props.actionUrl}?${portalParams.toString()}`;
+
+  return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -65,16 +87,16 @@ export const renderLoginPage = (props: {
 <body>
     <div class="card">
         <h2 style="text-align:center; margin-top:0;">SpotFi</h2>
-        ${props.error ? `<div class="error">${props.error}</div>` : ''}
+        ${props.error ? `<div class="error">${escapeHtmlAttr(props.error)}</div>` : ''}
         
-        <form method="POST" action="${props.actionUrl}">
-            <input type="hidden" name="uamip" value="${props.uamip}">
-            <input type="hidden" name="uamport" value="${props.uamport}">
-            <input type="hidden" name="userurl" value="${props.userurl}">
-            ${props.challenge ? `<input type="hidden" name="challenge" value="${props.challenge}">` : ''}
-            ${props.mac ? `<input type="hidden" name="mac" value="${props.mac}">` : ''}
-            ${props.nasid ? `<input type="hidden" name="nasid" value="${props.nasid}">` : ''}
-            ${props.sessionid ? `<input type="hidden" name="sessionid" value="${props.sessionid}">` : ''}
+        <form method="POST" action="${escapeHtmlAttr(props.actionUrl)}">
+            <input type="hidden" name="uamip" value="${escapeHtmlAttr(props.uamip)}">
+            <input type="hidden" name="uamport" value="${escapeHtmlAttr(props.uamport)}">
+            <input type="hidden" name="userurl" value="${escapeHtmlAttr(props.userurl)}">
+            ${props.challenge ? `<input type="hidden" name="challenge" value="${escapeHtmlAttr(props.challenge)}">` : ''}
+            ${props.mac ? `<input type="hidden" name="mac" value="${escapeHtmlAttr(props.mac)}">` : ''}
+            ${props.nasid ? `<input type="hidden" name="nasid" value="${escapeHtmlAttr(props.nasid)}">` : ''}
+            ${props.sessionid ? `<input type="hidden" name="sessionid" value="${escapeHtmlAttr(props.sessionid)}">` : ''}
             
             <label>Username</label>
             <input type="text" name="username" required autofocus autocomplete="username">
@@ -85,8 +107,26 @@ export const renderLoginPage = (props: {
             <button type="submit">Connect</button>
         </form>
     </div>
+    <script>
+        // Portal auto-detection: Ensure seamless experience
+        // This script helps with browser compatibility and ensures proper portal loading
+        (function() {
+            // Store original destination URL for post-authentication redirect
+            const urlParams = new URLSearchParams(window.location.search);
+            const userUrl = urlParams.get('userurl');
+            if (userUrl) {
+                // Store in sessionStorage for use after authentication
+                try {
+                    sessionStorage.setItem('spotfi_redirect_url', userUrl);
+                } catch (e) {
+                    // Ignore if sessionStorage not available
+                }
+            }
+        })();
+    </script>
 </body>
 </html>`;
+};
 
 // Helper functions
 const formatBytes = (bytes: bigint): string => {
@@ -166,7 +206,7 @@ export const renderSuccessPage = (props: {
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
         </div>
         <h2>Connected!</h2>
-        <p class="subtitle">${props.username ? `Welcome, ${props.username}` : "You're now online"}</p>
+        <p class="subtitle">${props.username ? `Welcome, ${escapeHtmlAttr(props.username)}` : "You're now online"}</p>
         
         ${(downloadSpeed || uploadSpeed) ? `
         <div class="speed-badges">
@@ -178,7 +218,7 @@ export const renderSuccessPage = (props: {
         <div class="stats">
           ${dataRemaining ? `<div class="stat-row"><span class="stat-label">Data Remaining</span><span class="stat-value">${dataRemaining}</span></div>` : ''}
           ${timeLeftMinutes !== null ? `<div class="stat-row"><span class="stat-label">Time Remaining</span><span class="stat-value">${timeLeftMinutes} min</span></div>` : ''}
-          ${props.ip ? `<div class="stat-row"><span class="stat-label">Your IP</span><span class="stat-value">${props.ip}</span></div>` : ''}
+          ${props.ip ? `<div class="stat-row"><span class="stat-label">Your IP</span><span class="stat-value">${escapeHtmlAttr(props.ip)}</span></div>` : ''}
         </div>
         
         <div class="buttons">

@@ -188,20 +188,36 @@ interface RedirectState {
   attempts: number;
   lastRedirect: number;
   sessionId: string;
+  url: string; // Track the URL to detect same-URL loops
 }
 
 const redirectStates = new Map<string, RedirectState>();
-const MAX_REDIRECT_ATTEMPTS = 3;
-const REDIRECT_WINDOW_MS = 60000; // 1 minute
+const MAX_REDIRECT_ATTEMPTS = 5; // Increased to allow legitimate retries
+const REDIRECT_WINDOW_MS = 30000; // 30 seconds - shorter window for faster detection
+
+/**
+ * Rate limiting for login attempts
+ */
+interface LoginAttempt {
+  count: number;
+  lastAttempt: number;
+  blockedUntil?: number;
+}
+
+const loginAttempts = new Map<string, LoginAttempt>();
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const BLOCK_DURATION_MS = 30 * 60 * 1000; // 30 minutes block after max attempts
 
 /**
  * Checks if redirect loop is detected
  * Prevents infinite redirect loops
  * 
  * @param sessionId - Unique session identifier
+ * @param currentUrl - Current request URL to detect same-URL loops
  * @returns true if loop detected
  */
-export function checkRedirectLoop(sessionId: string): boolean {
+export function checkRedirectLoop(sessionId: string, currentUrl?: string): boolean {
   const state = redirectStates.get(sessionId);
   const now = Date.now();
 
@@ -209,7 +225,8 @@ export function checkRedirectLoop(sessionId: string): boolean {
     redirectStates.set(sessionId, {
       attempts: 1,
       lastRedirect: now,
-      sessionId
+      sessionId,
+      url: currentUrl || ''
     });
     return false;
   }
@@ -218,11 +235,19 @@ export function checkRedirectLoop(sessionId: string): boolean {
   if (now - state.lastRedirect > REDIRECT_WINDOW_MS) {
     state.attempts = 1;
     state.lastRedirect = now;
+    state.url = currentUrl || '';
     return false;
   }
 
-  state.attempts++;
+  // Detect same-URL loops (more dangerous)
+  if (currentUrl && state.url === currentUrl) {
+    state.attempts += 2; // Penalize same-URL loops more heavily
+  } else {
+    state.attempts++;
+  }
+  
   state.lastRedirect = now;
+  state.url = currentUrl || '';
 
   if (state.attempts > MAX_REDIRECT_ATTEMPTS) {
     return true; // Loop detected
@@ -239,6 +264,66 @@ export function clearRedirectState(sessionId: string): void {
 }
 
 /**
+ * Checks if login attempts are rate limited
+ * 
+ * @param identifier - IP address, MAC, or session ID
+ * @returns true if blocked, false if allowed
+ */
+export function checkLoginRateLimit(identifier: string): boolean {
+  const attempt = loginAttempts.get(identifier);
+  const now = Date.now();
+
+  if (!attempt) {
+    loginAttempts.set(identifier, {
+      count: 1,
+      lastAttempt: now
+    });
+    return false;
+  }
+
+  // Check if still blocked
+  if (attempt.blockedUntil && now < attempt.blockedUntil) {
+    return true; // Still blocked
+  }
+
+  // Reset if outside time window
+  if (now - attempt.lastAttempt > LOGIN_WINDOW_MS) {
+    attempt.count = 1;
+    attempt.lastAttempt = now;
+    attempt.blockedUntil = undefined;
+    return false;
+  }
+
+  attempt.count++;
+  attempt.lastAttempt = now;
+
+  // Block if exceeded max attempts
+  if (attempt.count > MAX_LOGIN_ATTEMPTS) {
+    attempt.blockedUntil = now + BLOCK_DURATION_MS;
+    return true; // Blocked
+  }
+
+  return false;
+}
+
+/**
+ * Clears login rate limit (call after successful login)
+ */
+export function clearLoginRateLimit(identifier: string): void {
+  loginAttempts.delete(identifier);
+}
+
+/**
+ * Gets remaining block time in seconds
+ */
+export function getRemainingBlockTime(identifier: string): number {
+  const attempt = loginAttempts.get(identifier);
+  if (!attempt?.blockedUntil) return 0;
+  const remaining = attempt.blockedUntil - Date.now();
+  return Math.max(0, Math.ceil(remaining / 1000));
+}
+
+/**
  * Cleanup old redirect states (call periodically)
  */
 export function cleanupRedirectStates(): void {
@@ -250,9 +335,27 @@ export function cleanupRedirectStates(): void {
   }
 }
 
+/**
+ * Cleanup old login attempt records
+ */
+export function cleanupLoginAttempts(): void {
+  const now = Date.now();
+  for (const [identifier, attempt] of loginAttempts.entries()) {
+    // Remove if outside window and not blocked
+    if (!attempt.blockedUntil && now - attempt.lastAttempt > LOGIN_WINDOW_MS * 2) {
+      loginAttempts.delete(identifier);
+    }
+    // Remove if block expired
+    else if (attempt.blockedUntil && now > attempt.blockedUntil) {
+      loginAttempts.delete(identifier);
+    }
+  }
+}
+
 // Cleanup every 5 minutes
 if (typeof setInterval !== 'undefined') {
   setInterval(cleanupRedirectStates, 5 * 60 * 1000);
+  setInterval(cleanupLoginAttempts, 5 * 60 * 1000);
 }
 
 /**
@@ -266,9 +369,25 @@ export function getCSPHeader(): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
-    "form-action 'self'",
+    "form-action 'self' http: https:", // Allow form submission to router IPs
     "base-uri 'self'",
-    "frame-ancestors 'none'"
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "upgrade-insecure-requests"
   ].join('; ');
+}
+
+/**
+ * Gets security headers for portal responses
+ */
+export function getSecurityHeaders(): Record<string, string> {
+  return {
+    'Content-Security-Policy': getCSPHeader(),
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=()'
+  };
 }
 

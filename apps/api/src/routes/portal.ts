@@ -7,7 +7,12 @@ import {
   validateRouterIp,
   validateRouterPort,
   checkRedirectLoop,
-  clearRedirectState
+  clearRedirectState,
+  checkLoginRateLimit,
+  clearLoginRateLimit,
+  getRemainingBlockTime,
+  getSecurityHeaders,
+  escapeHtml
 } from '../utils/portal-security.js';
 import crypto from 'crypto';
 
@@ -117,6 +122,14 @@ export async function portalRoutes(fastify: FastifyInstance) {
     throw new Error(`Invalid UAM_SERVER_URL: ${uamServerUrl}`);
   }
 
+  // Helper to set security headers
+  const setSecurityHeaders = (reply: FastifyReply) => {
+    const headers = getSecurityHeaders();
+    for (const [key, value] of Object.entries(headers)) {
+      reply.header(key, value);
+    }
+  };
+
   // GET - Show login page or success page
   fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery & { 'bytes-remaining'?: string; 'seconds-remaining'?: string } }>, reply: FastifyReply) => {
     const query = request.query;
@@ -127,20 +140,45 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const finalBytesRemaining = bytesRemaining || query['bytes-remaining'];
 
     if (!uamip || !validateRouterIp(uamip)) {
+      setSecurityHeaders(reply);
       return reply.code(400).send('Invalid Access: No valid NAS IP detected.');
     }
 
     const validatedPort = validateRouterPort(uamport, '3990');
     const sanitizedUserUrl = validateAndSanitizeUserUrl(userurl);
     const sessionKey = sessionid || mac || ip || 'anonymous';
+    
+    // Build current URL for redirect loop detection
+    const currentUrl = `${request.url}`;
 
     if (res) {
       fastify.log.info(`[UAM] res=${res}, mac=${mac}, ip=${ip}, secondsRemaining=${finalSecondsRemaining}, bytesRemaining=${finalBytesRemaining}`);
     }
 
+    // Check redirect loop BEFORE processing (except for success page)
+    if (res !== 'success' && checkRedirectLoop(sessionKey, currentUrl)) {
+      fastify.log.warn(`[UAM] Redirect loop detected for session: ${sessionKey}`);
+      setSecurityHeaders(reply);
+      return reply.code(400).type('text/html').send(`
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"><title>Redirect Loop Detected</title></head>
+        <body style="font-family: system-ui; text-align: center; padding: 2rem;">
+          <h2>Redirect Loop Detected</h2>
+          <p>Please clear your browser cache and cookies, then try again.</p>
+          <p><a href="${sanitizedUserUrl}">Continue to your destination</a></p>
+        </body>
+        </html>
+      `);
+    }
+
     // Show success page if authenticated
     if (res === 'success') {
-      if (sessionid) clearRedirectState(sessionid);
+      // Clear redirect state immediately on success
+      if (sessionKey) {
+        clearRedirectState(sessionKey);
+        clearLoginRateLimit(sessionKey);
+      }
       
       // Use RFC 8908 parameters from uspot (bytes-remaining, seconds-remaining)
       const bytesRemainingBigInt = finalBytesRemaining ? BigInt(finalBytesRemaining) : null;
@@ -207,24 +245,22 @@ export async function portalRoutes(fastify: FastifyInstance) {
       }
       
       const html = renderSuccessPage({
-        uamip,
-        uamport: validatedPort,
-        userurl: sanitizedUserUrl,
-        mac,
-        ip,
+        uamip: escapeHtml(uamip),
+        uamport: escapeHtml(validatedPort),
+        userurl: sanitizedUserUrl, // Already validated and sanitized
+        mac: mac ? escapeHtml(mac) : undefined,
+        ip: ip ? escapeHtml(ip) : undefined,
         secondsRemaining: secondsRemainingNum,
         bytesRemaining: bytesRemainingBigInt,
-        sessionid,
-        username,
+        sessionid: sessionid ? escapeHtml(sessionid) : undefined,
+        username: username ? escapeHtml(username) : undefined,
         maxSpeed
       });
+      setSecurityHeaders(reply);
       return reply.type('text/html').send(html);
     }
 
-    if (checkRedirectLoop(sessionKey)) {
-      return reply.code(400).send('Redirect loop detected. Clear browser cache and try again.');
-    }
-
+    // Handle error states - show error page instead of redirecting to prevent loops
     let errorMessage: string | undefined;
     if (error) errorMessage = error;
     else if (res === 'reject') errorMessage = radiusReply || 'Authentication failed.';
@@ -233,16 +269,17 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
     const html = renderLoginPage({
       actionUrl: uamServerUrl,
-      uamip,
-      uamport: validatedPort,
-      userurl: sanitizedUserUrl,
-      error: errorMessage,
-      challenge,
-      mac,
-      nasid,
-      sessionid
+      uamip: escapeHtml(uamip),
+      uamport: escapeHtml(validatedPort),
+      userurl: escapeHtml(sanitizedUserUrl),
+      error: errorMessage ? escapeHtml(errorMessage) : undefined,
+      challenge: challenge ? escapeHtml(challenge) : undefined,
+      mac: mac ? escapeHtml(mac) : undefined,
+      nasid: nasid ? escapeHtml(nasid) : undefined,
+      sessionid: sessionid ? escapeHtml(sessionid) : undefined
     });
     
+    setSecurityHeaders(reply);
     reply.type('text/html').send(html);
   });
 
@@ -262,26 +299,60 @@ export async function portalRoutes(fastify: FastifyInstance) {
     const called = query.called;
 
     if (!uamip || !validateRouterIp(uamip)) {
+      setSecurityHeaders(reply);
       return reply.code(400).send('Invalid Access: No valid NAS IP detected.');
     }
 
     const validatedPort = validateRouterPort(uamport, '3990');
     const sanitizedUserUrl = validateAndSanitizeUserUrl(userurl);
+    const sessionKey = sessionid || query.mac || query.ip || request.ip || 'anonymous';
 
-    const safeRedirect = (errorMessage: string) => {
-      const params = new URLSearchParams({
-        uamip, uamport: validatedPort, userurl: sanitizedUserUrl, error: errorMessage
+    // Check rate limiting BEFORE processing
+    if (checkLoginRateLimit(sessionKey)) {
+      const remainingTime = getRemainingBlockTime(sessionKey);
+      const minutes = Math.floor(remainingTime / 60);
+      const seconds = remainingTime % 60;
+      fastify.log.warn(`[UAM] Rate limit exceeded for session: ${sessionKey}, blocked for ${minutes}m ${seconds}s`);
+      
+      const html = renderLoginPage({
+        actionUrl: uamServerUrl,
+        uamip: escapeHtml(uamip),
+        uamport: escapeHtml(validatedPort),
+        userurl: escapeHtml(sanitizedUserUrl),
+        error: `Too many login attempts. Please try again in ${minutes > 0 ? `${minutes} minute${minutes > 1 ? 's' : ''}` : `${seconds} second${seconds !== 1 ? 's' : ''}`}.`,
+        challenge: challenge ? escapeHtml(challenge) : undefined,
+        mac: query.mac ? escapeHtml(query.mac) : undefined,
+        nasid: nasid ? escapeHtml(nasid) : undefined,
+        sessionid: sessionid ? escapeHtml(sessionid) : undefined
       });
-      return reply.redirect(`${uamServerUrl}?${params}`);
+      setSecurityHeaders(reply);
+      return reply.type('text/html').send(html);
+    }
+
+    // Show error page instead of redirecting to prevent loops
+    const showError = (errorMessage: string) => {
+      const html = renderLoginPage({
+        actionUrl: uamServerUrl,
+        uamip: escapeHtml(uamip),
+        uamport: escapeHtml(validatedPort),
+        userurl: escapeHtml(sanitizedUserUrl),
+        error: errorMessage ? escapeHtml(errorMessage) : undefined,
+        challenge: challenge ? escapeHtml(challenge) : undefined,
+        mac: query.mac ? escapeHtml(query.mac) : undefined,
+        nasid: nasid ? escapeHtml(nasid) : undefined,
+        sessionid: sessionid ? escapeHtml(sessionid) : undefined
+      });
+      setSecurityHeaders(reply);
+      return reply.type('text/html').send(html);
     };
 
     if (!username || !password) {
-      return safeRedirect('Missing required fields');
+      return showError('Missing required fields');
     }
 
     if (!masterSecret) {
       fastify.log.error('[UAM] RADIUS_MASTER_SECRET not configured');
-      return safeRedirect('Server configuration error');
+      return showError('Server configuration error');
     }
 
     try {
@@ -324,8 +395,12 @@ export async function portalRoutes(fastify: FastifyInstance) {
 
       if (!authResult.success) {
         fastify.log.warn(`[UAM] Auth failed for ${username}: ${authResult.error}`);
-        return safeRedirect('Invalid username or password');
+        // Don't clear rate limit on failure - let it accumulate
+        return showError('Invalid username or password');
       }
+
+      // Clear rate limit on successful authentication
+      clearLoginRateLimit(sessionKey);
 
       // Cache username for success page lookup
       if (sessionid) {
@@ -342,30 +417,32 @@ export async function portalRoutes(fastify: FastifyInstance) {
         fastify.log.info(`[UAM] ${username} authenticated, CHAP form (challenge=${challenge.substring(0, 16)}..., uamSecret=${uniqueUamSecret ? 'present' : 'none'})`);
         
         const html = renderLogonForm({
-          logonUrl,
-          username,
-          userurl: sanitizedUserUrl,
-          response: chapResponse
+          logonUrl, // Router URL - already validated
+          username: escapeHtml(username),
+          userurl: sanitizedUserUrl, // Already validated
+          response: chapResponse // CHAP response is hex, safe
         });
         return reply.type('text/html').send(html);
       } else {
         fastify.log.info(`[UAM] ${username} authenticated, PAP form`);
         
         const html = renderLogonForm({
-          logonUrl,
-          username,
-          userurl: sanitizedUserUrl,
-          password
+          logonUrl, // Router URL - already validated
+          username: escapeHtml(username),
+          userurl: sanitizedUserUrl, // Already validated
+          password // Password in hidden field - will be submitted to router, not displayed
         });
+        setSecurityHeaders(reply);
         return reply.type('text/html').send(html);
       }
     } catch (error: any) {
       fastify.log.error(`[UAM] Login error: ${error.message}`);
-      return safeRedirect('Server error');
+      return showError('Server error. Please try again.');
     }
   });
 
   // RFC 8908 Captive Portal API
+  // Standard endpoint for modern browsers (Chrome, Firefox, Safari)
   fastify.get('/api', {
     schema: {
       tags: ['portal'],
@@ -374,6 +451,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
     }
   }, async (request: FastifyRequest<{ Querystring: { nasid?: string } }>, reply: FastifyReply) => {
     const { nasid } = request.query;
+    setSecurityHeaders(reply);
     reply.type('application/captive+json');
     return reply.send({
       captive: true,
@@ -382,8 +460,73 @@ export async function portalRoutes(fastify: FastifyInstance) {
   });
 
   // Android captive portal detection
-  fastify.get('/generate_204', async (_request, reply) => reply.code(302).redirect('/api'));
+  // Android checks this endpoint - should return 204 No Content if not captive
+  // We return 302 to redirect to portal
+  fastify.get('/generate_204', async (request, reply) => {
+    setSecurityHeaders(reply);
+    // Redirect to portal API endpoint which will then redirect to login
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
 
   // iOS/macOS captive portal detection
-  fastify.get('/hotspot-detect.html', async (_request, reply) => reply.code(302).redirect('/api'));
+  // iOS checks /hotspot-detect.html or /library/test/success.html
+  fastify.get('/hotspot-detect.html', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // iOS/macOS alternative detection endpoint
+  fastify.get('/library/test/success.html', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Windows captive portal detection
+  // Windows checks connectivity endpoints
+  fastify.get('/ncsi.txt', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Windows alternative detection
+  fastify.get('/connecttest.txt', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Chrome/Chromium captive portal detection
+  // Chrome checks connectivitycheck.gstatic.com (handled by router DNS interception)
+  // But also checks local endpoints
+  fastify.get('/gen_204', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Firefox captive portal detection
+  fastify.get('/success.txt', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
+
+  // Linux NetworkManager detection
+  fastify.get('/nmcheck.txt', async (request, reply) => {
+    setSecurityHeaders(reply);
+    const nasid = (request.query as { nasid?: string }).nasid;
+    const portalUrl = `${uamServerUrl}${nasid ? `?nasid=${encodeURIComponent(nasid)}` : ''}`;
+    return reply.code(302).header('Location', portalUrl).send();
+  });
 }
