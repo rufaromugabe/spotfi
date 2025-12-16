@@ -48,27 +48,60 @@ const MANUAL_MIGRATIONS = [
 async function runSingleMigration(migrationFile: string, force: boolean = false) {
   const migrationsDir = join(__dirname, '..', 'manual-migrations');
   const filePath = join(migrationsDir, migrationFile);
-  
+
   if (!existsSync(filePath)) {
     throw new Error(`Migration file not found: ${filePath}`);
   }
-  
+
   console.log(`📄 Executing: ${migrationFile}`);
   const sql = readFileSync(filePath, 'utf-8');
-  
+
+  // Check if this migration contains CONCURRENTLY statements
+  // These cannot run inside a transaction block, so we need to run each statement separately
+  const hasConcurrently = sql.toUpperCase().includes('CONCURRENTLY');
+
   const client = await getDbClient();
   try {
-    await client.query(sql);
+    if (hasConcurrently) {
+      console.log(`   ⚡ Detected CONCURRENTLY - running statements outside transaction`);
+      // Split SQL into individual statements and run each separately
+      // This handles CREATE INDEX CONCURRENTLY which can't be in a transaction
+      const statements = sql
+        .split(';')
+        .map(s => s.trim())
+        .filter(s => s.length > 0 && !s.startsWith('--'));
+
+      for (const statement of statements) {
+        try {
+          await client.query(statement);
+        } catch (stmtError: any) {
+          // Check if it's an idempotent error for this statement
+          const isIdempotentError =
+            stmtError.message?.includes('already exists') ||
+            stmtError.message?.includes('duplicate') ||
+            stmtError.code === '42P07' || // PostgreSQL: duplicate_table
+            stmtError.code === '42710';   // PostgreSQL: duplicate_object
+
+          if (isIdempotentError) {
+            console.log(`   ⏭️  Statement skipped (already applied)`);
+          } else {
+            throw stmtError;
+          }
+        }
+      }
+    } else {
+      await client.query(sql);
+    }
     console.log(`✅ Completed: ${migrationFile}\n`);
     return true;
   } catch (error: any) {
     // Check if it's a "already exists" error (idempotent)
-    const isIdempotentError = 
-      error.message?.includes('already exists') || 
+    const isIdempotentError =
+      error.message?.includes('already exists') ||
       error.message?.includes('duplicate') ||
       error.code === '42P07' || // PostgreSQL: duplicate_table
       error.code === '42710';   // PostgreSQL: duplicate_object
-    
+
     if (isIdempotentError) {
       console.log(`⏭️  Skipped (already applied): ${migrationFile}\n`);
       return true;
@@ -87,24 +120,24 @@ async function runSingleMigration(migrationFile: string, force: boolean = false)
 
 async function runManualMigrations(specificMigration?: string, force: boolean = false) {
   const migrationsDir = join(__dirname, '..', 'manual-migrations');
-  
+
   console.log('🔧 Running manual SQL migrations...\n');
   console.log('📌 Using pg Client directly (bypassing Prisma for multi-statement SQL)\n');
 
   // If specific migration requested, find and run it
   if (specificMigration) {
     // Allow partial matches (e.g., "004" matches "004_partial_index_and_stoptime.sql")
-    const matchingMigration = MANUAL_MIGRATIONS.find(m => 
+    const matchingMigration = MANUAL_MIGRATIONS.find(m =>
       m.includes(specificMigration) || specificMigration.includes(m.replace('.sql', ''))
     );
-    
+
     if (!matchingMigration) {
       console.error(`❌ Migration not found: ${specificMigration}`);
       console.log('Available migrations:');
       MANUAL_MIGRATIONS.forEach(m => console.log(`  - ${m}`));
       process.exit(1);
     }
-    
+
     await runSingleMigration(matchingMigration, force);
     console.log('✨ Migration completed!');
     return;
