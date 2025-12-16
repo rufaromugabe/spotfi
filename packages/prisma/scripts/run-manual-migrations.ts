@@ -41,6 +41,8 @@ const MANUAL_MIGRATIONS = [
   '006_user_quota_counters.sql',
   '007_plan_expiry_trigger.sql', // Plan expiry with NOTIFY/LISTEN (event-driven)
   '009_pg_notify_disconnect_queue.sql', // PG_NOTIFY for real-time quota enforcement
+  '010_radacct_callingstationid_index.sql', // Index for MAC address lookups
+  '011_session_counter_redis_trigger.sql', // Redis session counter trigger
 ];
 
 async function runSingleMigration(migrationFile: string, force: boolean = false) {
