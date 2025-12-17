@@ -179,13 +179,14 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Configure wireless if requested
+      // Configure wireless if requested (with professional settings for UAM)
       if (body.combinedSSID) {
         const setupService = new UspotSetupService(fastify.log);
         await setupService.configureWireless(id, {
           combinedSSID: body.combinedSSID,
           ssid: body.ssid,
-          password: body.password
+          password: body.password,
+          applyProfessionalSettings: true // Enable WiFi 6, optimal channels, etc.
         });
       }
 

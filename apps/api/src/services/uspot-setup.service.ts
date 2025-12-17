@@ -744,6 +744,8 @@ DICTEOF`);
    * Configure wireless networks with dual SSID setup:
    * 1. Guest SSID (on 'hotspot' network) - for captive portal
    * 2. Management SSID (on 'lan' network, hidden) - for admin access
+   * 
+   * @param applyProfessionalSettings - If true, applies WiFi 6, optimal channel widths, etc. (UAM config only)
    */
   public async configureWireless(
     routerId: string, 
@@ -751,6 +753,7 @@ DICTEOF`);
       combinedSSID?: boolean;
       ssid?: string;
       password?: string;
+      applyProfessionalSettings?: boolean;
     }
   ): Promise<SetupStepResult> {
     const guestSSID = options.ssid || 'SpotFi';
@@ -802,18 +805,122 @@ DICTEOF`);
       }
       this.logger.info(`[Setup] Removed all existing wifi-iface sections`);
 
-      // Step 4: Configure each radio with dual SSIDs
+      // Step 4: Configure each radio with professional WiFi 6 settings
       for (const radio of radios) {
         // Enable the radio
         await this.exec(routerId, `uci set wireless.${radio}.disabled='0'`);
 
-        // Get band info for logging
-        let bandInfo = '';
+        // Detect band and capabilities
+        let band = '';
+        let is5GHz = false;
+        let is2GHz = false;
+        let supportsWiFi6 = false;
+        let supports160MHz = false;
+        
         try {
-          const band = (await this.exec(routerId, `uci -q get wireless.${radio}.band || echo ""`)).trim();
-          const channel = (await this.exec(routerId, `uci -q get wireless.${radio}.channel || echo "auto"`)).trim();
-          bandInfo = band || (parseInt(channel) > 14 ? '5GHz' : '2.4GHz');
+          band = (await this.exec(routerId, `uci -q get wireless.${radio}.band || echo ""`)).trim();
+          if (!band) {
+            // Try to detect from channel
+            const channel = (await this.exec(routerId, `uci -q get wireless.${radio}.channel || echo "auto"`)).trim();
+            const channelNum = parseInt(channel);
+            if (!isNaN(channelNum)) {
+              band = channelNum > 14 ? '5g' : '2g';
+            }
+          }
+          
+          is5GHz = band === '5g' || band === '5ghz' || band === 'a' || band === 'ac' || band === 'ax';
+          is2GHz = band === '2g' || band === '2ghz' || band === 'b' || band === 'g' || band === 'n';
+          
+          // Check for WiFi 6 (802.11ax) support
+          try {
+            const hwmode = (await this.exec(routerId, `uci -q get wireless.${radio}.hwmode || echo ""`)).trim();
+            const phy = (await this.exec(routerId, `cat /sys/class/ieee80211/phy*/name 2>/dev/null | head -1 || echo ""`)).trim();
+            if (hwmode === '11ax' || hwmode === '11a') {
+              supportsWiFi6 = true;
+            } else if (phy) {
+              supportsWiFi6 = await this.checkWiFi6Support(routerId, phy);
+            }
+          } catch {}
+          
+          // Check for 160MHz support (5GHz only)
+          if (is5GHz) {
+            try {
+              const result = await this.exec(routerId, `iw phy ${radio} info 2>/dev/null | grep -q "160 MHz" && echo "yes" || echo "no"`);
+              supports160MHz = result.trim() === 'yes';
+            } catch {}
+          }
         } catch {}
+
+        // Professional radio configuration (only if requested during UAM config)
+        if (options.applyProfessionalSettings) {
+          // Set country code to US (allows widest channels)
+          await this.exec(routerId, `uci set wireless.${radio}.country='US'`);
+          this.logger.info(`[Setup] ${radio}: Country code set to US`);
+          
+          // Channel width optimization
+          if (is5GHz) {
+            // 5GHz: Use widest supported channel width for best performance
+            if (supports160MHz) {
+              await this.exec(routerId, `uci set wireless.${radio}.htmode='HE160'`);
+              this.logger.info(`[Setup] ${radio}: Configured for WiFi 6 (HE160 - 160MHz)`);
+            } else {
+              // Try HE80 (WiFi 6 80MHz) or VHT80 (WiFi 5)
+              try {
+                await this.exec(routerId, `uci set wireless.${radio}.htmode='HE80'`);
+                this.logger.info(`[Setup] ${radio}: Configured for WiFi 6 (HE80 - 80MHz)`);
+              } catch {
+                await this.exec(routerId, `uci set wireless.${radio}.htmode='VHT80'`);
+                this.logger.info(`[Setup] ${radio}: Configured for WiFi 5 (VHT80 - 80MHz)`);
+              }
+            }
+            // Auto channel selection for 5GHz (best performance)
+            await this.exec(routerId, `uci set wireless.${radio}.channel='auto'`);
+          } else if (is2GHz) {
+            // 2.4GHz: Use HT40 for best performance (20MHz + 20MHz)
+            await this.exec(routerId, `uci set wireless.${radio}.htmode='HT40'`);
+            // Auto channel selection
+            await this.exec(routerId, `uci set wireless.${radio}.channel='auto'`);
+            this.logger.info(`[Setup] ${radio}: Configured for 2.4GHz (HT40 - 40MHz)`);
+          }
+
+          // WiFi 6 (802.11ax) specific settings
+          if (supportsWiFi6 && is5GHz) {
+            // Enable HE (High Efficiency) features
+            await this.exec(routerId, `uci set wireless.${radio}.he_bss_color='1'`);
+            await this.exec(routerId, `uci set wireless.${radio}.he_mu_edca='1'`);
+            // Enable OFDMA for better multi-user performance
+            await this.exec(routerId, `uci set wireless.${radio}.he_su_beamformer='1'`);
+            await this.exec(routerId, `uci set wireless.${radio}.he_su_beamformee='1'`);
+            await this.exec(routerId, `uci set wireless.${radio}.he_mu_beamformer='1'`);
+          }
+
+          // Professional settings for all bands
+          // Short Guard Interval (SGI) - improves throughput
+          await this.exec(routerId, `uci set wireless.${radio}.short_gi_40='1'`);
+          if (is5GHz) {
+            await this.exec(routerId, `uci set wireless.${radio}.short_gi_80='1'`);
+            if (supports160MHz) {
+              await this.exec(routerId, `uci set wireless.${radio}.short_gi_160='1'`);
+            }
+          }
+
+          // Beamforming (improves range and performance)
+          if (is5GHz) {
+            await this.exec(routerId, `uci set wireless.${radio}.beamforming='1'`);
+          }
+
+          // TX power - set to maximum for best range (can be adjusted)
+          await this.exec(routerId, `uci set wireless.${radio}.txpower='23'`); // dBm (adjust based on regulations)
+
+          // Disable legacy rates for better performance (WiFi 6 only)
+          if (supportsWiFi6) {
+            await this.exec(routerId, `uci set wireless.${radio}.legacy_rates='0'`);
+          }
+        }
+
+        // Get band info for logging
+        const bandInfo = is5GHz ? '5GHz' : is2GHz ? '2.4GHz' : 'Unknown';
+        const wifiGen = supportsWiFi6 ? 'WiFi 6' : is5GHz ? 'WiFi 5' : 'WiFi 4';
 
         // 4a. Create Guest SSID (hotspot network - captive portal)
         await this.exec(routerId, `uci add wireless wifi-iface`);
@@ -823,11 +930,34 @@ DICTEOF`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='hotspot'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].isolate='1'`); // Client isolation
         
-        if (guestPassword && guestPassword !== 'none' && guestPassword.length >= 8) {
-          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
-          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${guestPassword}'`);
+        // WiFi 6 security: Use WPA3 if supported and professional settings enabled, fallback to WPA2
+        if (options.applyProfessionalSettings && supportsWiFi6 && is5GHz) {
+          try {
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk3-mixed'`);
+            if (guestPassword && guestPassword !== 'none' && guestPassword.length >= 8) {
+              await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${guestPassword}'`);
+            } else {
+              // WPA3 requires password, fallback to open
+              await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='none'`);
+            }
+            this.logger.info(`[Setup] ${radio}: Using WPA3 for guest network`);
+          } catch {
+            // Fallback to WPA2 if WPA3 not supported
+            if (guestPassword && guestPassword !== 'none' && guestPassword.length >= 8) {
+              await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+              await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${guestPassword}'`);
+            } else {
+              await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='none'`);
+            }
+          }
         } else {
-          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='none'`);
+          // WPA2 for older devices
+          if (guestPassword && guestPassword !== 'none' && guestPassword.length >= 8) {
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${guestPassword}'`);
+          } else {
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='none'`);
+          }
         }
 
         // 4b. Create Management SSID (lan network - hidden, for admin)
@@ -837,13 +967,28 @@ DICTEOF`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${mgmtSSID}'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='lan'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].hidden='1'`); // Hidden SSID
-        // Use WPA2-only (psk2) for proper security on admin network
-        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
-        // Properly escape password for shell command
-        const escapedMgmtPassword = mgmtPassword.replace(/'/g, "'\"'\"'");
-        await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${escapedMgmtPassword}'`);
+        
+        // Management network: Use strongest encryption if professional settings enabled
+        if (options.applyProfessionalSettings && supportsWiFi6 && is5GHz) {
+          try {
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk3-mixed'`);
+            const escapedMgmtPassword = mgmtPassword.replace(/'/g, "'\"'\"'");
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${escapedMgmtPassword}'`);
+            this.logger.info(`[Setup] ${radio}: Using WPA3 for admin network`);
+          } catch {
+            // Fallback to WPA2
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+            const escapedMgmtPassword = mgmtPassword.replace(/'/g, "'\"'\"'");
+            await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${escapedMgmtPassword}'`);
+          }
+        } else {
+          // WPA2 for older devices
+          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].encryption='psk2'`);
+          const escapedMgmtPassword = mgmtPassword.replace(/'/g, "'\"'\"'");
+          await this.exec(routerId, `uci set wireless.@wifi-iface[-1].key='${escapedMgmtPassword}'`);
+        }
 
-        this.logger.info(`[Setup] Configured ${radio} (${bandInfo}): Guest='${guestSSID}', Admin='${mgmtSSID}' (hidden)`);
+        this.logger.info(`[Setup] Configured ${radio} (${bandInfo}, ${wifiGen}): Guest='${guestSSID}', Admin='${mgmtSSID}' (hidden)`);
       }
 
       // Step 5: Commit wireless config
@@ -856,6 +1001,18 @@ DICTEOF`);
       };
     } catch (e: any) {
       return { step: 'wireless_config', status: 'error', message: e.message };
+    }
+  }
+
+  /**
+   * Check if WiFi 6 (802.11ax) is supported by checking phy capabilities
+   */
+  private async checkWiFi6Support(routerId: string, phy: string): Promise<boolean> {
+    try {
+      const result = await this.exec(routerId, `iw phy ${phy} info 2>/dev/null | grep -q "HE Iftypes" && echo "yes" || echo "no"`);
+      return result.trim() === 'yes';
+    } catch {
+      return false;
     }
   }
 
@@ -1198,6 +1355,23 @@ DICTEOF`);
       // Match uspot docs format: ipset='!uspot' - only redirect unauthenticated clients
       await this.exec(routerId, `uci set firewall.@redirect[-1].ipset='!${setName}'`);
       this.logger.info(`[Setup] Created CPD redirect to ${hotspotIp}:80 for unauthenticated clients`);
+
+      // 4c. HTTPS Redirect (CPD) - Critical for modern browsers
+      // Redirects HTTPS to HTTP portal to prevent ERR_QUIC_PROTOCOL_ERROR
+      await this.exec(routerId, 'uci add firewall redirect');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].name="Redirect-unauth-hotspot-HTTPS"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].dest="hotspot"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].src_dport="443"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].proto="tcp"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].target="DNAT"');
+      // Redirect HTTPS to HTTP portal (browsers will accept this)
+      await this.exec(routerId, `uci set firewall.@redirect[-1].dest_ip='${hotspotIp}'`);
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].dest_port="80"');
+      await this.exec(routerId, 'uci set firewall.@redirect[-1].reflection="0"');
+      // Only redirect unauthenticated clients
+      await this.exec(routerId, `uci set firewall.@redirect[-1].ipset='!${setName}'`);
+      this.logger.info(`[Setup] Created HTTPS redirect to ${hotspotIp}:80 for unauthenticated clients`);
 
       // ============================================================
       // STEP 5: ALLOW ESSENTIAL SERVICES (INPUT rules)
