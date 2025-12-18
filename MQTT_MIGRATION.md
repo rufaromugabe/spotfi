@@ -96,7 +96,6 @@ This field is populated via MQTT handler when router connects.
 - [ ] Router heartbeat updates Redis
 - [ ] NAS entries sync on router ONLINE
 - [ ] RADIUS secrets are correct per-router
-- [ ] Python bridges still work via WebSocket (if any)
 
 ## Future Enhancements
 - Add MQTT message compression for bandwidth optimization
