@@ -25,6 +25,9 @@ interface DecodedUser {
 }
 
 export function setupWebSocket(fastify: FastifyInstance) {
+  // Initialize Distributed x-Tunnel Gateway
+  xTunnelManager.init(fastify.log);
+
   fastify.register(async function (fastify: FastifyInstance) {
     fastify.get('/ws', { websocket: true }, async (connection, request: FastifyRequest<{ Querystring: RouterQuery }>) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
@@ -148,81 +151,36 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Check if router is online (in active WebSocket connections)
-        let routerSocket = activeConnections.get(routerId);
-
-        // If not connected via WS, try to trigger on-demand connection via MQTT
-        if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-          fastify.log.info(`[x] Router ${routerId} not connected via WS. Triggering on-demand connection...`);
-
-          // Construct the WebSocket URL for the router to connect to
-          // Using the same host/protocol as the current request, but ensuring /ws path
+        // Distributed On-Demand MQTT Trigger
+        // We no longer check for a local WebSocket connection. 
+        // Any instance can safely create a session that communicates via MQTT.
+        try {
+          // Construct the WebSocket URL for the router to connect to (Legacy - optional)
           const wsProtocol = request.protocol === 'https' ? 'wss' : 'ws';
           const wsHost = request.headers.host;
           const targetUrl = `${wsProtocol}://${wsHost}/ws`;
 
-          // Circuit Breaker Check
-          if (xTunnelManager.isCircuitOpen(routerId)) {
-            connection.close(1011, 'Connection attempts throttled. Try again later.');
-            return;
-          }
-
-          try {
-            // Publish the "connect" command via MQTT
-            // We assume we don't need to pass the token here because the router should have it?
-            // Or does the router need a token to connect to /ws?
-            // The router code checks if token is in query param, if not it appends its own cfg.Token.
-            // So we just send the base URL.
-            await mqttService.publish(`spotfi/router/${routerId}/shell/connect`, { url: targetUrl });
-
-            // Wait for connection (poll activeConnections)
-            let retries = 0;
-            const maxRetries = 20; // Wait up to 10 seconds
-            const retryInterval = 500;
-
-            while (retries < maxRetries) {
-              await new Promise(r => setTimeout(r, retryInterval));
-              routerSocket = activeConnections.get(routerId);
-              if (routerSocket && routerSocket.readyState === WebSocket.OPEN) {
-                fastify.log.info(`[x] Router ${routerId} connected successfully via on-demand trigger.`);
-                xTunnelManager.resetCircuit(routerId); // Success, reset failures
-                break;
-              }
-              retries++;
-            }
-          } catch (err: any) {
-            fastify.log.error(`[x] Failed to trigger on-demand connection: ${err.message}`);
-          }
-
-          if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-            xTunnelManager.recordFailure(routerId); // Record failure
-            connection.close(1011, 'Router is offline or failed to connect');
-            return;
-          }
+          // Trigger "connect" just in case the bridge needs to dial back for generic RPC, 
+          // though x-tunneling now happens primarily via MQTT x/in topics.
+          await mqttService.publish(`spotfi/router/${routerId}/shell/connect`, { url: targetUrl });
+        } catch (err: any) {
+          fastify.log.warn(`[x] Legacy connect trigger failed (non-critical): ${err.message}`);
         }
 
-        if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-          connection.close(1011, 'Router is offline or failed to connect');
-          return;
-        }
-
-        // Create x tunnel session (includes ping verification)
+        // Create x tunnel session (Distributed via MQTT Gateway)
         let session;
         try {
-          fastify.log.debug(`[x] Creating x session for router ${routerId}, user ${user.userId}`);
+          fastify.log.debug(`[x] Creating distributed x session for router ${routerId}, user ${user.userId}`);
           session = await xTunnelManager.createSession(
             routerId,
             connection,
             user.userId,
             fastify.log
           );
-          fastify.log.info(`[x] x tunnel established: ${session.sessionId} for router ${routerId} by user ${user.userId}`);
+          fastify.log.info(`[x] Distributed x tunnel established: ${session.sessionId} for router ${routerId}`);
         } catch (error: unknown) {
           const errorMessage = error instanceof Error ? error.message : 'Failed to create x session';
-          fastify.log.error(`[x] x session creation failed for router ${routerId}: ${errorMessage}`);
-
-          // Use valid WebSocket close codes (1000-1015 are standard)
-          // 1011 = Internal Error (for router not responding/offline)
+          fastify.log.error(`[x] x session creation failed: ${errorMessage}`);
           connection.close(1011, errorMessage);
           return;
         }

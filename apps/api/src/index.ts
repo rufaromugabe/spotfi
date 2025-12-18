@@ -28,6 +28,8 @@ import { disconnectWorker } from './queues/disconnect-queue.js';
 import { reconciliationWorker } from './queues/reconciliation-queue.js';
 import { stopPgNotifyListener } from './services/pg-notify.js';
 import { initializeSessionCounts } from './services/session-counter.js';
+import { initMqtt } from './lib/mqtt.js';
+import { commandManager } from './websocket/command-manager.js';
 
 const fastify = Fastify({
   logger: process.env.NODE_ENV === 'development' ? {
@@ -140,15 +142,12 @@ await fastify.register(userPlanRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
-import { initMqtt } from './lib/mqtt.js';
-import { commandManager } from './websocket/command-manager.js';
-
-// Setup WebSocket server
-setupWebSocket(fastify);
-
 // Initialize MQTT connection
 const mqttBroker = process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
 const mqttService = initMqtt(mqttBroker, fastify.log);
+
+// Setup WebSocket server (now safe after MQTT is ready)
+setupWebSocket(fastify);
 
 import { MqttHandler } from './services/mqtt-handler.js';
 new MqttHandler(fastify.log).setup();
@@ -157,7 +156,7 @@ new MqttHandler(fastify.log).setup();
 // Subscribe to response topic for all routers
 
 const SHARED_GROUP = 'api_cluster';
-mqttService.subscribe(`$share/${SHARED_GROUP}/spotfi/router/+/rpc/response`, (topic, message) => {
+mqttService.subscribe(`$share/${SHARED_GROUP}/spotfi/router/+/rpc/response`, (topic: string, message: any) => {
   // Extract command ID from message (assumes message has id field)
   if (message.id) {
     commandManager.handleResponse(message.id, message);

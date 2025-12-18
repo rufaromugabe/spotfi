@@ -2,12 +2,15 @@ import { FastifyBaseLogger } from 'fastify';
 import { mqttService } from '../lib/mqtt.js';
 import { prisma } from '../lib/prisma.js';
 import { recordRouterHeartbeat, markRouterOffline } from './redis-router.js';
+import { NasService } from './nas.js';
 
 export class MqttHandler {
     private logger: FastifyBaseLogger;
+    private nasService: NasService;
 
     constructor(logger: FastifyBaseLogger) {
         this.logger = logger;
+        this.nasService = new NasService(logger);
     }
 
     setup() {
@@ -58,6 +61,20 @@ export class MqttHandler {
             });
             // Also update Redis to ensure it doesn't get swept by the background job
             await recordRouterHeartbeat(routerId);
+
+            // Sync NAS entry for RADIUS
+            const router = await prisma.router.findUnique({
+                where: { id: routerId },
+                select: { name: true, nasipaddress: true }
+            });
+
+            if (router) {
+                await this.nasService.upsertNasEntry({
+                    id: routerId,
+                    name: router.name,
+                    nasipaddress: router.nasipaddress || undefined
+                });
+            }
         } catch (err: any) {
             this.logger.error(`Failed to mark router ${routerId} ONLINE: ${err.message}`);
         }

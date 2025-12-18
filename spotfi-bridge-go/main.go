@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,15 +14,14 @@ import (
 	"spotfi-bridge/pkg/mqtt"
 	"spotfi-bridge/pkg/rpc"
 	"spotfi-bridge/pkg/session"
-
 	paho "github.com/eclipse/paho.mqtt.golang"
-	"github.com/gorilla/websocket"
 )
 
 // Global state
 var (
 	cfg        config.Config
 	mqttClient *mqtt.Client
+	sm         *session.SessionManager
 )
 
 func min(a, b int) int {
@@ -33,62 +31,7 @@ func min(a, b int) int {
 	return b
 }
 
-// --- WebSocket Tunnel Handler (On-Demand) ---
-func startTunnel(targetURL string) {
-	log.Printf("Starting Tunnel to %s", targetURL)
-	u, err := url.Parse(targetURL)
-	if err != nil {
-		log.Printf("Invalid tunnel URL: %v", err)
-		return
-	}
-
-	// Append token if not present (usually passed in URL, but just in case)
-	if u.Query().Get("token") == "" {
-		q := u.Query()
-		q.Set("token", cfg.Token)
-		u.RawQuery = q.Encode()
-	}
-
-	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		log.Printf("Tunnel connection failed: %v", err)
-		return
-	}
-	defer c.Close()
-
-	log.Println("Tunnel Connected")
-
-	// Create a dedicated session manager for this connection
-	// We wrap the write to the WS
-	wsSender := func(v interface{}) error {
-		return c.WriteJSON(v)
-	}
-	sm := session.NewSessionManager(wsSender)
-
-	// Read Loop
-	for {
-		var msg map[string]interface{}
-		err := c.ReadJSON(&msg)
-		if err != nil {
-			log.Println("Tunnel read error (closed):", err)
-			break
-		}
-
-		msgType, _ := msg["type"].(string)
-		switch msgType {
-		case "x-start":
-			go sm.HandleStart(msg)
-		case "x-data":
-			sm.HandleData(msg)
-		case "x-stop":
-			sm.HandleStop(msg)
-		case "ping":
-			c.WriteJSON(map[string]string{"type": "pong"})
-		}
-	}
-	log.Println("Tunnel Closed")
-}
-
+// Main entry point
 func main() {
 	log.SetOutput(os.Stderr)
 
@@ -154,6 +97,12 @@ func main() {
 	mqttClient = client
 	defer mqttClient.Close()
 
+	// Initialize global SessionManager pointing to MQTT
+	sm = session.NewSessionManager(func(v interface{}) error {
+		payload, _ := json.Marshal(v)
+		return mqttClient.Publish(fmt.Sprintf("spotfi/router/%s/x/out", routerID), payload)
+	})
+
 	// Topic Handlers
 
 	// 1. RPC Requests
@@ -177,17 +126,25 @@ func main() {
 		log.Printf("Failed to subscribe to RPC: %v", err)
 	}
 
-	// 2. Shell Connect Trigger
-	shellTopic := fmt.Sprintf("spotfi/router/%s/shell/connect", routerID)
-	mqttClient.Subscribe(shellTopic, func(c paho.Client, m paho.Message) {
+	// 2. X-Tunnel Data (Inbound - from API to Router)
+	xTopic := fmt.Sprintf("spotfi/router/%s/x/in", routerID)
+	mqttClient.Subscribe(xTopic, func(c paho.Client, m paho.Message) {
 		var msg map[string]interface{}
 		if err := json.Unmarshal(m.Payload(), &msg); err != nil {
 			return
 		}
-		// Expecting "url" in payload
-		if target, ok := msg["url"].(string); ok {
-			go startTunnel(target)
+
+		msgType, _ := msg["type"].(string)
+		switch msgType {
+		case "x-start":
+			go sm.HandleStart(msg)
+		case "x-data":
+			sm.HandleData(msg)
+		case "x-stop":
+			sm.HandleStop(msg)
 		}
+	})
+
 	})
 
 	log.Printf("SpotFi Bridge (MQTT) Started. ID: %s", routerID)

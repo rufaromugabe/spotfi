@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import { FastifyBaseLogger } from 'fastify';
-import { activeConnections } from './server.js';
 import { prisma } from '../lib/prisma.js';
+import { mqttService } from '../lib/mqtt.js';
+import { isRouterOnline } from '../services/redis-router.js';
 
 /**
  * x Tunnel Session Manager
@@ -36,6 +37,33 @@ export class xTunnelManager {
     this.failureCounts.delete(routerId);
   }
   private static readonly SESSION_TIMEOUT = 3600000; // 1 hour
+
+  /**
+   * Initialize MQTT listeners for x-tunnel data
+   */
+  static init(logger: FastifyBaseLogger) {
+    logger.info('[x] Initializing distributed MQTT x-tunnel gateway...');
+
+    // Subscribe to all router x-out topics
+    mqttService.subscribe('spotfi/router/+/x/out', (topic, message) => {
+      const sessionId = message.sessionId;
+      if (!sessionId) return;
+
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        // We have this session locally, route data to client
+        if (message.type === 'x-data' && message.data) {
+          const binaryData = Buffer.from(message.data, 'base64');
+          session.sendToClient(binaryData);
+        } else if (message.type === 'x-started') {
+          logger.info(`[x] Session ${sessionId} confirmed started by router`);
+        } else if (message.type === 'x-error') {
+          logger.error(`[x] Session ${sessionId} error: ${message.error}`);
+          session.close(false); // Close without sending stop (since it's error)
+        }
+      }
+    });
+  }
 
   /**
    * Ping router to verify it's responsive before creating x session
@@ -99,24 +127,11 @@ export class xTunnelManager {
     userId: string,
     logger: FastifyBaseLogger
   ): Promise<xTunnelSession> {
-    // Check if router is online
-    const routerSocket = activeConnections.get(routerId);
-    if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-      throw new Error('Router is offline');
+    // Check if router is online (anywhere in the cluster via Redis heartbeat)
+    const online = await isRouterOnline(routerId);
+    if (!online) {
+      throw new Error('Router is offline (no heartbeat)');
     }
-
-    // Ping router to verify it's responsive
-    logger.info(`[x] Pinging router ${routerId} before x session creation...`);
-    const pingStartTime = Date.now();
-    const isResponsive = await this.pingRouter(routerSocket, routerId, 3000);
-    const pingDuration = Date.now() - pingStartTime;
-
-    if (!isResponsive) {
-      logger.warn(`[x] Router ${routerId} did not respond to ping after ${pingDuration}ms, rejecting x connection`);
-      throw new Error('Router is not responding');
-    }
-
-    logger.info(`[x] Router ${routerId} is responsive (ping: ${pingDuration}ms), proceeding with x session creation`);
 
     // Verify user has access to router
     const router = await prisma.router.findFirst({
@@ -134,7 +149,6 @@ export class xTunnelManager {
       sessionId,
       routerId,
       clientSocket,
-      routerSocket,
       userId,
       logger
     );
@@ -150,7 +164,7 @@ export class xTunnelManager {
       }
     }, this.SESSION_TIMEOUT);
 
-    logger.info(`[x] x tunnel session created: ${sessionId} for router ${routerId}`);
+    logger.info(`[x] x tunnel session created: ${sessionId} for router ${routerId} via MQTT Gateway`);
     return session;
   }
 
@@ -206,7 +220,6 @@ export class xTunnelSession {
   public readonly routerId: string;
   public readonly userId: string;
   private clientSocket: WebSocket;
-  private routerSocket: WebSocket;
   private logger: FastifyBaseLogger;
   private isClosed: boolean = false;
 
@@ -214,7 +227,6 @@ export class xTunnelSession {
     sessionId: string,
     routerId: string,
     clientSocket: WebSocket,
-    routerSocket: WebSocket,
     userId: string,
     logger: FastifyBaseLogger
   ) {
@@ -222,7 +234,6 @@ export class xTunnelSession {
     this.routerId = routerId;
     this.userId = userId;
     this.clientSocket = clientSocket;
-    this.routerSocket = routerSocket;
     this.logger = logger;
 
     this.setupClientHandlers();
@@ -269,17 +280,15 @@ export class xTunnelSession {
    */
   private startxSession(): void {
     try {
-      // Send x session start command to router
+      // Send x session start command to router via MQTT
       const startCommand = {
         type: 'x-start',
         sessionId: this.sessionId,
         timestamp: new Date().toISOString()
       };
 
-      const commandStr = JSON.stringify(startCommand);
-      this.logger.info(`[x ${this.sessionId}] Sending x-start command to router`);
-      this.logger.debug(`[x ${this.sessionId}] Start command: ${commandStr}`);
-      this.routerSocket.send(commandStr);
+      this.logger.info(`[x ${this.sessionId}] Sending x-start command to router via MQTT`);
+      mqttService.publish(`spotfi/router/${this.routerId}/x/in`, startCommand);
     } catch (error) {
       this.logger.error(`[x ${this.sessionId}] Error starting x session: ${error}`);
       this.close();
@@ -290,21 +299,15 @@ export class xTunnelSession {
    * Send data to router (frontend → router)
    */
   private sendToRouter(data: Buffer): void {
-    if (this.routerSocket.readyState !== WebSocket.OPEN) {
-      this.logger.warn(`[x ${this.sessionId}] Router socket not open (state: ${this.routerSocket.readyState})`);
-      throw new Error('Router socket not open');
-    }
-
-    // Send x data to router wrapped in JSON for routing
+    // Send x data to router wrapped in JSON via MQTT
     const message = {
       type: 'x-data',
       sessionId: this.sessionId,
-      data: data.toString('base64') // Base64 encode binary data
+      data: data.toString('base64')
     };
 
-    const messageStr = JSON.stringify(message);
-    this.logger.debug(`[x ${this.sessionId}] Sending ${data.length} bytes to router (encoded: ${messageStr.length} chars)`);
-    this.routerSocket.send(messageStr);
+    this.logger.debug(`[x ${this.sessionId}] Publishing ${data.length} bytes to MQTT spotfi/router/${this.routerId}/x/in`);
+    mqttService.publish(`spotfi/router/${this.routerId}/x/in`, message);
   }
 
   /**
@@ -335,7 +338,7 @@ export class xTunnelSession {
   /**
    * Close x session
    */
-  public close(): void {
+  public close(notifyRouter: boolean = true): void {
     if (this.isClosed) {
       this.logger.debug(`[x ${this.sessionId}] Session already closed`);
       return;
@@ -344,25 +347,21 @@ export class xTunnelSession {
     this.logger.info(`[x ${this.sessionId}] Closing x session`);
 
     try {
-      // Send x stop command to router
-      if (this.routerSocket.readyState === WebSocket.OPEN) {
+      // Send x stop command to router via MQTT
+      if (notifyRouter) {
         const stopCommand = {
           type: 'x-stop',
           sessionId: this.sessionId,
           timestamp: new Date().toISOString()
         };
-        this.logger.debug(`[x ${this.sessionId}] Sending x-stop command to router`);
-        this.routerSocket.send(JSON.stringify(stopCommand));
-      } else {
-        this.logger.debug(`[x ${this.sessionId}] Router socket not open, skipping x-stop`);
+        this.logger.debug(`[x ${this.sessionId}] Sending x-stop command to router via MQTT`);
+        mqttService.publish(`spotfi/router/${this.routerId}/x/in`, stopCommand);
       }
 
       // Close client connection
       if (this.clientSocket.readyState === WebSocket.OPEN) {
         this.logger.debug(`[x ${this.sessionId}] Closing client socket`);
         this.clientSocket.close();
-      } else {
-        this.logger.debug(`[x ${this.sessionId}] Client socket already closed (state: ${this.clientSocket.readyState})`);
       }
     } catch (error) {
       this.logger.error(`[x ${this.sessionId}] Error closing x session: ${error}`);
