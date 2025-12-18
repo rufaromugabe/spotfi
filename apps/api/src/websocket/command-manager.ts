@@ -13,6 +13,7 @@ class CommandManager {
   private pendingCommands = new Map<string, PendingCommand>();
   private commandIdCounter = 0;
   private logger?: FastifyBaseLogger;
+  private readonly DEFAULT_TIMEOUT = 10000; // 10s default timeout (aggressive)
 
   setLogger(logger: FastifyBaseLogger) {
     this.logger = logger;
@@ -28,7 +29,7 @@ class CommandManager {
     routerId: string,
     command: string,
     params: any = {},
-    timeout: number = 30000
+    timeout: number = this.DEFAULT_TIMEOUT
   ): Promise<any> {
     return new Promise(async (resolve, reject) => {
       const commandId = this.generateCommandId();

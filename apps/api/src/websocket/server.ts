@@ -171,8 +171,11 @@ export function setupWebSocket(fastify: FastifyInstance) {
 
             // Wait for connection (poll activeConnections)
             let retries = 0;
-            while (retries < 10) { // Wait up to 5 seconds (10 * 500ms)
-              await new Promise(r => setTimeout(r, 500));
+            const maxRetries = 20; // Wait up to 10 seconds
+            const retryInterval = 500;
+
+            while (retries < maxRetries) {
+              await new Promise(r => setTimeout(r, retryInterval));
               routerSocket = activeConnections.get(routerId);
               if (routerSocket && routerSocket.readyState === WebSocket.OPEN) {
                 fastify.log.info(`[x] Router ${routerId} connected successfully via on-demand trigger.`);
