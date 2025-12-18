@@ -17,7 +17,7 @@ export class NasService {
     return randomBytes(16).toString('hex');
   }
 
-  async upsertNasEntry(router: { id: string; name: string; nasipaddress?: string }): Promise<void> {
+  async upsertNasEntry(router: { id: string; name: string }): Promise<void> {
     // In Docker/NAT environments, multiple routers may share the same public IP.
     // We use the router.id as the primary identifier in the nas table.
     const nasName = router.id;

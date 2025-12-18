@@ -65,14 +65,13 @@ export class MqttHandler {
             // Sync NAS entry for RADIUS
             const router = await prisma.router.findUnique({
                 where: { id: routerId },
-                select: { name: true, nasipaddress: true }
+                select: { name: true }
             });
 
             if (router) {
                 await this.nasService.upsertNasEntry({
                     id: routerId,
-                    name: router.name,
-                    nasipaddress: router.nasipaddress || undefined
+                    name: router.name
                 });
             }
         } catch (err: any) {

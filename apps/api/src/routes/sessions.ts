@@ -66,8 +66,7 @@ export async function sessionRoutes(fastify: FastifyInstance) {
           router: {
             select: {
               id: true,
-              name: true,
-              nasipaddress: true
+              name: true
             }
           }
         },
@@ -116,7 +115,7 @@ export async function sessionRoutes(fastify: FastifyInstance) {
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user as any;
-    
+
     if (user.role !== 'ADMIN') {
       return reply.code(403).send({ error: 'Admin access required' });
     }
@@ -129,10 +128,10 @@ export async function sessionRoutes(fastify: FastifyInstance) {
         acctSessionId: sessionId,
         acctStopTime: null
       },
-      select: { 
+      select: {
         radAcctId: true,
         acctSessionId: true,
-        routerId: true, 
+        routerId: true,
         userName: true,
         framedIpAddress: true,
         callingStationId: true // MAC address
@@ -147,7 +146,7 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       // 1. Send command to Router via WebSocket Bridge
       // This utilizes "what's already on uspot" (ubus call uspot client_remove)
       // We use the RouterRpcService you already built
-      
+
       const mac = session.callingStationId;
       if (mac) {
         await routerRpcService.kickClient(session.routerId, mac);
@@ -161,9 +160,9 @@ export async function sessionRoutes(fastify: FastifyInstance) {
       // But we can force close it here just in case the router is offline.
       await prisma.radAcct.updateMany({
         where: { acctSessionId: sessionId },
-        data: { 
-          acctStopTime: new Date(), 
-          acctTerminateCause: 'Admin-Reset' 
+        data: {
+          acctStopTime: new Date(),
+          acctTerminateCause: 'Admin-Reset'
         }
       });
 
@@ -201,7 +200,7 @@ export async function sessionRoutes(fastify: FastifyInstance) {
     }
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user as any;
-    
+
     if (user.role !== 'ADMIN') {
       return reply.code(403).send({ error: 'Admin access required' });
     }
