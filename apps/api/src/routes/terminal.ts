@@ -65,9 +65,6 @@ export async function terminalRoutes(fastify: FastifyInstance) {
     const statusEl = document.getElementById('status');
 
     let ws = null;
-    let lastKeyTime = 0;
-    let lastKeyData = null;
-    const KEY_DEBOUNCE_MS = 50; // Debounce rapid key repeats
 
     function setStatus(text, color = '#e2e8f0') {
       statusEl.textContent = text;
@@ -135,20 +132,11 @@ export async function terminalRoutes(fastify: FastifyInstance) {
 
       // Send user keystrokes as raw bytes
       // Only send data if page is visible to prevent unwanted input
-      // Add debouncing to prevent key repeat issues
       term.onData((data) => {
         if (!ws || ws.readyState !== WebSocket.OPEN || document.visibilityState !== 'visible') {
           return;
         }
         
-        const now = Date.now();
-        // Debounce: ignore if same data sent within debounce window (prevents OS key repeat)
-        if (data === lastKeyData && (now - lastKeyTime) < KEY_DEBOUNCE_MS) {
-          return;
-        }
-        
-        lastKeyTime = now;
-        lastKeyData = data;
         ws.send(new TextEncoder().encode(data));
       });
     }

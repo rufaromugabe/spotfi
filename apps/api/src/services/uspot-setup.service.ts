@@ -56,13 +56,13 @@ export class UspotSetupService {
   // Required packages for modern OpenWRT with uspot
   // uspot-www contains the web templates (click.ut, header.ut, etc.)
   private readonly REQUIRED_PACKAGES = ['uspot', 'uspot-www', 'uhttpd', 'jsonfilter'];
-  
+
   // Optional packages - try to install but don't fail if unavailable
   private readonly OPTIONAL_PACKAGES: Record<string, string[]> = {
     'ca-certificates': ['ca-certificates', 'ca-bundle'],
     'luci-uspot': ['luci-app-uspot'],  // LuCI web interface for uspot configuration
   };
-  
+
   // Built-in components that should exist on modern OpenWRT
   // If missing, the router is not compatible
   private readonly REQUIRED_BINARIES: Record<string, string[]> = {
@@ -70,14 +70,14 @@ export class UspotSetupService {
     'firewall4': ['/usr/sbin/fw4', '/etc/init.d/firewall'],
     'ucode': ['/usr/bin/ucode'],
   };
-  
+
   // Package binary detection (for packages that may be pre-installed)
   private readonly PACKAGE_BINARIES: Record<string, string[]> = {
     'uspot': ['/usr/bin/uspot', '/usr/sbin/uspot', '/usr/share/uspot/handler.uc'],
     'uhttpd': ['/usr/sbin/uhttpd'],
     'jsonfilter': ['/usr/bin/jsonfilter'],
   };
-  
+
   // Network configuration
   private readonly HOTSPOT_IP = '10.1.30.1';
   private readonly HOTSPOT_NETMASK = '255.255.255.0';
@@ -87,7 +87,7 @@ export class UspotSetupService {
   private readonly RADIUS_PORTS = [1812, 1813]; // Auth + Accounting
   private readonly TOTAL_STEPS = 13;
 
-  constructor(private logger: FastifyBaseLogger) {}
+  constructor(private logger: FastifyBaseLogger) { }
 
   /**
    * Get setup job status by job ID
@@ -194,7 +194,7 @@ export class UspotSetupService {
    * @param progressCallback - Optional callback to report progress (step name, step number)
    */
   async setup(
-    routerId: string, 
+    routerId: string,
     options: { combinedSSID?: boolean, ssid?: string, password?: string } = {},
     progressCallback?: (step: string, stepNum: number) => void
   ): Promise<SetupResult> {
@@ -208,7 +208,7 @@ export class UspotSetupService {
 
     try {
       // --- PHASE 1: PRE-FLIGHT VALIDATION ---
-      
+
       // 1. Check OpenWRT version and required components
       reportProgress('version_check');
       const versionCheck = await this.checkOpenWrtVersion(routerId);
@@ -325,12 +325,12 @@ export class UspotSetupService {
         const targetMatch = osRelease.match(/DISTRIB_TARGET='([^']+)'/);
         if (versionMatch) version = versionMatch[1];
         if (targetMatch) release = targetMatch[1];
-      } catch {}
+      } catch { }
 
       // Parse version number (e.g., "23.05.0" -> 23.05)
       const versionNum = parseFloat(version.replace(/[^0-9.]/g, '')) || 0;
       const isSnapshot = version.toLowerCase().includes('snapshot');
-      
+
       // Check minimum version (23.05 required for uspot per documentation)
       if (!isSnapshot && versionNum > 0 && versionNum < 23.05) {
         return {
@@ -349,7 +349,7 @@ export class UspotSetupService {
             await this.exec(routerId, `test -e ${path}`);
             found = true;
             break;
-          } catch {}
+          } catch { }
         }
         if (!found) missing.push(name);
       }
@@ -382,14 +382,14 @@ export class UspotSetupService {
       const freeSpaceKb = parseInt(df.trim());
 
       if (isNaN(freeSpaceKb) || freeSpaceKb < 2048) {
-        return { 
-          step: 'resource_check', 
-          status: 'error', 
-          message: `Insufficient disk space. Free: ${Math.round(freeSpaceKb/1024)}MB. Required: 2MB.` 
+        return {
+          step: 'resource_check',
+          status: 'error',
+          message: `Insufficient disk space. Free: ${Math.round(freeSpaceKb / 1024)}MB. Required: 2MB.`
         };
       }
 
-      return { step: 'resource_check', status: 'success', message: `${Math.round(freeSpaceKb/1024)}MB free` };
+      return { step: 'resource_check', status: 'success', message: `${Math.round(freeSpaceKb / 1024)}MB free` };
     } catch {
       return { step: 'resource_check', status: 'warning', message: 'Could not verify disk space' };
     }
@@ -448,28 +448,28 @@ export class UspotSetupService {
   private async installPackages(routerId: string): Promise<SetupStepResult> {
     try {
       const results: { pkg: string; status: 'success' | 'skipped' | 'error'; message?: string }[] = [];
-      
+
       // Check and install required packages
       for (const pkg of this.REQUIRED_PACKAGES) {
         // Check if already installed via binary
         const binaries = this.PACKAGE_BINARIES[pkg];
         let hasPackage = false;
-        
+
         if (binaries) {
           for (const bin of binaries) {
             try {
               await this.exec(routerId, `test -e ${bin}`);
               hasPackage = true;
               break;
-            } catch {}
+            } catch { }
           }
         }
-        
+
         if (hasPackage) {
           results.push({ pkg, status: 'skipped', message: 'Already installed' });
           continue;
         }
-        
+
         // Install package
         try {
           await this.exec(routerId, `opkg install ${pkg}`, 120000);
@@ -478,7 +478,7 @@ export class UspotSetupService {
           results.push({ pkg, status: 'error', message: this.parseOpkgError(e.message) });
         }
       }
-      
+
       // Try optional packages (don't fail if unavailable)
       for (const [name, alternatives] of Object.entries(this.OPTIONAL_PACKAGES)) {
         let installed = false;
@@ -488,16 +488,16 @@ export class UspotSetupService {
             results.push({ pkg: alt, status: 'success', message: `(optional: ${name})` });
             installed = true;
             break;
-          } catch {}
+          } catch { }
         }
         if (!installed) {
           results.push({ pkg: name, status: 'skipped', message: 'Optional package unavailable' });
         }
       }
-      
+
       const errors = results.filter(r => r.status === 'error');
       const criticalErrors = errors.filter(r => ['uspot', 'uhttpd'].includes(r.pkg));
-      
+
       if (criticalErrors.length > 0) {
         return {
           step: 'package_install',
@@ -506,7 +506,7 @@ export class UspotSetupService {
           details: results
         };
       }
-      
+
       if (errors.length > 0) {
         return {
           step: 'package_install',
@@ -515,10 +515,10 @@ export class UspotSetupService {
           details: results
         };
       }
-      
+
       const installed = results.filter(r => r.status === 'success').length;
       const skipped = results.filter(r => r.status === 'skipped').length;
-      
+
       // Create radcli dictionary for uspot RADIUS authentication
       // uspot uses radcli library which requires specific type names:
       //   - 'ipaddr' for IPv4 (not 'ipv4addr')
@@ -700,19 +700,19 @@ VALUE	Auth-Type	System	1
 VALUE	Auth-Type	Reject	4
 VALUE	Auth-Type	Accept	254
 DICTEOF`);
-        
+
         // Verify the dictionary was created successfully
         const verifyResult = await this.exec(routerId, 'test -f /etc/radcli/dictionary && wc -l < /etc/radcli/dictionary');
         const lineCount = parseInt(verifyResult.trim()) || 0;
         if (lineCount < 50) {
           throw new Error(`Dictionary file incomplete: only ${lineCount} lines`);
         }
-        
+
         // Set proper permissions
         await this.exec(routerId, 'chmod 644 /etc/radcli/dictionary');
-        
+
         this.logger.info(`[Setup] radcli dictionary created (${lineCount} lines)`);
-        
+
         // Restart uspot to reload dictionary (uspot-radius caches dictionary at startup)
         // This ensures the new dictionary with correct types is loaded
         try {
@@ -726,7 +726,7 @@ DICTEOF`);
       } catch (radcliErr: any) {
         this.logger.warn(`[Setup] Could not configure radcli dictionary: ${radcliErr.message}`);
       }
-      
+
       return {
         step: 'package_install',
         status: 'success',
@@ -748,8 +748,8 @@ DICTEOF`);
    * @param applyProfessionalSettings - If true, applies WiFi 6, optimal channel widths, etc. (UAM config only)
    */
   public async configureWireless(
-    routerId: string, 
-    options: { 
+    routerId: string,
+    options: {
       combinedSSID?: boolean;
       ssid?: string;
       password?: string;
@@ -761,7 +761,7 @@ DICTEOF`);
     const mgmtSSID = `${guestSSID}-Admin`;
     // Admin password must be at least 8 characters for WPA2
     let mgmtPassword = guestPassword && guestPassword.length >= 8 ? guestPassword : 'spotfi-admin123';
-    
+
     // Ensure admin password meets WPA2 requirements (8+ chars)
     if (mgmtPassword.length < 8) {
       mgmtPassword = 'spotfi-admin123';
@@ -769,14 +769,14 @@ DICTEOF`);
 
     try {
       // Step 1: Check if wireless exists
-      try { 
-        await this.exec(routerId, 'uci get wireless'); 
+      try {
+        await this.exec(routerId, 'uci get wireless');
       } catch {
         return { step: 'wireless_config', status: 'skipped', message: 'No wireless radio found' };
       }
 
       // Step 2: Get list of radio devices
-      const radiosOutput = await this.exec(routerId, 
+      const radiosOutput = await this.exec(routerId,
         "uci show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut -d'=' -f1"
       );
       const radios = radiosOutput.trim().split('\n').filter(r => r && r.length > 0);
@@ -793,13 +793,13 @@ DICTEOF`);
       try {
         const countOutput = await this.exec(routerId, "uci show wireless | grep -c '=wifi-iface' || echo '0'");
         ifaceCount = parseInt(countOutput.trim()) || 0;
-      } catch {}
-      
+      } catch { }
+
       // Delete all wifi-iface sections (always delete index 0 as they shift down)
       for (let i = 0; i < ifaceCount + 5; i++) { // +5 buffer for safety
         try {
           await this.exec(routerId, 'uci delete wireless.@wifi-iface[0]');
-        } catch { 
+        } catch {
           break; // No more interfaces to delete
         }
       }
@@ -816,7 +816,7 @@ DICTEOF`);
         let is2GHz = false;
         let supportsWiFi6 = false;
         let supports160MHz = false;
-        
+
         try {
           band = (await this.exec(routerId, `uci -q get wireless.${radio}.band || echo ""`)).trim();
           if (!band) {
@@ -827,10 +827,10 @@ DICTEOF`);
               band = channelNum > 14 ? '5g' : '2g';
             }
           }
-          
+
           is5GHz = band === '5g' || band === '5ghz' || band === 'a' || band === 'ac' || band === 'ax';
           is2GHz = band === '2g' || band === '2ghz' || band === 'b' || band === 'g' || band === 'n';
-          
+
           // Check for WiFi 6 (802.11ax) support
           try {
             const hwmode = (await this.exec(routerId, `uci -q get wireless.${radio}.hwmode || echo ""`)).trim();
@@ -840,23 +840,23 @@ DICTEOF`);
             } else if (phy) {
               supportsWiFi6 = await this.checkWiFi6Support(routerId, phy);
             }
-          } catch {}
-          
+          } catch { }
+
           // Check for 160MHz support (5GHz only)
           if (is5GHz) {
             try {
               const result = await this.exec(routerId, `iw phy ${radio} info 2>/dev/null | grep -q "160 MHz" && echo "yes" || echo "no"`);
               supports160MHz = result.trim() === 'yes';
-            } catch {}
+            } catch { }
           }
-        } catch {}
+        } catch { }
 
         // Professional radio configuration (only if requested during UAM config)
         if (options.applyProfessionalSettings) {
           // Set country code to US (allows widest channels)
           await this.exec(routerId, `uci set wireless.${radio}.country='US'`);
           this.logger.info(`[Setup] ${radio}: Country code set to US`);
-          
+
           // Channel width optimization
           if (is5GHz) {
             // 5GHz: Use widest supported channel width for best performance
@@ -929,7 +929,7 @@ DICTEOF`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${guestSSID}'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='hotspot'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].isolate='1'`); // Client isolation
-        
+
         // WiFi 6 security: Use WPA3 if supported and professional settings enabled, fallback to WPA2
         if (options.applyProfessionalSettings && supportsWiFi6 && is5GHz) {
           try {
@@ -967,7 +967,7 @@ DICTEOF`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].ssid='${mgmtSSID}'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].network='lan'`);
         await this.exec(routerId, `uci set wireless.@wifi-iface[-1].hidden='1'`); // Hidden SSID
-        
+
         // Management network: Use strongest encryption if professional settings enabled
         if (options.applyProfessionalSettings && supportsWiFi6 && is5GHz) {
           try {
@@ -994,9 +994,9 @@ DICTEOF`);
       // Step 5: Commit wireless config
       await this.exec(routerId, 'uci commit wireless');
 
-      return { 
-        step: 'wireless_config', 
-        status: 'success', 
+      return {
+        step: 'wireless_config',
+        status: 'success',
         message: `Created ${radios.length * 2} SSIDs: '${guestSSID}' (guest) + '${mgmtSSID}' (admin, hidden)`
       };
     } catch (e: any) {
@@ -1025,11 +1025,11 @@ DICTEOF`);
 
       try {
         currentLanIp = (await this.exec(routerId, 'uci get network.lan.ipaddr')).trim();
-      } catch {}
+      } catch { }
 
       try {
         currentNetmask = (await this.exec(routerId, 'uci get network.lan.netmask')).trim();
-      } catch {}
+      } catch { }
 
       await this.exec(routerId, 'uci set network.lan=interface');
       await this.exec(routerId, 'uci set network.lan.proto="static"');
@@ -1055,27 +1055,27 @@ DICTEOF`);
       try {
         const out = await this.exec(routerId, 'uci get network.lan.device');
         if (out && out.trim()) lanBridge = out.trim().split(' ')[0];
-      } catch {}
+      } catch { }
 
       // ============================================================
       // DSA Port-Based VLAN Configuration (Best Practice)
       // ============================================================
       // Modern OpenWrt (21.02+) uses DSA for switch configuration
       // We configure: First port = Admin, remaining ports = Guest (hotspot)
-      
+
       // Detect DSA switch and available ports
       let isDSA = false;
       let lanPorts: string[] = [];
-      
+
       try {
         // Method 1: Check for DSA-style ports (lan1, lan2, lan3, lan4)
-        const dsaCheck1 = await this.exec(routerId, 
+        const dsaCheck1 = await this.exec(routerId,
           'for i in 1 2 3 4 5 6; do [ -d /sys/class/net/lan$i ] && echo lan$i; done 2>/dev/null || true'
         );
         if (dsaCheck1.trim()) {
           lanPorts = dsaCheck1.trim().split('\n').filter(p => p.startsWith('lan'));
         }
-        
+
         // Method 2: Check br-lan ports from UCI config
         if (lanPorts.length === 0) {
           try {
@@ -1084,19 +1084,19 @@ DICTEOF`);
               lanPorts = brPorts.trim().split(/\s+/).filter(p => p && !p.includes('wan'));
               this.logger.info(`[Setup] Found ports from br-lan config: ${lanPorts.join(', ')}`);
             }
-          } catch {}
+          } catch { }
         }
-        
+
         // Method 3: List all ethernet interfaces that look like switch ports
         if (lanPorts.length === 0) {
           try {
-            const allIfaces = await this.exec(routerId, 
+            const allIfaces = await this.exec(routerId,
               "ls /sys/class/net/ | grep -E '^(lan|eth[0-9]+$|port[0-9])' | head -6"
             );
             if (allIfaces.trim()) {
               lanPorts = allIfaces.trim().split('\n').filter(p => p && !p.includes('wan'));
             }
-          } catch {}
+          } catch { }
         }
 
         isDSA = lanPorts.length > 0;
@@ -1107,13 +1107,13 @@ DICTEOF`);
 
       if (isDSA && lanPorts.length > 1) {
         this.logger.info(`[Setup] Multiple LAN ports detected: ${lanPorts.join(', ')}`);
-        
+
         // ============================================================
         // Port Assignment: First port = Admin, Rest = Guest
         // ============================================================
         const adminPort = lanPorts[0]; // First port for admin
         const guestPorts = lanPorts.slice(1); // Remaining ports for guests
-        
+
         this.logger.info(`[Setup] Admin port: ${adminPort}, Guest ports: ${guestPorts.join(', ')}`);
 
         // Step 1: Update br-lan to only include admin port
@@ -1122,7 +1122,7 @@ DICTEOF`);
           await this.exec(routerId, 'uci set network.br_lan.type="bridge"');
           await this.exec(routerId, 'uci set network.br_lan.name="br-lan"');
           // Clear existing ports and set only admin port
-          try { await this.exec(routerId, 'uci delete network.br_lan.ports'); } catch {}
+          try { await this.exec(routerId, 'uci delete network.br_lan.ports'); } catch { }
           await this.exec(routerId, `uci add_list network.br_lan.ports="${adminPort}"`);
         } catch (e: any) {
           this.logger.warn(`[Setup] Could not configure br-lan ports: ${e.message}`);
@@ -1134,19 +1134,19 @@ DICTEOF`);
         await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
         await this.exec(routerId, 'uci set network.br_hotspot.stp="1"');
         await this.exec(routerId, 'uci set network.br_hotspot.isolate="1"'); // Client isolation
-        
+
         // Clear existing ports and add guest ports
-        try { await this.exec(routerId, 'uci delete network.br_hotspot.ports'); } catch {}
+        try { await this.exec(routerId, 'uci delete network.br_hotspot.ports'); } catch { }
         for (const port of guestPorts) {
           await this.exec(routerId, `uci add_list network.br_hotspot.ports="${port}"`);
         }
-        
+
         this.logger.info(`[Setup] Configured br-hotspot with ports: ${guestPorts.join(', ')}`);
 
       } else {
         // Non-DSA or single port: Create br-hotspot for WiFi only
         this.logger.info('[Setup] Non-DSA switch or single port - WiFi-only hotspot');
-        
+
         await this.exec(routerId, 'uci set network.br_hotspot=device');
         await this.exec(routerId, 'uci set network.br_hotspot.type="bridge"');
         await this.exec(routerId, 'uci set network.br_hotspot.name="br-hotspot"');
@@ -1163,12 +1163,12 @@ DICTEOF`);
       await this.exec(routerId, 'uci set network.hotspot.device="br-hotspot"');
       await this.exec(routerId, 'uci set network.hotspot.force_link="1"');
       await this.exec(routerId, 'uci set network.hotspot.delegate="0"'); // No IPv6 delegation
-      
-      const portMsg = isDSA && lanPorts.length > 1 
+
+      const portMsg = isDSA && lanPorts.length > 1
         ? `Admin: ${lanPorts[0]}, Guest: ${lanPorts.slice(1).join(', ')}`
         : 'WiFi-only (no DSA ports)';
       this.logger.info(`[Setup] Network configured - ${portMsg}`);
-      
+
       await this.exec(routerId, 'uci commit network');
       return { step: 'network_config', status: 'success', message: portMsg };
     } catch (e: any) {
@@ -1188,7 +1188,7 @@ DICTEOF`);
         const dhcpConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'dhcp' });
         const dhcpStr = JSON.stringify(dhcpConfig);
         hotspotDhcpExists = dhcpStr.includes('"interface":"hotspot"') || dhcpStr.includes("interface='hotspot'");
-      } catch {}
+      } catch { }
 
       if (!hotspotDhcpExists) {
         // Create DHCP pool for hotspot network
@@ -1198,14 +1198,14 @@ DICTEOF`);
         await this.exec(routerId, 'uci set dhcp.hotspot.limit="150"');  // 150 clients max
         await this.exec(routerId, 'uci set dhcp.hotspot.leasetime="2h"'); // Short lease for guests
         await this.exec(routerId, 'uci set dhcp.hotspot.force="1"'); // Force DHCP even if no interface
-        
+
         // DNS settings - use router as DNS (for captive portal detection)
         await this.exec(routerId, `uci add_list dhcp.hotspot.dhcp_option="6,${this.HOTSPOT_IP}"`); // DNS server
-        
+
         // Captive Portal Detection - DHCP Option 114 (RFC 8910)
         // Clients use this URL to detect captive portal
         await this.exec(routerId, 'uci add_list dhcp.hotspot.dhcp_option="114,http://detectportal.firefox.com/success.txt"');
-        
+
         this.logger.info('[Setup] Created DHCP pool for hotspot network');
       } else {
         this.logger.info('[Setup] Hotspot DHCP pool already exists, skipping');
@@ -1216,10 +1216,10 @@ DICTEOF`);
         await this.exec(routerId, 'uci set dhcp.captive=dhcp');
         await this.exec(routerId, 'uci set dhcp.captive.interface="hotspot"');
         // Will be updated with actual portal URL during UAM config
-      } catch {}
+      } catch { }
 
       await this.exec(routerId, 'uci commit dhcp');
-      
+
       // Restart dnsmasq to apply DHCP changes
       try {
         await this.exec(routerId, '/etc/init.d/dnsmasq restart');
@@ -1236,9 +1236,9 @@ DICTEOF`);
   private async configureFirewall(routerId: string): Promise<SetupStepResult> {
     try {
       const setName = 'uspot_hotspot'; // Must match uspot config setname
-      
+
       this.logger.info('[Setup] Configuring firewall from scratch...');
-      
+
       // ============================================================
       // STEP 1: DELETE ALL HOTSPOT-RELATED FIREWALL CONFIG
       // Clean slate approach - remove everything and recreate
@@ -1377,7 +1377,7 @@ DICTEOF`);
       // STEP 5: ALLOW ESSENTIAL SERVICES (INPUT rules)
       // Order matters! DHCP must come before Restrict-input rule
       // ============================================================
-      
+
       // Allow DHCP and NTP (UDP 67, 123) for all clients
       await this.exec(routerId, 'uci add firewall rule');
       await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-DHCP-NTP-hotspot"');
@@ -1385,7 +1385,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci set firewall.@rule[-1].proto="udp"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="67 123"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      
+
       // Prevent access to LAN-side services (weak host model protection)
       // Must come AFTER DHCP rule since DHCP uses broadcast
       await this.exec(routerId, 'uci add firewall rule');
@@ -1393,7 +1393,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci set firewall.@rule[-1].src="hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_ip="!hotspot"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="DROP"');
-      
+
       // Allow CPD/Web/UAM ports (TCP 80, 443, 3990) for all clients
       await this.exec(routerId, 'uci add firewall rule');
       await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-hotspot-CPD-WEB-UAM"');
@@ -1401,7 +1401,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="80 443 3990"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].proto="tcp"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      
+
       // Allow DNS (UDP/TCP 53) for all clients - use list format as per docs
       await this.exec(routerId, 'uci add firewall rule');
       await this.exec(routerId, 'uci set firewall.@rule[-1].name="Allow-DNS-hotspot"');
@@ -1410,7 +1410,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci add_list firewall.@rule[-1].proto="tcp"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].dest_port="53"');
       await this.exec(routerId, 'uci set firewall.@rule[-1].target="ACCEPT"');
-      
+
       this.logger.info('[Setup] Created INPUT rules for DHCP, NTP, DNS, Portal');
 
       // ============================================================
@@ -1424,7 +1424,7 @@ DICTEOF`);
       await this.exec(routerId, `uci add_list firewall.@ipset[-1].match='dest_ip'`);
       await this.exec(routerId, `uci set firewall.@ipset[-1].enabled='1'`);
       this.logger.info(`[Setup] Created whitelist ipset '${whitelistName}'`);
-      
+
       // Block QUIC (UDP 443) - Force browsers to fall back to TCP/HTTPS
       // This prevents "ERR_QUIC_PROTOCOL_ERROR" in walled gardens
       // Use DROP instead of REJECT to avoid RST packets that might confuse browsers
@@ -1513,7 +1513,7 @@ DICTEOF`);
       // ============================================================
       await this.exec(routerId, 'uci commit firewall');
       this.logger.info('[Setup] Firewall configured: unauthenticated clients blocked');
-      
+
       return { step: 'firewall_config', status: 'success', message: 'Firewall configured from scratch' };
     } catch (e: any) {
       return { step: 'firewall_config', status: 'error', message: e.message };
@@ -1525,7 +1525,7 @@ DICTEOF`);
       // Certs
       try {
         await this.exec(routerId, 'openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/uhttpd.key -out /etc/uhttpd.crt -subj "/CN=router" 2>/dev/null');
-      } catch {}
+      } catch { }
 
       // uHTTPd - Listen on both LAN and Hotspot networks
       // Get current LAN IP for LuCI access
@@ -1533,7 +1533,7 @@ DICTEOF`);
       try {
         const currentLan = (await this.exec(routerId, 'uci get network.lan.ipaddr')).trim();
         if (currentLan) lanIp = currentLan;
-      } catch {}
+      } catch { }
 
       await this.exec(routerId, `uci set uhttpd.main.listen_https="${lanIp}:443"`);
       await this.exec(routerId, 'uci set uhttpd.main.cert="/etc/uhttpd.crt"');
@@ -1541,7 +1541,7 @@ DICTEOF`);
       await this.exec(routerId, 'uci set uhttpd.main.redirect_https="0"');
       // Listen only on LAN for LuCI management (not on hotspot)
       await this.exec(routerId, `uci set uhttpd.main.listen_http="${lanIp}:80"`);
-      
+
       await this.exec(routerId, 'uci commit uhttpd');
       return { step: 'portal_config', status: 'success' };
     } catch (e: any) {
@@ -1569,11 +1569,11 @@ DICTEOF`);
       const hotspotIp = this.HOTSPOT_IP;
       const sectionName = 'hotspot'; // Named section for the hotspot interface
       const setName = 'uspot_hotspot'; // Firewall ipset name for authenticated clients
-      
+
       // Create the /www-uspot directory for uhttpd portal pages
       // This is required by uhttpd even if we use ucode handlers
       await this.exec(routerId, 'mkdir -p /www-uspot');
-      
+
       // Create a minimal index page for the portal
       await this.exec(routerId, `cat > /www-uspot/index.html << 'PORTALEOF'
 <!DOCTYPE html>
@@ -1582,7 +1582,7 @@ DICTEOF`);
 <body>Redirecting to portal...</body>
 </html>
 PORTALEOF`);
-      
+
       // Create the uspot configuration file with proper named section structure
       // This follows the official uspot configuration format
       // Valid auth_mode values: click-to-continue, credentials, radius, uam
@@ -1596,6 +1596,7 @@ config uspot '${sectionName}'
 	option enabled '1'
 	option interface '${sectionName}'
 	option setname '${setName}'
+	option nasid '${routerId}'
 	option auth_mode 'click-to-continue'
 	option idle_timeout '600'
 	option session_timeout '0'
@@ -1631,12 +1632,12 @@ USPOTEOF`);
 
       // Enable uspot service
       await this.exec(routerId, '/etc/init.d/uspot enable 2>/dev/null || true');
-      
+
       this.logger.info('[Setup] uspot captive portal configured with named section structure');
-      return { 
-        step: 'uspot_config', 
-        status: 'success', 
-        message: `Captive portal '${sectionName}' enabled with ipset '${setName}'` 
+      return {
+        step: 'uspot_config',
+        status: 'success',
+        message: `Captive portal '${sectionName}' enabled with ipset '${setName}'`
       };
     } catch (e: any) {
       return { step: 'uspot_config', status: 'error', message: e.message };
@@ -1648,22 +1649,22 @@ USPOTEOF`);
       // Restart network first
       await this.exec(routerId, '/etc/init.d/network restart');
       await this.sleep(3000);
-      
+
       // Restart firewall
       await this.exec(routerId, '/etc/init.d/firewall restart');
       await this.sleep(1000);
-      
+
       // Restart wireless
-      try { await this.exec(routerId, '/etc/init.d/wireless restart'); } catch {}
+      try { await this.exec(routerId, '/etc/init.d/wireless restart'); } catch { }
       await this.sleep(2000);
-      
+
       // Restart dnsmasq (DHCP)
-      try { await this.exec(routerId, '/etc/init.d/dnsmasq restart'); } catch {}
-      
+      try { await this.exec(routerId, '/etc/init.d/dnsmasq restart'); } catch { }
+
       // Start uhttpd
       await this.exec(routerId, '/etc/init.d/uhttpd enable');
       await this.exec(routerId, '/etc/init.d/uhttpd restart');
-      
+
       // Start uspot captive portal - THIS IS CRITICAL
       try {
         await this.exec(routerId, '/etc/init.d/uspot enable');
@@ -1672,7 +1673,7 @@ USPOTEOF`);
       } catch (e: any) {
         this.logger.warn(`[Setup] Could not start uspot: ${e.message}`);
       }
-      
+
       return { step: 'services_restart', status: 'success', message: 'All services restarted including uspot' };
     } catch (e: any) {
       return { step: 'services_restart', status: 'warning', message: e.message };
@@ -1686,10 +1687,10 @@ USPOTEOF`);
     // Check if command contains shell operators (pipes, redirects, etc.)
     // If so, wrap in sh -c
     const hasShellOps = /[|&;<>`$(){}[\]"'\\]/.test(command);
-    
+
     let execCmd: string;
     let execParams: string[];
-    
+
     if (hasShellOps || command.includes(' ') && !command.startsWith('opkg') && !command.startsWith('uci')) {
       // Shell command - wrap in sh -c
       execCmd = 'sh';
@@ -1700,14 +1701,14 @@ USPOTEOF`);
       execCmd = parts[0];
       execParams = parts.slice(1);
     }
-    
+
     // Execute via file.exec (standard OpenWrt method)
     // routerRpcService returns response.result || response, so result is the direct file.exec response
-    const result = await routerRpcService.rpcCall(routerId, 'file', 'exec', { 
-      command: execCmd, 
-      params: execParams 
+    const result = await routerRpcService.rpcCall(routerId, 'file', 'exec', {
+      command: execCmd,
+      params: execParams
     }, timeout);
-    
+
     // Result object from ubus file.exec is { code: int, stdout: string }
     const code = result.code ?? result.result?.code ?? 0;
     const stdout = result.stdout ?? result.result?.stdout ?? '';
@@ -1718,7 +1719,7 @@ USPOTEOF`);
       errParts.push(`Code ${code}`);
       if (stderr) errParts.push(stderr.trim());
       if (stdout) errParts.push(stdout.trim()); // Sometimes error is in stdout
-      
+
       throw new Error(errParts.join(': ') || `Command failed: ${command}`);
     }
 
@@ -1749,7 +1750,7 @@ USPOTEOF`);
    * and dynamic IPs automatically.
    */
   async configureAccessControl(
-    routerId: string, 
+    routerId: string,
     config: {
       whitelist?: string[], // Allowed domains (Walled Garden)
       blocklist?: string[], // Blocked domains (Content Filter)
@@ -1761,14 +1762,14 @@ USPOTEOF`);
       const whitelist = config.whitelist || [];
       const blocklist = config.blocklist || [];
       let portalUrls = config.portalUrls || [];
-      
+
       // Always include portal URL from router UAM config if not provided
       // Portal URL MUST be allowed by default for captive portal to work
       if (portalUrls.length === 0) {
         try {
           const uspotConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'uspot' });
           const values = uspotConfig?.values || uspotConfig || {};
-          const sectionKey = Object.keys(values).find(key => 
+          const sectionKey = Object.keys(values).find(key =>
             values[key]['.type'] === 'uspot' || key === 'hotspot' || key === 'captive'
           );
           const section = sectionKey ? values[sectionKey] : {};
@@ -1781,13 +1782,13 @@ USPOTEOF`);
           this.logger.warn(`[Access Control] Could not auto-detect portal URL: ${e instanceof Error ? e.message : 'Unknown error'}`);
         }
       }
-      
+
       // Combine all domains that need whitelisting (Portal + Custom)
       const allowedDomains = new Set<string>();
       const allowedIps = new Set<string>();
       // Map of domain -> IP for static DNS entries (resolved domains)
       const domainToIp = new Map<string, string>();
-      
+
       // Helper to extract IP from sslip.io domains (works without DNS)
       const extractSslipIp = (hostname: string): string | null => {
         // Pattern: subdomain.IP.sslip.io (e.g., app.31.97.217.241.sslip.io -> 31.97.217.241)
@@ -1797,7 +1798,7 @@ USPOTEOF`);
         }
         return null;
       };
-      
+
       // Helper to parse URL/Domain/IP and resolve domains
       // Portal URLs are processed first and always whitelisted by default
       const addTarget = async (target: string) => {
@@ -1808,13 +1809,13 @@ USPOTEOF`);
             const url = new URL(target);
             hostname = url.hostname;
           }
-          
+
           if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
             allowedIps.add(hostname); // Is IPv4
           } else {
             // Always add domain to whitelist (portal URLs are always allowed)
             allowedDomains.add(hostname);
-            
+
             // Try to resolve domain to IP for static DNS entry and firewall whitelist
             // This ensures immediate access even if DNS resolution is slow
             // Use longer timeout for portal URLs to ensure they resolve
@@ -1822,11 +1823,11 @@ USPOTEOF`);
               const dns = await import('dns/promises');
               const addresses = await Promise.race([
                 dns.resolve4(hostname),
-                new Promise<string[]>((_, reject) => 
+                new Promise<string[]>((_, reject) =>
                   setTimeout(() => reject(new Error('DNS timeout')), 5000)
                 )
               ]) as string[];
-              
+
               if (addresses && addresses.length > 0) {
                 // Use first IPv4 address
                 const ip = addresses[0];
@@ -1858,10 +1859,10 @@ USPOTEOF`);
       // Portal URLs are critical for captive portal functionality
       // Even if DNS fails, the domain is whitelisted and dnsmasq will handle it
       await Promise.all(portalUrls.map(url => addTarget(url)));
-      
+
       // Then process whitelist domains
       await Promise.all(whitelist.map(url => addTarget(url)));
-      
+
       // Default whitelists (OS detection)
       const OS_DETECTION = [
         'connectivitycheck.gstatic.com', 'www.google.com', // Android
@@ -1965,14 +1966,14 @@ USPOTEOF`);
         /etc/init.d/dnsmasq restart
       `;
 
-      await this.exec(routerId, 'sh', 60000).catch(() => {}); // Run via shell
+      await this.exec(routerId, 'sh', 60000).catch(() => { }); // Run via shell
       // Since exec takes cmd + params, we need to pipe the script or write it
       // Let's write to file then exec
       await this.exec(routerId, `cat > /tmp/uspot_access_setup.sh << 'EOF'
 ${script}
 EOF`);
       await this.exec(routerId, 'sh /tmp/uspot_access_setup.sh');
-      
+
       return { step: 'access_control', status: 'success', message: 'Access control updated' };
     } catch (e: any) {
       return { step: 'access_control', status: 'error', message: e.message };

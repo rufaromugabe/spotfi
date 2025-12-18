@@ -19,10 +19,16 @@ export class xTunnelManager {
   static init(logger: FastifyBaseLogger) {
     logger.info('[x] Initializing distributed MQTT x-tunnel gateway...');
 
-    // Subscribe to all router x-out topics
+    // Subscribe to all router x-out topics (non-shared)
+    // CRITICAL: This is NOT a shared subscription - every API instance receives all messages
+    // Each instance checks if it owns the session locally, and ignores messages for sessions
+    // owned by other instances. This prevents split-brain issues in clustered deployments.
     mqttService.subscribe('spotfi/router/+/x/out', (topic, message) => {
       const sessionId = message.sessionId;
-      if (!sessionId) return;
+      if (!sessionId) {
+        logger.debug('[x] Received message without sessionId, ignoring');
+        return;
+      }
 
       const session = this.sessions.get(sessionId);
       if (session) {
@@ -36,6 +42,10 @@ export class xTunnelManager {
           logger.error(`[x] Session ${sessionId} error: ${message.error}`);
           session.close(false); // Close without sending stop (since it's error)
         }
+      } else {
+        // Session not found locally - another API instance owns it, silently ignore
+        // This is normal in a clustered deployment
+        logger.debug(`[x] Received message for session ${sessionId} not owned by this instance, ignoring`);
       }
     });
   }
