@@ -110,7 +110,7 @@ services:
       EMQX_AUTHENTICATION__1__DATABASE: "${POSTGRES_DB:-spotfi}"
       EMQX_AUTHENTICATION__1__USERNAME: "${POSTGRES_USER:-postgres}"
       EMQX_AUTHENTICATION__1__PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
-      EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = \${username}"
+      EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = $${username}"
       EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain" # Token is the password
 
       # --- Authorization (ACL) Logic ---
@@ -122,7 +122,7 @@ services:
       EMQX_AUTHORIZATION__SOURCES__1__USERNAME: "${POSTGRES_USER:-postgres}"
       EMQX_AUTHORIZATION__SOURCES__1__PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
       # ACL Query: Routers can move anything in spotfi/router/{id}/ but nowhere else
-      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = \${username}"
+      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = $${username}"
     
     volumes:
       - vol-emqx-data:/opt/emqx/data
