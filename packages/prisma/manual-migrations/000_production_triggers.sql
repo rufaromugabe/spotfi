@@ -8,7 +8,8 @@
 -- 1. AUTO-LINK ROUTER TO SESSIONS
 -- ============================================
 -- Links routerId instantly when RADIUS creates accounting records
--- Priority: NAS-Identifier > Class > IP > MAC
+-- Priority: NAS-Identifier > Class > MAC
+-- IP matching removed as it is unreliable in Docker/NAT environments
 
 CREATE OR REPLACE FUNCTION link_router_to_session()
 RETURNS TRIGGER AS $$
@@ -48,20 +49,7 @@ BEGIN
     END IF;
   END IF;
 
-  -- Method 3: Match by IP address (fast)
-  IF NEW.nasipaddress IS NOT NULL THEN
-    SELECT id INTO router_match
-    FROM routers
-    WHERE nasipaddress = NEW.nasipaddress
-    LIMIT 1;
-    
-    IF router_match IS NOT NULL THEN
-      NEW."routerId" := router_match;
-      RETURN NEW;
-    END IF;
-  END IF;
-
-  -- Method 4: Match by MAC address (normalized, indexed - no wildcards)
+  -- Method 3: Match by MAC address (normalized, indexed - no wildcards)
   IF NEW.nasidentifier IS NOT NULL THEN
     -- Normalize nasidentifier (remove common separators, uppercase)
     normalized_nas := UPPER(REPLACE(REPLACE(REPLACE(NEW.nasidentifier, ':', ''), '-', ''), '.', ''));
@@ -90,12 +78,12 @@ CREATE TRIGGER trg_link_router_insert
   FOR EACH ROW
   EXECUTE FUNCTION link_router_to_session();
 
--- Apply trigger on UPDATE (for late-arriving nasipaddress)
+-- Apply trigger on UPDATE
 DROP TRIGGER IF EXISTS trg_link_router_update ON radacct;
 CREATE TRIGGER trg_link_router_update
   BEFORE UPDATE ON radacct
   FOR EACH ROW
-  WHEN (OLD."routerId" IS NULL AND NEW.nasipaddress IS NOT NULL)
+  WHEN (OLD."routerId" IS NULL)
   EXECUTE FUNCTION link_router_to_session();
 
 -- ============================================

@@ -131,11 +131,25 @@ func main() {
 
 	// Connect to MQTT
 	clientID := fmt.Sprintf("router-%s", routerID)
-	client, err := mqtt.NewClient(brokerURL, clientID, routerID, cfg.Token, func(c paho.Client) {
-		log.Println("MQTT Client Connected")
-	})
-	if err != nil {
-		log.Fatal("Failed to connect to MQTT broker:", err)
+	// Connect to MQTT with Exponential Backoff
+	var client *mqtt.Client
+	var err error
+	backoff := 1 * time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		client, err = mqtt.NewClient(brokerURL, clientID, routerID, cfg.Token, func(c paho.Client) {
+			log.Println("MQTT Client Connected")
+		})
+		if err == nil {
+			break
+		}
+		log.Printf("Failed to connect to MQTT broker: %v. Retrying in %v...", err, backoff)
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 	mqttClient = client
 	defer mqttClient.Close()

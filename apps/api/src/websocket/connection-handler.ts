@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { recordRouterHeartbeat } from '../services/redis-router.js';
 import { reconcileRouterSessions, queueFailedDisconnectsForRetry } from '../services/session-reconciliation.js';
+import { reconciliationQueue } from '../queues/reconciliation-queue.js';
 
 export class RouterConnectionHandler {
   private routerId: string;
@@ -68,17 +69,24 @@ export class RouterConnectionHandler {
 
     this.logger.info(`Router ${this.routerId} connected from ${clientIp}`);
 
-    // Background session reconciliation
-    setImmediate(async () => {
-      try {
-        await queueFailedDisconnectsForRetry(this.routerId, this.logger);
-        const result = await reconcileRouterSessions(this.routerId, this.logger);
-        if (result.mismatches > 0) {
-          this.logger.info(`[Reconciliation] ${this.routerId}: ${result.mismatches} mismatches, ${result.kicked} kicked`);
-        }
-      } catch (error: any) {
-        this.logger.error(`[Reconciliation] Error: ${error.message}`);
+    // Background session reconciliation via Queue (prevent thundering herd)
+    reconciliationQueue.add(
+      `reconcile-${this.routerId}`,
+      { routerId: this.routerId },
+      {
+        jobId: `reconcile-${this.routerId}-${Date.now()}`,
+        delay: Math.floor(Math.random() * 5000), // 0-5s jitter
+        removeOnComplete: true
       }
+    ).catch(err => {
+      this.logger.error(`Failed to queue reconciliation: ${err}`);
+    });
+
+    // We can also queue failed disconnects check or run it here (it's lighter weight)
+    setImmediate(async () => {
+      await queueFailedDisconnectsForRetry(this.routerId, this.logger).catch(err => {
+        this.logger.error(`Failed to retry disconnects: ${err}`);
+      });
     });
   }
 

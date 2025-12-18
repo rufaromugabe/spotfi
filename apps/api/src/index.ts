@@ -25,6 +25,7 @@ import { setupWebSocket } from './websocket/server.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { disconnectWorker } from './queues/disconnect-queue.js';
+import { reconciliationWorker } from './queues/reconciliation-queue.js';
 import { stopPgNotifyListener } from './services/pg-notify.js';
 import { initializeSessionCounts } from './services/session-counter.js';
 
@@ -51,6 +52,10 @@ await fastify.register(formbody); // Support application/x-www-form-urlencoded
 await fastify.register(jwt, {
   secret: process.env.JWT_SECRET || 'change-me-in-production-secret-key',
 });
+
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'change-me-in-production-secret-key')) {
+  fastify.log.warn('🚨 SECURITY WARNING: Using default JWT secret in production! Please set JWT_SECRET.');
+}
 
 // Register Swagger
 await fastify.register(swagger, {
@@ -215,6 +220,7 @@ process.on('SIGTERM', async () => {
   await stopPgNotifyListener(fastify.log);
   await prisma.$disconnect();
   await disconnectWorker.close();
+  await reconciliationWorker.close();
   process.exit(0);
 });
 
@@ -223,6 +229,7 @@ process.on('SIGINT', async () => {
   await stopPgNotifyListener(fastify.log);
   await prisma.$disconnect();
   await disconnectWorker.close();
+  await reconciliationWorker.close();
   process.exit(0);
 });
 

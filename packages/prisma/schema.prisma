@@ -30,11 +30,12 @@ model Router {
   host         User      @relation(fields: [hostId], references: [id], onDelete: Cascade)
   token        String    @unique
   uamSecret    String?   @unique @map("uam_secret") // Unique UAM secret for portal/CHAP
+  radiusSecret String?   @unique @map("radius_secret") // Unique RADIUS secret per router
   status       RouterStatus @default(OFFLINE)
   lastSeen     DateTime?
   totalUsage   Decimal   @default(0) @db.Decimal(12, 2)
-  nasipaddress String?
   macAddress   String?   // Router MAC address for robust tracking (doesn't change like IP)
+  nasipaddress String?   // Last known public IP of the router
   location     String?
   invoices     Invoice[]
   sessions     RadAcct[]
@@ -64,6 +65,7 @@ model Invoice {
   @@index([routerId])
   @@index([period])
   @@index([hostId, period])
+  @@unique([routerId, period])
   @@map("invoices")
 }
 
@@ -102,8 +104,8 @@ model RadAcct {
   // Relations to your app models
   // Note: routerId is NOT a standard FreeRADIUS column. It is automatically populated via:
   // - Database trigger: link_router_to_session() (see manual-migrations/000_production_triggers.sql)
-  // - Trigger matches by: NAS-Identifier > Class > nasIpAddress > MAC address
-  // - Applied on INSERT and UPDATE (for late-arriving nasIpAddress)
+  // - Trigger matches by: NAS-Identifier > Class > MAC address
+  // - Applied on INSERT and UPDATE
   routerId            String?
   router              Router?   @relation(fields: [routerId], references: [id])
 
@@ -111,7 +113,6 @@ model RadAcct {
   @@index([acctUniqueId], map: "radacct_active_session_idx")
   // Note: radacct_active_session_idx is optimized as a partial index (WHERE acctstoptime IS NULL)
   // See manual-migrations/004_partial_index_and_stoptime.sql for the actual partial index implementation
-  @@index([nasIpAddress, acctStartTime], map: "radacct_bulk_close")
   @@index([acctStartTime, userName], map: "radacct_start_user_idx")
   @@index([acctStopTime], map: "radacct_stoptime_idx") // Index for querying completed sessions
   @@index([class], map: "radacct_calss_idx")
@@ -213,14 +214,6 @@ model Nas {
 
   @@index([nasName], map: "nas_nasname")
   @@map("nas")
-}
-
-// FreeRADIUS NAS reload tracking - lowercase for PostgreSQL compatibility
-model NasReload {
-  nasIpAddress String   @id @map("nasipaddress")
-  reloadTime   DateTime @map("reloadtime")
-
-  @@map("nasreload")
 }
 
 // FreeRADIUS user quota tracking - for cross-router quota management

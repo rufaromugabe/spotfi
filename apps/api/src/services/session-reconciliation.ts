@@ -7,6 +7,7 @@ import { prisma } from '../lib/prisma.js';
 import { routerRpcService } from './router-rpc.service.js';
 import { FastifyBaseLogger } from 'fastify';
 import { disconnectQueue } from '../queues/disconnect-queue.js';
+import { reconciliationQueue } from '../queues/reconciliation-queue.js';
 
 interface ReconciliationResult {
   routerId: string;
@@ -60,14 +61,14 @@ export async function reconcileRouterSessions(
     try {
       const clientList = await routerRpcService.getLiveClients(routerId);
       // Handle different response formats
-      routerClients = Array.isArray(clientList) 
-        ? clientList 
+      routerClients = Array.isArray(clientList)
+        ? clientList
         : (clientList?.clients || clientList?.data || []);
-      
+
       if (!Array.isArray(routerClients)) {
         routerClients = [];
       }
-      
+
       result.routerClients = routerClients.length;
     } catch (error: any) {
       logger.warn(`[Reconciliation] Router ${routerId}: Failed to get client list: ${error.message}`);
@@ -95,13 +96,13 @@ export async function reconcileRouterSessions(
       if (!session.callingStationId) continue;
 
       const sessionMac = session.callingStationId.toUpperCase().replace(/[:-]/g, '');
-      
+
       // Skip if no username
       if (!session.userName) continue;
-      
+
       // Check if user should be disabled (no active plans, quota exceeded, etc.)
       const shouldBeDisabled = await checkUserShouldBeDisabled(session.userName);
-      
+
       // If user should be disabled OR session not in router's client list
       if (shouldBeDisabled || !routerMacs.has(sessionMac)) {
         sessionsToTerminate.push({
@@ -219,6 +220,7 @@ async function checkUserShouldBeDisabled(username: string): Promise<boolean> {
 /**
  * Reconcile all online routers
  */
+// Reconcile all online routers via Queue
 export async function reconcileAllRouters(logger: FastifyBaseLogger): Promise<void> {
   try {
     const onlineRouters = await prisma.router.findMany({
@@ -226,16 +228,23 @@ export async function reconcileAllRouters(logger: FastifyBaseLogger): Promise<vo
       select: { id: true }
     });
 
-    logger.info(`[Reconciliation] Starting reconciliation for ${onlineRouters.length} online routers`);
+    logger.info(`[Reconciliation] Queueing reconciliation for ${onlineRouters.length} online routers`);
 
-    const results = await Promise.allSettled(
-      onlineRouters.map(router => reconcileRouterSessions(router.id, logger))
+    const queuePromises = onlineRouters.map(router =>
+      reconciliationQueue.add(
+        `reconcile-${router.id}`,
+        { routerId: router.id },
+        {
+          jobId: `reconcile-${router.id}-${Date.now()}`,
+          delay: Math.floor(Math.random() * 10000), // 0-10s jitter
+          removeOnComplete: true
+        }
+      )
     );
 
-    const successful = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
+    await Promise.all(queuePromises);
 
-    logger.info(`[Reconciliation] Completed: ${successful} successful, ${failed} failed`);
+    logger.info(`[Reconciliation] All ${onlineRouters.length} jobs queued`);
   } catch (error: any) {
     logger.error(`[Reconciliation] Error in batch reconciliation: ${error.message}`);
   }
@@ -270,7 +279,7 @@ export async function queueFailedDisconnectsForRetry(
       if (!session.userName) continue;
 
       const shouldBeDisabled = await checkUserShouldBeDisabled(session.userName);
-      
+
       if (shouldBeDisabled) {
         // Queue disconnect job
         await disconnectQueue.add(

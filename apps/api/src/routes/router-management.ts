@@ -91,6 +91,15 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // Allowed commands whitelist for security
+  const ALLOWED_COMMANDS: Record<string, (target?: string) => string[]> = {
+    ping: (target) => ['ping', '-c', '4', target || 'google.com'],
+    traceroute: (target) => ['traceroute', target || 'google.com'],
+    nslookup: (target) => ['nslookup', target || 'google.com'],
+    'cert-refresh': () => ['/usr/bin/spotfi-cert-refresh.sh'],
+    'service-restart': () => ['/etc/init.d/network', 'restart']
+  };
+
   // Execute shell command (admin only for security)
   fastify.post('/api/routers/:id/command/execute', {
     preHandler: [fastify.authenticate, requireAdmin],
@@ -98,12 +107,13 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
       tags: ['router-management'],
       summary: 'Execute shell command on router',
       security: [{ bearerAuth: [] }],
-      description: 'Execute a shell command on the router (Admin only)',
+      description: 'Execute a permitted shell command on the router (Admin only)',
       body: {
         type: 'object',
         required: ['command'],
         properties: {
-          command: { type: 'string', description: 'Shell command to execute' },
+          command: { type: 'string', enum: Object.keys(ALLOWED_COMMANDS), description: 'Command to execute' },
+          target: { type: 'string', description: 'Optional target for network commands (IP/Domain)' },
           timeout: { type: 'number', default: 10000, description: 'Command timeout in milliseconds' }
         }
       }
@@ -111,31 +121,23 @@ export async function routerManagementRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     assertAuthenticated(request);
     const { id } = request.params as { id: string };
-    const body = request.body as { command: string; timeout?: number };
+    const body = request.body as { command: string; target?: string; timeout?: number };
 
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
+    const commandGenerator = ALLOWED_COMMANDS[body.command];
+    if (!commandGenerator) {
+      return reply.code(400).send({ error: 'Command not allowed' });
+    }
+
     try {
-      // Execute shell command via ubus file.exec (standard OpenWrt method)
-      // Parse command string into command and params array
-      const hasShellOps = /[|&;<>`$(){}[\]"'\\]/.test(body.command);
-      let execCmd: string;
-      let execParams: string[];
-      
-      if (hasShellOps || (body.command.includes(' ') && !body.command.startsWith('opkg') && !body.command.startsWith('uci'))) {
-        // Shell command - wrap in sh -c
-        execCmd = 'sh';
-        execParams = ['-c', body.command];
-      } else {
-        // Simple command - parse into command and params
-        const parts = body.command.split(/\s+/);
-        execCmd = parts[0];
-        execParams = parts.slice(1);
-      }
-      
+      const execParamsRaw = commandGenerator(body.target);
+      const execCmd = execParamsRaw[0];
+      const execParams = execParamsRaw.slice(1);
+
       const result = await routerRpcService.rpcCall(id, 'file', 'exec', {
         command: execCmd,
         params: execParams

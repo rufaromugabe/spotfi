@@ -41,7 +41,7 @@ export function startScheduler() {
       // This persists Redis heartbeats to disk for historical records
       // Most router status checks read from Redis (sub-ms latency)
       const syncResult = await syncRouterStatusToPostgres(prisma, console as any);
-      
+
       if (syncResult.updated > 0 || syncResult.markedOffline > 0) {
         console.log(`📡 Router status synced: ${syncResult.updated} online, ${syncResult.markedOffline} marked offline`);
       }
@@ -53,7 +53,7 @@ export function startScheduler() {
           acctStopTime: null,
           OR: [
             { acctUpdateTime: { lt: staleThreshold } },
-            { 
+            {
               AND: [
                 { acctUpdateTime: null },
                 { acctStartTime: { lt: staleThreshold } }
@@ -66,7 +66,7 @@ export function startScheduler() {
           acctTerminateCause: 'Admin-Reset'
         }
       });
-      
+
       if (staleResult.count > 0) {
         console.log(`🧹 Cleaned up ${staleResult.count} stale session(s)`);
       }
@@ -80,6 +80,8 @@ export function startScheduler() {
   });
 
   // Daily stats refresh - 1 AM daily
+  // DEPRECATED: Relying on incremental updates (router_daily_usage table)
+  /*
   cron.schedule('0 1 * * *', async () => {
     console.log('📊 Refreshing materialized view (daily stats)');
     try {
@@ -89,6 +91,7 @@ export function startScheduler() {
       console.error('❌ Stats refresh failed:', error);
     }
   });
+  */
 
   // Quota enforcement - PG_NOTIFY event-driven (replaces polling)
   // Database trigger sends NOTIFY when disconnect_queue row is inserted
@@ -111,7 +114,7 @@ export function startScheduler() {
       const result = await prisma.$queryRaw<Array<{ expired_count: bigint; users_affected: bigint }>>`
         SELECT * FROM check_and_expire_plans()
       `;
-      
+
       if (result.length > 0 && result[0].expired_count > 0n) {
         console.log(`⏰ Plan expiry check: ${result[0].expired_count} plan(s) expired, ${result[0].users_affected} user(s) affected`);
       }

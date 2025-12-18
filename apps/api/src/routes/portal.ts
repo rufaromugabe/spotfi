@@ -27,7 +27,7 @@ function cacheUsername(sessionid: string, username: string): void {
     username,
     expiresAt: Date.now() + CACHE_TTL
   });
-  
+
   // Cleanup expired entries periodically
   if (usernameCache.size > 100) {
     const now = Date.now();
@@ -41,15 +41,15 @@ function cacheUsername(sessionid: string, username: string): void {
 
 function getCachedUsername(sessionid: string | undefined): string | undefined {
   if (!sessionid) return undefined;
-  
+
   const cached = usernameCache.get(sessionid);
   if (!cached) return undefined;
-  
+
   if (cached.expiresAt < Date.now()) {
     usernameCache.delete(sessionid);
     return undefined;
   }
-  
+
   return cached.username;
 }
 
@@ -91,14 +91,14 @@ interface UamLoginBody {
  */
 function computeChapResponse(password: string, challenge: string, uamSecret?: string): string {
   let challengeBytes = Buffer.from(challenge, 'hex');
-  
+
   if (uamSecret) {
     const transformHash = crypto.createHash('md5');
     transformHash.update(challengeBytes);
     transformHash.update(uamSecret, 'utf8');
     challengeBytes = Buffer.from(transformHash.digest('hex'), 'hex');
   }
-  
+
   const hash = crypto.createHash('md5');
   hash.update(Buffer.from([0x00]));
   hash.update(password, 'utf8');
@@ -135,7 +135,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
   fastify.get(uamServerPath, async (request: FastifyRequest<{ Querystring: PortalQuery & { 'bytes-remaining'?: string; 'seconds-remaining'?: string } }>, reply: FastifyReply) => {
     const query = request.query;
     const { res, uamip, uamport, challenge, mac, ip, nasid, sessionid, timeleft, secondsRemaining, bytesRemaining, userurl, reply: radiusReply, reason, error } = query;
-    
+
     // Handle RFC 8908 parameters (uspot may send with hyphens)
     const finalSecondsRemaining = secondsRemaining || query['seconds-remaining'] || timeleft;
     const finalBytesRemaining = bytesRemaining || query['bytes-remaining'];
@@ -150,7 +150,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
     // Create more unique session key to reduce collisions in NAT scenarios
     // Combine multiple identifiers when available for better uniqueness
     const sessionKey = sessionid || (mac && ip ? `${mac}-${ip}` : mac || ip) || request.ip || 'anonymous';
-    
+
     // Build current URL for redirect loop detection
     const currentUrl = `${request.url}`;
 
@@ -161,7 +161,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
     // Check redirect loop BEFORE processing (including success to catch router loops)
     // This prevents infinite loops if router keeps redirecting even after authentication
     const isLoopDetected = checkRedirectLoop(sessionKey, currentUrl);
-    
+
     // For success responses, allow first attempt but detect rapid repeated success responses as loops
     // This catches cases where router keeps redirecting with res=success
     if (isLoopDetected) {
@@ -195,21 +195,21 @@ export async function portalRoutes(fastify: FastifyInstance) {
         }
         clearLoginRateLimit(sessionKey);
       }
-      
+
       // Use RFC 8908 parameters from uspot (bytes-remaining, seconds-remaining)
       const bytesRemainingBigInt = finalBytesRemaining ? BigInt(finalBytesRemaining) : null;
       const secondsRemainingNum = finalSecondsRemaining ? parseInt(finalSecondsRemaining) : null;
-      
+
       // Look up username and speed limits (not provided by RFC 8908)
       let username: string | undefined;
       let maxSpeed: { download: bigint | null; upload: bigint | null } | undefined;
-      
+
       // Try cache first (fastest, works even if accounting record doesn't exist yet)
       username = getCachedUsername(sessionid);
       if (username) {
         fastify.log.debug(`[UAM] Found username from cache: ${username}`);
       }
-      
+
       // Fallback to database lookup if not in cache
       if (!username) {
         fastify.log.debug(`[UAM] Username not in cache, checking database: sessionid=${sessionid}, mac=${mac}`);
@@ -226,7 +226,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
             select: { userName: true },
             orderBy: { acctStartTime: 'desc' }
           });
-          
+
           if (session?.userName) {
             username = session.userName;
           }
@@ -234,7 +234,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
           fastify.log.warn(`[UAM] Failed to fetch username from DB: ${err}`);
         }
       }
-      
+
       // Get speed limits if we have username
       if (username) {
         try {
@@ -245,10 +245,10 @@ export async function portalRoutes(fastify: FastifyInstance) {
             },
             select: { attribute: true, value: true }
           });
-          
+
           const downloadSpeed = speedAttrs.find(a => a.attribute === 'WISPr-Bandwidth-Max-Down');
           const uploadSpeed = speedAttrs.find(a => a.attribute === 'WISPr-Bandwidth-Max-Up');
-          
+
           if (downloadSpeed || uploadSpeed) {
             maxSpeed = {
               download: downloadSpeed ? BigInt(downloadSpeed.value) : null,
@@ -259,7 +259,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
           fastify.log.warn(`[UAM] Failed to fetch speed limits: ${err}`);
         }
       }
-      
+
       const html = renderSuccessPage({
         uamip: escapeHtml(uamip),
         uamport: escapeHtml(validatedPort),
@@ -294,7 +294,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       nasid: nasid ? escapeHtml(nasid) : undefined,
       sessionid: sessionid ? escapeHtml(sessionid) : undefined
     });
-    
+
     setSecurityHeaders(reply);
     reply.type('text/html').send(html);
   });
@@ -303,7 +303,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
   fastify.post(uamServerPath, async (request: FastifyRequest<{ Body: UamLoginBody; Querystring: PortalQuery }>, reply: FastifyReply) => {
     const body = request.body as UamLoginBody;
     const query = request.query as PortalQuery;
-    
+
     const username = body.username;
     const password = body.password;
     const uamip = body.uamip || query.uamip;
@@ -329,7 +329,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       const minutes = Math.floor(remainingTime / 60);
       const seconds = remainingTime % 60;
       fastify.log.warn(`[UAM] Rate limit exceeded for session: ${sessionKey}, blocked for ${minutes}m ${seconds}s`);
-      
+
       const html = renderLoginPage({
         actionUrl: uamServerUrl,
         uamip: escapeHtml(uamip),
@@ -374,26 +374,26 @@ export async function portalRoutes(fastify: FastifyInstance) {
     try {
       // Find router by ID (nasid) or MAC address (called) to get UAM secret
       let routerConfig = null;
-      
+
       if (nasid) {
         routerConfig = await prisma.router.findUnique({
           where: { id: nasid },
-          select: { id: true, nasipaddress: true, uamSecret: true, name: true }
+          select: { id: true, uamSecret: true, radiusSecret: true, name: true }
         });
       }
-      
+
       if (!routerConfig && called) {
         routerConfig = await prisma.router.findFirst({
           where: { macAddress: { equals: called.toUpperCase(), mode: 'insensitive' } },
-          select: { id: true, nasipaddress: true, uamSecret: true, name: true }
+          select: { id: true, uamSecret: true, radiusSecret: true, name: true }
         });
       }
-      
+
       if (!routerConfig) {
         fastify.log.error(`[UAM] Router not found: nasid=${nasid}, called=${called}`);
       }
 
-      const nasIp = routerConfig?.nasipaddress || uamip;
+      const nasIp = uamip;
       const nasId = routerConfig?.id || nasid;
       const uniqueUamSecret = routerConfig?.uamSecret ?? undefined;
 
@@ -403,7 +403,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
         password,
         nasIp,
         nasId,
-        secret: masterSecret,
+        secret: routerConfig?.radiusSecret || masterSecret,
         server: radiusServer,
         port: radiusPort,
         logger: fastify.log
@@ -427,11 +427,11 @@ export async function portalRoutes(fastify: FastifyInstance) {
       // Build logon URL - use CHAP if challenge present, else PAP
       // Use form POST instead of redirect to avoid showing credentials in URL
       const logonUrl = `http://${uamip}:${validatedPort}/logon`;
-      
+
       if (challenge) {
         const chapResponse = computeChapResponse(password, challenge, uniqueUamSecret);
         fastify.log.info(`[UAM] ${username} authenticated, CHAP form (challenge=${challenge.substring(0, 16)}..., uamSecret=${uniqueUamSecret ? 'present' : 'none'})`);
-        
+
         const html = renderLogonForm({
           logonUrl, // Router URL - already validated
           username: escapeHtml(username),
@@ -441,7 +441,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
         return reply.type('text/html').send(html);
       } else {
         fastify.log.info(`[UAM] ${username} authenticated, PAP form`);
-        
+
         const html = renderLogonForm({
           logonUrl, // Router URL - already validated
           username: escapeHtml(username),

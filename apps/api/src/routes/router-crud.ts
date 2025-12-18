@@ -30,11 +30,11 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
     assertAuthenticated(request);
     const user = request.user as AuthenticatedUser;
     const { page = 1, limit = 50 } = request.query as { page?: number; limit?: number };
-    
+
     const pageNum = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit))); // Max 100 per page
     const skip = (pageNum - 1) * limitNum;
-    
+
     const where = user.role === 'ADMIN' ? {} : { hostId: user.userId };
 
     const [routers, total] = await Promise.all([
@@ -54,7 +54,7 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
 
     // Check actual WebSocket connection status and update DB if needed
     const routersWithRealStatus = await Promise.all(
-      routers.map((router) => 
+      routers.map((router) =>
         routerStatusService.getRouterWithRealStatus(router, fastify.log)
       )
     );
@@ -126,7 +126,7 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
         properties: {
           name: { type: 'string' },
           hostId: { type: 'string' },
-          macAddress: { 
+          macAddress: {
             type: 'string',
             pattern: '^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$|^[0-9A-Fa-f]{12}$'
           },
@@ -160,7 +160,7 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ error: 'Invalid MAC address' });
     }
 
- 
+
     const uniqueUamSecret = randomBytes(16).toString('hex');
 
     // Create router with unique UAM secret
@@ -240,10 +240,8 @@ export async function routerCrudRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'Router not found' });
     }
 
-    // Remove NAS entry if router has IP
-    if (router.nasipaddress) {
-      await nasService.removeNasEntry(router.nasipaddress, router.id);
-    }
+    // Remove NAS entry
+    await nasService.removeNasEntry(id);
 
     // Delete router (cascades to sessions and invoices)
     await prisma.router.delete({ where: { id } });
