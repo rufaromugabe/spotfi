@@ -161,6 +161,12 @@ export function setupWebSocket(fastify: FastifyInstance) {
           const wsHost = request.headers.host;
           const targetUrl = `${wsProtocol}://${wsHost}/ws`;
 
+          // Circuit Breaker Check
+          if (xTunnelManager.isCircuitOpen(routerId)) {
+            connection.close(1011, 'Connection attempts throttled. Try again later.');
+            return;
+          }
+
           try {
             // Publish the "connect" command via MQTT
             // We assume we don't need to pass the token here because the router should have it?
@@ -179,12 +185,19 @@ export function setupWebSocket(fastify: FastifyInstance) {
               routerSocket = activeConnections.get(routerId);
               if (routerSocket && routerSocket.readyState === WebSocket.OPEN) {
                 fastify.log.info(`[x] Router ${routerId} connected successfully via on-demand trigger.`);
+                xTunnelManager.resetCircuit(routerId); // Success, reset failures
                 break;
               }
               retries++;
             }
           } catch (err: any) {
             fastify.log.error(`[x] Failed to trigger on-demand connection: ${err.message}`);
+          }
+
+          if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
+            xTunnelManager.recordFailure(routerId); // Record failure
+            connection.close(1011, 'Router is offline or failed to connect');
+            return;
           }
         }
 

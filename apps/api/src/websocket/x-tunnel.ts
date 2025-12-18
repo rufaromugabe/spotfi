@@ -9,6 +9,32 @@ import { prisma } from '../lib/prisma.js';
  */
 export class xTunnelManager {
   private static sessions = new Map<string, xTunnelSession>();
+  private static failureCounts = new Map<string, { count: number, lastFailure: number }>();
+  private static readonly MAX_FAILURES = 3;
+  private static readonly COOL_DOWN = 30000; // 30 seconds
+
+  static isCircuitOpen(routerId: string): boolean {
+    const record = this.failureCounts.get(routerId);
+    if (!record) return false;
+
+    if (Date.now() - record.lastFailure > this.COOL_DOWN) {
+      // Cooldown expired, tentatively allow logic to proceed (and reset if success)
+      return false;
+    }
+
+    return record.count >= this.MAX_FAILURES;
+  }
+
+  static recordFailure(routerId: string) {
+    const record = this.failureCounts.get(routerId) || { count: 0, lastFailure: 0 };
+    record.count++;
+    record.lastFailure = Date.now();
+    this.failureCounts.set(routerId, record);
+  }
+
+  static resetCircuit(routerId: string) {
+    this.failureCounts.delete(routerId);
+  }
   private static readonly SESSION_TIMEOUT = 3600000; // 1 hour
 
   /**
@@ -28,7 +54,7 @@ export class xTunnelManager {
       }
 
       let responded = false;
-      
+
       // Set timeout
       const timeoutId = setTimeout(() => {
         if (!responded) {
@@ -84,7 +110,7 @@ export class xTunnelManager {
     const pingStartTime = Date.now();
     const isResponsive = await this.pingRouter(routerSocket, routerId, 3000);
     const pingDuration = Date.now() - pingStartTime;
-    
+
     if (!isResponsive) {
       logger.warn(`[x] Router ${routerId} did not respond to ping after ${pingDuration}ms, rejecting x connection`);
       throw new Error('Router is not responding');

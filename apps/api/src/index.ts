@@ -151,7 +151,8 @@ new MqttHandler(fastify.log).setup();
 // Configure CommandManager to use MQTT
 // Subscribe to response topic for all routers
 
-mqttService.subscribe('spotfi/router/+/rpc/response', (topic, message) => {
+const SHARED_GROUP = 'api_cluster';
+mqttService.subscribe(`$share/${SHARED_GROUP}/spotfi/router/+/rpc/response`, (topic, message) => {
   // Extract command ID from message (assumes message has id field)
   if (message.id) {
     commandManager.handleResponse(message.id, message);
