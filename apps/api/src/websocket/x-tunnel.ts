@@ -5,37 +5,12 @@ import { mqttService } from '../lib/mqtt.js';
 import { isRouterOnline } from '../services/redis-router.js';
 
 /**
- * x Tunnel Session Manager
- * Manages x sessions between frontend clients and routers
+ * MQTT-based x-Tunnel Session Manager
+ * Manages distributed x-tunnel sessions across API cluster via MQTT broker
+ * Sessions are location-independent - any API instance can handle any session
  */
 export class xTunnelManager {
   private static sessions = new Map<string, xTunnelSession>();
-  private static failureCounts = new Map<string, { count: number, lastFailure: number }>();
-  private static readonly MAX_FAILURES = 3;
-  private static readonly COOL_DOWN = 30000; // 30 seconds
-
-  static isCircuitOpen(routerId: string): boolean {
-    const record = this.failureCounts.get(routerId);
-    if (!record) return false;
-
-    if (Date.now() - record.lastFailure > this.COOL_DOWN) {
-      // Cooldown expired, tentatively allow logic to proceed (and reset if success)
-      return false;
-    }
-
-    return record.count >= this.MAX_FAILURES;
-  }
-
-  static recordFailure(routerId: string) {
-    const record = this.failureCounts.get(routerId) || { count: 0, lastFailure: 0 };
-    record.count++;
-    record.lastFailure = Date.now();
-    this.failureCounts.set(routerId, record);
-  }
-
-  static resetCircuit(routerId: string) {
-    this.failureCounts.delete(routerId);
-  }
   private static readonly SESSION_TIMEOUT = 3600000; // 1 hour
 
   /**
@@ -60,59 +35,6 @@ export class xTunnelManager {
         } else if (message.type === 'x-error') {
           logger.error(`[x] Session ${sessionId} error: ${message.error}`);
           session.close(false); // Close without sending stop (since it's error)
-        }
-      }
-    });
-  }
-
-  /**
-   * Ping router to verify it's responsive before creating x session
-   * Uses native WebSocket ping/pong for reliable connectivity check
-   */
-  private static async pingRouter(
-    routerSocket: WebSocket,
-    routerId: string,
-    timeout: number = 3000
-  ): Promise<boolean> {
-    return new Promise((resolve) => {
-      // Check socket state first
-      if (routerSocket.readyState !== WebSocket.OPEN) {
-        resolve(false);
-        return;
-      }
-
-      let responded = false;
-
-      // Set timeout
-      const timeoutId = setTimeout(() => {
-        if (!responded) {
-          responded = true;
-          routerSocket.removeListener('pong', pongHandler);
-          resolve(false);
-        }
-      }, timeout);
-
-      // Listen for native WebSocket pong response
-      const pongHandler = () => {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeoutId);
-          routerSocket.removeListener('pong', pongHandler);
-          resolve(true);
-        }
-      };
-
-      routerSocket.once('pong', pongHandler);
-
-      // Send native WebSocket ping
-      try {
-        routerSocket.ping();
-      } catch (error) {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeoutId);
-          routerSocket.removeListener('pong', pongHandler);
-          resolve(false);
         }
       }
     });

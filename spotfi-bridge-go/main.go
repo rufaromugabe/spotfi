@@ -1,3 +1,17 @@
+/*
+SpotFi Bridge (Go) - MQTT-Only Architecture
+
+This bridge connects OpenWrt routers to the SpotFi API using MQTT exclusively.
+No WebSocket connections are used - all communication flows through the MQTT broker.
+
+Topics:
+  - spotfi/router/{id}/metrics       - Router heartbeat and metrics (published every 30s)
+  - spotfi/router/{id}/status        - Online/Offline status (with LWT)
+  - spotfi/router/{id}/rpc/request   - Incoming RPC commands from API
+  - spotfi/router/{id}/rpc/response  - RPC responses to API
+  - spotfi/router/{id}/x/in          - Incoming x-tunnel data from API
+  - spotfi/router/{id}/x/out         - Outgoing x-tunnel data to API
+*/
 package main
 
 import (

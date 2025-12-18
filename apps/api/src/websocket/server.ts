@@ -1,17 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { WebSocket } from 'ws';
-import { RouterConnectionHandler } from './connection-handler.js';
 import { xTunnelManager } from './x-tunnel.js';
-import { commandManager } from './command-manager.js';
 import { prisma } from '../lib/prisma.js';
-import { mqttService } from '../lib/mqtt.js';
-export const activeConnections = new Map<string, WebSocket>();
-
-interface RouterQuery {
-  id: string;
-  token: string;
-  name?: string;
-}
 
 interface XTunnelQuery {
   routerId: string;
@@ -25,93 +15,12 @@ interface DecodedUser {
 }
 
 export function setupWebSocket(fastify: FastifyInstance) {
-  // Initialize Distributed x-Tunnel Gateway
+  // Initialize MQTT-based x-Tunnel Gateway (distributed across API cluster)
   xTunnelManager.init(fastify.log);
 
   fastify.register(async function (fastify: FastifyInstance) {
-    fastify.get('/ws', { websocket: true }, async (connection, request: FastifyRequest<{ Querystring: RouterQuery }>) => {
-      const url = new URL(request.url!, `http://${request.headers.host}`);
-      const routerId = url.searchParams.get('id');
-      const token = url.searchParams.get('token');
-      const routerName = url.searchParams.get('name'); // Optional router name from setup script
-      const macAddress = url.searchParams.get('mac'); // Optional MAC address
-
-      if (!token) {
-        connection.close(1008, 'Missing token');
-        return;
-      }
-
-      // Token-only mode: Look up router by token
-      // If routerId is provided, verify it matches the token (legacy mode)
-      let router;
-      if (routerId) {
-        // Legacy mode: verify both ID and token match
-        router = await prisma.router.findFirst({
-          where: { id: routerId, token }
-        });
-      } else {
-        // Token-only mode: find router by token only
-        router = await prisma.router.findFirst({
-          where: { token }
-        });
-      }
-
-      if (!router) {
-        connection.close(1008, 'Invalid token');
-        return;
-      }
-
-      // Update router MAC address if provided and different
-      if (macAddress && router.macAddress !== macAddress) {
-        await prisma.router.update({
-          where: { id: router.id },
-          data: { macAddress }
-        }).catch((err) => {
-          fastify.log.warn(`Failed to update MAC address for router ${router.id}: ${err}`);
-        });
-      }
-
-      // Extract client IP
-      const clientIp =
-        request.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
-        request.headers['x-real-ip']?.toString() ||
-        request.socket?.remoteAddress ||
-        'unknown';
-
-      if (clientIp === 'unknown') {
-        connection.close(1011, 'Cannot determine IP address');
-        return;
-      }
-
-      // Handle connection
-      try {
-        // Initialize command manager logger on first connection
-        if (commandManager.getPendingCount() === 0) {
-          commandManager.setLogger(fastify.log);
-        }
-
-        // Use router.id from database (supports both legacy and token-only modes)
-        const handler = new RouterConnectionHandler(router.id, connection, fastify.log);
-        await handler.initialize(clientIp, routerName || undefined);
-        handler.setupMessageHandlers();
-        handler.sendWelcome();
-        activeConnections.set(router.id, connection);
-
-        // Clean up on disconnect
-        connection.on('close', () => {
-          activeConnections.delete(router.id);
-        });
-
-        connection.on('error', () => {
-          activeConnections.delete(router.id);
-        });
-      } catch (error) {
-        fastify.log.error(`Connection setup failed: ${error}`);
-        connection.close(1011, 'Setup failed');
-      }
-    });
-
-    // x Tunnel WebSocket endpoint (for frontend clients)
+    // x-Tunnel WebSocket endpoint (MQTT Gateway)
+    // Client connects here, all data flows through MQTT to/from router
     fastify.get('/x', { websocket: true }, async (connection, request: FastifyRequest<{ Querystring: XTunnelQuery }>) => {
       try {
         // Extract authentication from query params or Authorization header
@@ -151,33 +60,18 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Distributed On-Demand MQTT Trigger
-        // We no longer check for a local WebSocket connection. 
-        // Any instance can safely create a session that communicates via MQTT.
-        try {
-          // Construct the WebSocket URL for the router to connect to (Legacy - optional)
-          const wsProtocol = request.protocol === 'https' ? 'wss' : 'ws';
-          const wsHost = request.headers.host;
-          const targetUrl = `${wsProtocol}://${wsHost}/ws`;
-
-          // Trigger "connect" just in case the bridge needs to dial back for generic RPC, 
-          // though x-tunneling now happens primarily via MQTT x/in topics.
-          await mqttService.publish(`spotfi/router/${routerId}/shell/connect`, { url: targetUrl });
-        } catch (err: any) {
-          fastify.log.warn(`[x] Legacy connect trigger failed (non-critical): ${err.message}`);
-        }
-
-        // Create x tunnel session (Distributed via MQTT Gateway)
+        // Create x-tunnel session via MQTT Gateway
+        // All data is routed through MQTT broker - no direct router connection needed
         let session;
         try {
-          fastify.log.debug(`[x] Creating distributed x session for router ${routerId}, user ${user.userId}`);
+          fastify.log.debug(`[x] Creating MQTT-based x session for router ${routerId}, user ${user.userId}`);
           session = await xTunnelManager.createSession(
             routerId,
             connection,
             user.userId,
             fastify.log
           );
-          fastify.log.info(`[x] Distributed x tunnel established: ${session.sessionId} for router ${routerId}`);
+          fastify.log.info(`[x] MQTT x-tunnel established: ${session.sessionId} for router ${routerId}`);
         } catch (error: unknown) {
           const errorMessage = error instanceof Error ? error.message : 'Failed to create x session';
           fastify.log.error(`[x] x session creation failed: ${errorMessage}`);
