@@ -11,20 +11,21 @@ import (
 )
 
 type XSession struct {
-	ID           string
-	Cmd          *exec.Cmd
-	Pty          *os.File
-	Active       bool
-	LastActivity time.Time
+	ID            string
+	Cmd           *exec.Cmd
+	Pty           *os.File
+	Active        bool
+	LastActivity  time.Time
+	ResponseTopic string
 }
 
 type SessionManager struct {
 	sessions map[string]*XSession
 	mu       sync.Mutex
-	sendFunc func(interface{}) error
+	sendFunc func(topic string, payload interface{}) error
 }
 
-func NewSessionManager(sendFunc func(interface{}) error) *SessionManager {
+func NewSessionManager(sendFunc func(topic string, payload interface{}) error) *SessionManager {
 	sm := \u0026SessionManager{
 		sessions: make(map[string]*XSession),
 		sendFunc: sendFunc,
@@ -56,6 +57,7 @@ func (sm *SessionManager) sweepGhostSessions() {
 
 func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	sessionID, _ := msg["sessionId"].(string)
+	responseTopic, _ := msg["responseTopic"].(string)
 	if sessionID == "" {
 		return
 	}
@@ -70,7 +72,7 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	// Start PTY
 	f, err := pty.Start(c)
 	if err != nil {
-		sm.sendFunc(map[string]interface{}{
+		sm.sendFunc(responseTopic, map[string]interface{}{
 			"type":      "x-error",
 			"sessionId": sessionID,
 			"error":     err.Error(),
@@ -82,11 +84,12 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	pty.Setsize(f, \u0026pty.Winsize{Rows: 24, Cols: 80})
 
 	sess := \u0026XSession{
-		ID:           sessionID,
-		Cmd:          c,
-		Pty:          f,
-		Active:       true,
-		LastActivity: time.Now(),
+		ID:            sessionID,
+		Cmd:           c,
+		Pty:           f,
+		Active:        true,
+		LastActivity:  time.Now(),
+		ResponseTopic: responseTopic,
 	}
 
 	sm.mu.Lock()
@@ -94,7 +97,7 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	sm.mu.Unlock()
 
 	// Ack
-	sm.sendFunc(map[string]interface{}{
+	sm.sendFunc(responseTopic, map[string]interface{}{
 		"type":      "x-started",
 		"sessionId": sessionID,
 		"status":    "ready",
@@ -110,7 +113,7 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 			}
 			if n \u003e 0 {
 				dataB64 := base64.StdEncoding.EncodeToString(buf[:n])
-				sm.sendFunc(map[string]interface{}{
+				sm.sendFunc(responseTopic, map[string]interface{}{
 					"type":      "x-data",
 					"sessionId": sessionID,
 					"data":      dataB64,

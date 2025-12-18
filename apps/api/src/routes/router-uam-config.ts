@@ -159,14 +159,12 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       password?: string;
     };
 
-    // Use per-router secret if available, fallback to masterSecret
-    const masterSecret = process.env.RADIUS_MASTER_SECRET;
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    const radiusSecret = router.radiusSecret || masterSecret;
+    const radiusSecret = router.radiusSecret;
     if (!radiusSecret) {
-      return reply.code(500).send({ error: 'RADIUS secret not configured' });
+      return reply.code(500).send({ error: 'Router missing RADIUS secret. Re-register router.' });
     }
 
     if (body.combinedSSID) {
@@ -398,7 +396,6 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
     const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
     if (!router) return reply.code(404).send({ error: 'Router not found' });
 
-    const masterSecret = process.env.RADIUS_MASTER_SECRET;
     const uniqueUamSecret = router.uamSecret;
 
     try {
@@ -423,9 +420,9 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           interface: section.interface || section['interface'],
           setname: section.setname || section['setname'],
           uamSecret: uniqueUamSecret,
-          radiusSecret: router.radiusSecret || masterSecret,
-          authSecret: router.radiusSecret || masterSecret,
-          acctSecret: section.acct_server ? (router.radiusSecret || masterSecret) : undefined
+          radiusSecret: router.radiusSecret,
+          authSecret: router.radiusSecret,
+          acctSecret: section.acct_server ? router.radiusSecret : undefined
         }
       };
     } catch (error: unknown) {

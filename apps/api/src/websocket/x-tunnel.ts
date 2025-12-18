@@ -3,6 +3,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { mqttService } from '../lib/mqtt.js';
 import { isRouterOnline } from '../services/redis-router.js';
+import { INSTANCE_ID } from '../lib/instance.js';
 
 /**
  * MQTT-based x-Tunnel Session Manager
@@ -19,16 +20,14 @@ export class xTunnelManager {
   static init(logger: FastifyBaseLogger) {
     logger.info('[x] Initializing distributed MQTT x-tunnel gateway...');
 
-    // Subscribe to all router x-out topics (non-shared)
-    // CRITICAL: This is NOT a shared subscription - every API instance receives all messages
-    // Each instance checks if it owns the session locally, and ignores messages for sessions
-    // owned by other instances. This prevents split-brain issues in clustered deployments.
-    mqttService.subscribe('spotfi/router/+/x/out', (topic, message) => {
+    // Subscribe to unique instance topic for router x-out data
+    // This optimization ensures each API instance only receives data for sessions it owns
+    const instanceTopic = `spotfi/api/${INSTANCE_ID}/x/out`;
+    logger.info(`[x] Instance topic: ${instanceTopic}`);
+
+    mqttService.subscribe(instanceTopic, (topic, message) => {
       const sessionId = message.sessionId;
-      if (!sessionId) {
-        logger.debug('[x] Received message without sessionId, ignoring');
-        return;
-      }
+      if (!sessionId) return;
 
       const session = this.sessions.get(sessionId);
       if (session) {
@@ -37,15 +36,11 @@ export class xTunnelManager {
           const binaryData = Buffer.from(message.data, 'base64');
           session.sendToClient(binaryData);
         } else if (message.type === 'x-started') {
-          logger.info(`[x] Session ${sessionId} confirmed started by router`);
+          logger.info(`[x] Session ${sessionId} confirmed started by router on instance ${INSTANCE_ID}`);
         } else if (message.type === 'x-error') {
           logger.error(`[x] Session ${sessionId} error: ${message.error}`);
           session.close(false); // Close without sending stop (since it's error)
         }
-      } else {
-        // Session not found locally - another API instance owns it, silently ignore
-        // This is normal in a clustered deployment
-        logger.debug(`[x] Received message for session ${sessionId} not owned by this instance, ignoring`);
       }
     });
   }
@@ -213,9 +208,11 @@ export class xTunnelSession {
   private startxSession(): void {
     try {
       // Send x session start command to router via MQTT
+      // Tell the router exactly which topic to send responses to (this instance)
       const startCommand = {
         type: 'x-start',
         sessionId: this.sessionId,
+        responseTopic: `spotfi/api/${INSTANCE_ID}/x/out`,
         timestamp: new Date().toISOString()
       };
 

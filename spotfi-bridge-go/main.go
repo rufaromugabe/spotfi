@@ -112,9 +112,14 @@ func main() {
 	defer mqttClient.Close()
 
 	// Initialize global SessionManager pointing to MQTT
-	sm = session.NewSessionManager(func(v interface{}) error {
+	sm = session.NewSessionManager(func(topic string, v interface{}) error {
 		payload, _ := json.Marshal(v)
-		return mqttClient.Publish(fmt.Sprintf("spotfi/router/%s/x/out", routerID), payload)
+		// Use provided topic if possible, fallback to standard out topic
+		pubTopic := topic
+		if pubTopic == "" {
+			pubTopic = fmt.Sprintf("spotfi/router/%s/x/out", routerID)
+		}
+		return mqttClient.Publish(pubTopic, payload)
 	})
 
 	// Topic Handlers

@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws'; // Keeping if needed for types, but removing usage
 import { FastifyBaseLogger } from 'fastify';
 import { mqttService } from '../lib/mqtt.js';
+import { INSTANCE_ID } from '../lib/instance.js';
 
 interface PendingCommand {
   resolve: (value: any) => void;
@@ -12,7 +13,7 @@ interface PendingCommand {
 class CommandManager {
   private pendingCommands = new Map<string, PendingCommand>();
   private commandIdCounter = 0;
-  private serverPrefix = Math.random().toString(36).substring(2, 6);
+  private serverPrefix = INSTANCE_ID;
   private logger?: FastifyBaseLogger;
   private readonly DEFAULT_TIMEOUT = 10000; // 10s default timeout (aggressive)
 
