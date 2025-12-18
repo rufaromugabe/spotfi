@@ -1,6 +1,6 @@
 # SpotFi Bridge - Go Implementation
 
-A high-performance WebSocket bridge for OpenWrt routers, written in Go. This replaces the Python implementation with a single static binary that requires no dependencies.
+A high-performance Hybrid MQTT/WebSocket bridge for OpenWrt routers, written in Go. This replaces the legacy WebSocket-only implementation with a scalable MQTT-based architecture for control and on-demand WebSockets for tunneling.
 
 ## Why Go?
 

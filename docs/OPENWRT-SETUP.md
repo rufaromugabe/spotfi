@@ -166,14 +166,15 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 **Cloudflare Tunnel-like Setup - Just provide your token!**
 
 ```bash
-# Basic usage (uses default server: wss://api.spotfi.com/ws)
+# Basic usage (uses defaults: wss://api.spotfi.com/ws, ssl://mqtt.spotfi.cloud:8883)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
 # With custom server (for self-hosting)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws
+# Format: sh script.sh TOKEN WS_URL MQTT_URL GITHUB_TOKEN
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws tcp://your-server.com:1883
 
 # With GitHub token (if not stored in /etc/github_token)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ghp_your_token_here
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ssl://mqtt.spotfi.cloud:8883 ghp_your_token_here
 ```
 
 **Example:**
@@ -198,6 +199,7 @@ The script creates `/etc/spotfi.env` with:
 ```bash
 SPOTFI_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
 SPOTFI_WS_URL="wss://api.spotfi.com/ws"
+SPOTFI_MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
 SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 ```
 
@@ -439,6 +441,9 @@ ps | grep spotfi-bridge
 
 # Check bridge logs
 logread | grep spotfi-bridge
+
+# Check MQTT connection
+logread | grep MQTT
 
 # View configuration
 cat /etc/spotfi.env

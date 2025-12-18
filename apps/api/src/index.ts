@@ -135,7 +135,29 @@ await fastify.register(userPlanRoutes);
 await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
+import { initMqtt } from './lib/mqtt.js';
+import { commandManager } from './websocket/command-manager.js';
+
+// Setup WebSocket server
 setupWebSocket(fastify);
+
+// Initialize MQTT connection
+const mqttBroker = process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
+const mqttService = initMqtt(mqttBroker, fastify.log);
+
+import { MqttHandler } from './services/mqtt-handler.js';
+new MqttHandler(fastify.log).setup();
+
+// Configure CommandManager to use MQTT
+// Subscribe to response topic for all routers
+
+mqttService.subscribe('spotfi/router/+/rpc/response', (topic, message) => {
+  // Extract command ID from message (assumes message has id field)
+  if (message.id) {
+    commandManager.handleResponse(message.id, message);
+  }
+});
+
 
 // Health check
 fastify.get('/health', {
@@ -164,16 +186,16 @@ const start = async () => {
     const host = process.env.HOST || '0.0.0.0';
 
     await fastify.listen({ port, host });
-    
+
     console.log(`🚀 Server listening on ${host}:${port}`);
-    
+
     // Start BullMQ worker (handles disconnect jobs)
     console.log('🚀 Starting BullMQ disconnect worker...');
     // Worker is already initialized when imported (singleton pattern)
-    
+
     // Start production scheduler
     startScheduler();
-    
+
     // Initialize Redis session counts (async, don't block startup)
     initializeSessionCounts(fastify.log).catch((err) => {
       fastify.log.warn(`Failed to initialize session counts: ${err.message}`);

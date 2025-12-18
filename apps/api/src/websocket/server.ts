@@ -4,6 +4,7 @@ import { RouterConnectionHandler } from './connection-handler.js';
 import { xTunnelManager } from './x-tunnel.js';
 import { commandManager } from './command-manager.js';
 import { prisma } from '../lib/prisma.js';
+import { mqttService } from '../lib/mqtt.js';
 export const activeConnections = new Map<string, WebSocket>();
 
 interface RouterQuery {
@@ -43,8 +44,8 @@ export function setupWebSocket(fastify: FastifyInstance) {
       if (routerId) {
         // Legacy mode: verify both ID and token match
         router = await prisma.router.findFirst({
-        where: { id: routerId, token }
-      });
+          where: { id: routerId, token }
+        });
       } else {
         // Token-only mode: find router by token only
         router = await prisma.router.findFirst({
@@ -147,10 +148,45 @@ export function setupWebSocket(fastify: FastifyInstance) {
           return;
         }
 
-        // Check if router is online
-        const routerSocket = activeConnections.get(routerId);
+        // Check if router is online (in active WebSocket connections)
+        let routerSocket = activeConnections.get(routerId);
+
+        // If not connected via WS, try to trigger on-demand connection via MQTT
         if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
-          connection.close(1011, 'Router is offline');
+          fastify.log.info(`[x] Router ${routerId} not connected via WS. Triggering on-demand connection...`);
+
+          // Construct the WebSocket URL for the router to connect to
+          // Using the same host/protocol as the current request, but ensuring /ws path
+          const wsProtocol = request.protocol === 'https' ? 'wss' : 'ws';
+          const wsHost = request.headers.host;
+          const targetUrl = `${wsProtocol}://${wsHost}/ws`;
+
+          try {
+            // Publish the "connect" command via MQTT
+            // We assume we don't need to pass the token here because the router should have it?
+            // Or does the router need a token to connect to /ws?
+            // The router code checks if token is in query param, if not it appends its own cfg.Token.
+            // So we just send the base URL.
+            await mqttService.publish(`spotfi/router/${routerId}/shell/connect`, { url: targetUrl });
+
+            // Wait for connection (poll activeConnections)
+            let retries = 0;
+            while (retries < 10) { // Wait up to 5 seconds (10 * 500ms)
+              await new Promise(r => setTimeout(r, 500));
+              routerSocket = activeConnections.get(routerId);
+              if (routerSocket && routerSocket.readyState === WebSocket.OPEN) {
+                fastify.log.info(`[x] Router ${routerId} connected successfully via on-demand trigger.`);
+                break;
+              }
+              retries++;
+            }
+          } catch (err: any) {
+            fastify.log.error(`[x] Failed to trigger on-demand connection: ${err.message}`);
+          }
+        }
+
+        if (!routerSocket || routerSocket.readyState !== WebSocket.OPEN) {
+          connection.close(1011, 'Router is offline or failed to connect');
           return;
         }
 

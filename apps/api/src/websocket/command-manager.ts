@@ -1,5 +1,6 @@
-import { WebSocket } from 'ws';
+import { WebSocket } from 'ws'; // Keeping if needed for types, but removing usage
 import { FastifyBaseLogger } from 'fastify';
+import { mqttService } from '../lib/mqtt.js';
 
 interface PendingCommand {
   resolve: (value: any) => void;
@@ -22,14 +23,14 @@ class CommandManager {
     return `cmd_${Date.now()}_${this.commandIdCounter}`;
   }
 
-  sendCommand(
+  // Renamed or overloaded: no longer needs socket
+  async sendCommand(
     routerId: string,
-    socket: WebSocket,
     command: string,
     params: any = {},
     timeout: number = 30000
   ): Promise<any> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const commandId = this.generateCommandId();
 
       // Set up timeout
@@ -64,14 +65,17 @@ class CommandManager {
       };
 
       try {
-        socket.send(JSON.stringify(message));
+        // Publish to MQTT
+        const topic = `spotfi/router/${routerId}/rpc/request`;
+        await mqttService.publish(topic, message);
+
         if (this.logger) {
-          this.logger.debug(`[Router ${routerId}] Sent rpc call: ${params.path}.${params.method} (id: ${commandId})`);
+          this.logger.debug(`[Router ${routerId}] Sent MQTT rpc call: ${params.path}.${params.method} (id: ${commandId})`);
         }
       } catch (error: any) {
         clearTimeout(timeoutId);
         this.pendingCommands.delete(commandId);
-        reject(new Error(`Failed to send command: ${error.message}`));
+        reject(new Error(`Failed to publish command: ${error.message}`));
       }
     });
   }

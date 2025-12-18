@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { commandManager } from '../websocket/command-manager.js';
-import { activeConnections } from '../websocket/server.js';
+// Removed: import { activeConnections } from '../websocket/server.js'; 
 
 /**
  * Router RPC Service
@@ -21,14 +21,15 @@ export class RouterRpcService {
     args: any = {},
     timeout: number = 30000
   ): Promise<any> {
-    const socket = activeConnections.get(routerId);
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error('Router is offline');
-    }
+    // Removed: socket lookup and check. MQTT is decoupled.
+    // If router is offline, the command will timeout (or queue if QoS > 0)
+    // We can rely on Redis "Online" status check here if we want to fail fast,
+    // but for now let's attempt to send.
 
     // Send as 'rpc' type (bridge.py handles this generically)
     try {
-      const response = await commandManager.sendCommand(routerId, socket, 'ubus_call', {
+      // Pass routerId directly to commandManager (MQTT-based)
+      const response = await commandManager.sendCommand(routerId, 'ubus_call', {
         path,
         method,
         args
@@ -91,7 +92,7 @@ export class RouterRpcService {
   // Reference: files/usr/share/uspot/uspot.uc in your dump
   async kickClient(routerId: string, mac: string): Promise<any> {
     // "client_remove" is the native Uspot ubus method
-    return this.rpcCall(routerId, 'uspot', 'client_remove', { 
+    return this.rpcCall(routerId, 'uspot', 'client_remove', {
       address: mac,
       interface: 'uspot' // Often required by uspot ubus definitions
     });
@@ -99,4 +100,3 @@ export class RouterRpcService {
 }
 
 export const routerRpcService = new RouterRpcService();
-

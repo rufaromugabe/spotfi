@@ -23,8 +23,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
-    echo "Usage: $0 TOKEN [SERVER_DOMAIN] [GITHUB_TOKEN]"
+if [ "$#" -lt 1 ] || [ "$#" -gt 4 ]; then
+    echo "Usage: $0 TOKEN [SERVER_DOMAIN] [MQTT_BROKER] [GITHUB_TOKEN]"
     echo ""
     echo "Cloudflare Tunnel-like setup: Just provide your router token."
     echo "All configuration (including uSpot setup) will be done from the cloud."
@@ -32,6 +32,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo "Arguments:"
     echo "  TOKEN         - Router token from SpotFi dashboard (required)"
     echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
+    echo "  MQTT_BROKER   - (Optional) MQTT Broker URL (default: ssl://mqtt.spotfi.cloud:8883)"
     echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
     echo ""
     echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
@@ -45,7 +46,17 @@ fi
 
 TOKEN="$1"
 WS_URL="${2:-wss://api.spotfi.com/ws}"
-GITHUB_TOKEN_PARAM="${3:-}"
+MQTT_BROKER="${3:-ssl://mqtt.spotfi.cloud:8883}"
+GITHUB_TOKEN_PARAM="${4:-}"
+
+# Smart detection: If 3rd arg is GITHUB_TOKEN (legacy usage), handling
+# If $3 starts with ghp_ or doesn't look like a URL, and $4 is empty...
+# Actually, let's strictly follow the new docs to avoid confusion, but we can be nice.
+# If $3 looks like a github token (starts with ghp_), assume user skipped MQTT and wants default.
+if echo "$MQTT_BROKER" | grep -q "^ghp_"; then
+  GITHUB_TOKEN_PARAM="$MQTT_BROKER"
+  MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+fi
 
 # Get GitHub token from multiple sources (priority: parameter > env var > file)
 if [ -n "$GITHUB_TOKEN_PARAM" ]; then
@@ -71,6 +82,7 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Token: ${TOKEN:0:8}... (hidden)"
 echo "WebSocket: $WS_URL"
+echo "MQTT Broker: $MQTT_BROKER"
 echo ""
 echo "This will install SpotFi bridge. All configuration will be done from the cloud."
 echo ""
@@ -316,6 +328,7 @@ fi
 cat > /etc/spotfi.env << EOF
 SPOTFI_TOKEN="$TOKEN"
 SPOTFI_WS_URL="$WS_URL"
+SPOTFI_MQTT_BROKER="$MQTT_BROKER"
 EOF
 
 # Add MAC if detected (optional, cloud can detect it)
@@ -384,6 +397,7 @@ echo "Router Status:"
 echo "  - Mode: Cloud (token-only authentication)"
 echo "  - Token: ${TOKEN:0:8}... (hidden)"
 echo "  - WebSocket: $WS_URL"
+echo "  - MQTT Broker: $MQTT_BROKER"
 if [ -n "$MAC_ADDRESS" ]; then
     echo "  - MAC Address: $MAC_ADDRESS (auto-detected)"
 fi

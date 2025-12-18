@@ -21,7 +21,7 @@ SpotFi is designed for Internet Service Providers (ISPs) or anyone managing mult
 - **Usage Tracking** - Monitor how much data each user consumes
 - **Automated Billing** - Generate invoices automatically based on usage
 - **Multi-User Support** - Different roles (Admin and Host) with appropriate permissions
-- **WebSocket Communication** - Real-time connection between routers and cloud platform
+- **Hybrid MQTT Architecture** - Scalable MQTT for control; On-Demand WebSocket for tools
 
 ## How It Works
 
@@ -38,6 +38,7 @@ SpotFi is designed for Internet Service Providers (ISPs) or anyone managing mult
 
 - Docker and Docker Compose installed on your server
 - PostgreSQL database (can be included in docker-compose)
+- MQTT Broker (EMQX/Mosquitto) for router messaging
 - Environment variables configured (see `.env.example`)
 
 ### Production Deployment

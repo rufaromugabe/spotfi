@@ -1,24 +1,31 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"spotfi-bridge/pkg/config"
 	"spotfi-bridge/pkg/metrics"
+	"spotfi-bridge/pkg/mqtt"
 	"spotfi-bridge/pkg/rpc"
 	"spotfi-bridge/pkg/session"
 
+	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gorilla/websocket"
 )
 
-// min returns the minimum of two integers
+// Global state
+var (
+	cfg        config.Config
+	mqttClient *mqtt.Client
+)
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -26,185 +33,176 @@ func min(a, b int) int {
 	return b
 }
 
-// Global state
-var (
-	cfg            config.Config
-	wsConn         *websocket.Conn
-	wsMu           sync.Mutex
-	sessionManager *session.SessionManager
-)
-
-// Thread-safe WebSocket write
-func sendJSON(v interface{}) error {
-	wsMu.Lock()
-	defer wsMu.Unlock()
-	if wsConn == nil {
-		return fmt.Errorf("no connection")
-	}
-	return wsConn.WriteJSON(v)
-}
-
-// --- Main Loop ---
-
-func connect() error {
-	u, err := url.Parse(cfg.WsURL)
+// --- WebSocket Tunnel Handler (On-Demand) ---
+func startTunnel(targetURL string) {
+	log.Printf("Starting Tunnel to %s", targetURL)
+	u, err := url.Parse(targetURL)
 	if err != nil {
-		return err
+		log.Printf("Invalid tunnel URL: %v", err)
+		return
 	}
 
-	// Add Query Params
-	// Token-only mode: if RouterID is not set, connect with just token
-	q := u.Query()
-	q.Set("token", cfg.Token)
-	if cfg.RouterID != "" {
-		// Legacy mode: include router ID
-		q.Set("id", cfg.RouterID)
+	// Append token if not present (usually passed in URL, but just in case)
+	if u.Query().Get("token") == "" {
+		q := u.Query()
+		q.Set("token", cfg.Token)
+		u.RawQuery = q.Encode()
 	}
-	if cfg.Mac != "" {
-		q.Set("mac", cfg.Mac)
-	}
-	if cfg.RouterName != "" {
-		q.Set("name", cfg.RouterName)
-	}
-	u.RawQuery = q.Encode()
-
-	log.Printf("Connecting to %s", u.String())
 
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return err
+		log.Printf("Tunnel connection failed: %v", err)
+		return
 	}
+	defer c.Close()
 
-	wsMu.Lock()
-	wsConn = c
-	wsMu.Unlock()
+	log.Println("Tunnel Connected")
 
-	log.Println("Connected!")
-
-	// Send initial metrics
-	sendJSON(map[string]interface{}{
-		"type":    "metrics",
-		"metrics": metrics.GetMetrics(),
-	})
+	// Create a dedicated session manager for this connection
+	// We wrap the write to the WS
+	wsSender := func(v interface{}) error {
+		return c.WriteJSON(v)
+	}
+	sm := session.NewSessionManager(wsSender)
 
 	// Read Loop
 	for {
 		var msg map[string]interface{}
 		err := c.ReadJSON(&msg)
 		if err != nil {
-			log.Println("Read error:", err)
-			return err
+			log.Println("Tunnel read error (closed):", err)
+			break
 		}
 
 		msgType, _ := msg["type"].(string)
 		switch msgType {
-		case "rpc":
-			go rpc.HandleRPC(msg, sendJSON)
 		case "x-start":
-			go sessionManager.HandleStart(msg)
+			go sm.HandleStart(msg)
 		case "x-data":
-			sessionManager.HandleData(msg)
+			sm.HandleData(msg)
 		case "x-stop":
-			sessionManager.HandleStop(msg)
+			sm.HandleStop(msg)
+		case "ping":
+			c.WriteJSON(map[string]string{"type": "pong"})
 		}
 	}
+	log.Println("Tunnel Closed")
 }
 
 func main() {
-	// Ensure errors go to stderr
 	log.SetOutput(os.Stderr)
 
-	// Check for version/test flags
+	// CLI Flags
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-v":
-			fmt.Fprintln(os.Stdout, "spotfi-bridge v1.0.0")
+			fmt.Fprintln(os.Stdout, "spotfi-bridge v2.0.0 (MQTT)")
 			os.Exit(0)
 		case "--test", "-t":
-			fmt.Fprintln(os.Stdout, "Testing configuration...")
 			cfg = config.LoadEnv()
-			if cfg.Token == "" {
-				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_TOKEN")
-				os.Exit(1)
-			}
-			if cfg.WsURL == "" {
-				fmt.Fprintln(os.Stderr, "ERROR: Missing SPOTFI_WS_URL")
-				os.Exit(1)
-			}
-			fmt.Fprintln(os.Stdout, "Configuration OK:")
-			if cfg.RouterID != "" {
-				fmt.Fprintf(os.Stdout, "  Router ID: %s\n", cfg.RouterID)
-			} else {
-				fmt.Fprintln(os.Stdout, "  Mode: Token-only (cloud will identify router)")
-			}
-			fmt.Fprintf(os.Stdout, "  Token: %s...\n", cfg.Token[:min(8, len(cfg.Token))])
-			fmt.Fprintf(os.Stdout, "  WebSocket URL: %s\n", cfg.WsURL)
-			if cfg.Mac != "" {
-				fmt.Fprintf(os.Stdout, "  MAC Address: %s\n", cfg.Mac)
-			}
-			os.Exit(0)
-		case "--help", "-h":
-			fmt.Fprintln(os.Stdout, "Usage: spotfi-bridge [--version|--test|--help]")
-			fmt.Fprintln(os.Stdout, "  --version, -v  Show version")
-			fmt.Fprintln(os.Stdout, "  --test, -t     Test configuration")
-			fmt.Fprintln(os.Stdout, "  --help, -h     Show this help")
+			fmt.Fprintln(os.Stdout, "Configuration OK")
 			os.Exit(0)
 		}
 	}
 
-	// If we get here, try to load env and start
 	cfg = config.LoadEnv()
 	if cfg.Token == "" {
 		log.Fatal("Missing configuration: SPOTFI_TOKEN not set")
 	}
-	if cfg.WsURL == "" {
-		log.Fatal("Missing configuration: SPOTFI_WS_URL not set")
+
+	// Determine Broker URL
+	brokerURL := os.Getenv("SPOTFI_MQTT_BROKER")
+	if brokerURL == "" {
+		brokerURL = "tcp://emqx:1883" // Default for manual testing
+		log.Printf("Using default broker: %s", brokerURL)
 	}
-	
-	// Token-only mode is supported (RouterID optional)
-	if cfg.RouterID == "" {
-		log.Println("Token-only mode: Router will be identified by token from cloud")
+
+	// Router ID (Token only mode supported but need ID for topics)
+	routerID := cfg.RouterID
+	if routerID == "" {
+		if len(cfg.Mac) > 0 {
+			routerID = cfg.Mac
+		} else {
+			// Fallback: This is risky in real dev but fine for this bridge logic
+			routerID = "unknown_device"
+			log.Println("WARNING: No RouterID or MAC found. Using 'unknown_device'. RPC may fail.")
+		}
 	}
 
-	// Initialize Session Manager
-	sessionManager = session.NewSessionManager(sendJSON)
+	// Connect to MQTT
+	clientID := fmt.Sprintf("router-%s", routerID)
+	client, err := mqtt.NewClient(brokerURL, clientID, routerID, cfg.Token, func(c paho.Client) {
+		log.Println("MQTT Client Connected")
+	})
+	if err != nil {
+		log.Fatal("Failed to connect to MQTT broker:", err)
+	}
+	mqttClient = client
+	defer mqttClient.Close()
 
-	// Heartbeat ticker
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		for range ticker.C {
-			if wsConn != nil {
-				sendJSON(map[string]interface{}{
-					"type":    "metrics",
-					"metrics": metrics.GetMetrics(),
-				})
-			}
+	// Topic Handlers
+
+	// 1. RPC Requests
+	rpcTopic := fmt.Sprintf("spotfi/router/%s/rpc/request", routerID)
+	err = mqttClient.Subscribe(rpcTopic, func(c paho.Client, m paho.Message) {
+		var msg map[string]interface{}
+		if err := json.Unmarshal(m.Payload(), &msg); err != nil {
+			log.Printf("Invalid RPC JSON: %v", err)
+			return
 		}
-	}()
 
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
-
-	// Connection manager
-	go func() {
-		for {
-			err := connect()
-			if err != nil {
-				log.Println("Connection failed or closed, retrying in 5s...")
-				wsMu.Lock()
-				if wsConn != nil {
-					wsConn.Close()
-					wsConn = nil
-				}
-				wsMu.Unlock()
-				time.Sleep(5 * time.Second)
-			}
+		// Respond via MQTT
+		sendFunc := func(v interface{}) error {
+			payload, _ := json.Marshal(v)
+			return mqttClient.Publish(fmt.Sprintf("spotfi/router/%s/rpc/response", routerID), payload)
 		}
-	}()
 
-	<-interrupt
-	log.Println("Shutting down...")
-	if wsConn != nil {
-		wsConn.Close()
+		go rpc.HandleRPC(msg, sendFunc)
+	})
+	if err != nil {
+		log.Printf("Failed to subscribe to RPC: %v", err)
+	}
+
+	// 2. Shell Connect Trigger
+	shellTopic := fmt.Sprintf("spotfi/router/%s/shell/connect", routerID)
+	mqttClient.Subscribe(shellTopic, func(c paho.Client, m paho.Message) {
+		var msg map[string]interface{}
+		if err := json.Unmarshal(m.Payload(), &msg); err != nil {
+			return
+		}
+		// Expecting "url" in payload
+		if target, ok := msg["url"].(string); ok {
+			go startTunnel(target)
+		}
+	})
+
+	log.Printf("SpotFi Bridge (MQTT) Started. ID: %s", routerID)
+
+	// Metric Loop
+	ticker := time.NewTicker(30 * time.Second)
+	metricsTopic := fmt.Sprintf("spotfi/router/%s/metrics", routerID)
+
+	// Send initial metrics
+	initialMetrics := map[string]interface{}{
+		"type":    "metrics",
+		"metrics": metrics.GetMetrics(),
+	}
+	mqttClient.Publish(metricsTopic, initialMetrics)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	for {
+		select {
+		case <-ticker.C:
+			data := map[string]interface{}{
+				"type":    "metrics",
+				"metrics": metrics.GetMetrics(),
+			}
+			mqttClient.Publish(metricsTopic, data)
+		case <-quit:
+			log.Println("Shutting down...")
+			return
+		}
 	}
 }

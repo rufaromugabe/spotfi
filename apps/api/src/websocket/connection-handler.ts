@@ -3,8 +3,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { NasService } from '../services/nas.js';
 import { prisma } from '../lib/prisma.js';
 import { xTunnelManager } from './x-tunnel.js';
-import { commandManager } from './command-manager.js';
-import { recordRouterHeartbeat, markRouterOffline } from '../services/redis-router.js';
+import { recordRouterHeartbeat } from '../services/redis-router.js';
 import { reconcileRouterSessions, queueFailedDisconnectsForRetry } from '../services/session-reconciliation.js';
 
 export class RouterConnectionHandler {
@@ -86,17 +85,17 @@ export class RouterConnectionHandler {
   setupMessageHandlers(): void {
     this.socket.on('pong', async () => {
       this.lastPongTime = Date.now();
-      await recordRouterHeartbeat(this.routerId).catch(() => {});
+      await recordRouterHeartbeat(this.routerId).catch(() => { });
     });
 
     this.socket.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString());
-        
+
         switch (message.type) {
           case 'metrics':
             this.lastPongTime = Date.now();
-            await recordRouterHeartbeat(this.routerId).catch(() => {});
+            await recordRouterHeartbeat(this.routerId).catch(() => { });
             await this.handleMetrics(message.metrics);
             break;
           case 'x-data':
@@ -107,9 +106,6 @@ export class RouterConnectionHandler {
             break;
           case 'x-error':
             this.logger.error(`[Router ${this.routerId}] x error: ${message.error}`);
-            break;
-          case 'rpc-result':
-            if (message.id) commandManager.handleResponse(message.id, message);
             break;
           case 'update-router-name':
             await this.handleRouterNameUpdate(message.name);
@@ -124,21 +120,13 @@ export class RouterConnectionHandler {
 
     this.socket.on('close', async () => {
       this.cleanup();
-      await Promise.all([
-        markRouterOffline(this.routerId).catch(() => {}),
-        this.markOfflineInPostgres()
-      ]);
       xTunnelManager.closeRouterSessions(this.routerId);
-      this.logger.info(`Router ${this.routerId} disconnected`);
+      this.logger.info(`Router ${this.routerId} tunnel disconnected`);
     });
 
     this.socket.on('error', async (error: Error) => {
-      this.logger.error(`Router ${this.routerId} error: ${error.message}`);
+      this.logger.error(`Router ${this.routerId} tunnel error: ${error.message}`);
       this.cleanup();
-      await Promise.all([
-        markRouterOffline(this.routerId).catch(() => {}),
-        this.markOfflineInPostgres()
-      ]);
     });
 
     this.startHealthCheck();
@@ -148,21 +136,13 @@ export class RouterConnectionHandler {
     this.healthCheckInterval = setInterval(async () => {
       if (this.socket.readyState !== WebSocket.OPEN) {
         this.cleanup();
-        await Promise.all([
-          markRouterOffline(this.routerId).catch(() => {}),
-          this.markOfflineInPostgres()
-        ]);
         return;
       }
 
       const timeSinceLastPong = Date.now() - this.lastPongTime;
       if (timeSinceLastPong > this.PONG_TIMEOUT) {
-        this.logger.warn(`Router ${this.routerId} dead (no pong for ${timeSinceLastPong}ms)`);
+        this.logger.warn(`Router ${this.routerId} tunnel dead (no pong)`);
         this.cleanup();
-        await Promise.all([
-          markRouterOffline(this.routerId).catch(() => {}),
-          this.markOfflineInPostgres()
-        ]);
         this.socket.terminate();
         return;
       }
@@ -171,23 +151,8 @@ export class RouterConnectionHandler {
         this.socket.ping();
       } catch {
         this.cleanup();
-        await Promise.all([
-          markRouterOffline(this.routerId).catch(() => {}),
-          this.markOfflineInPostgres()
-        ]);
       }
     }, this.PING_INTERVAL);
-  }
-
-  private async markOfflineInPostgres(): Promise<void> {
-    try {
-      await prisma.router.update({
-        where: { id: this.routerId },
-        data: { status: 'OFFLINE' }
-      });
-    } catch (err) {
-      this.logger.error(`Failed to mark router offline: ${err}`);
-    }
   }
 
   private cleanup(): void {
@@ -195,7 +160,6 @@ export class RouterConnectionHandler {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
-    commandManager.clearAll(this.routerId);
   }
 
   private async handleMetrics(_metrics: any): Promise<void> {
@@ -203,17 +167,17 @@ export class RouterConnectionHandler {
   }
 
   private handlexData(message: any): void {
-      const { sessionId, data } = message;
+    const { sessionId, data } = message;
     if (!sessionId || !data) return;
 
-      const session = xTunnelManager.getSession(sessionId);
-      if (!session) {
+    const session = xTunnelManager.getSession(sessionId);
+    if (!session) {
       this.logger.warn(`x session not found: ${sessionId}`);
-        return;
-      }
+      return;
+    }
 
-      const binaryData = Buffer.from(data, 'base64');
-      session.sendToClient(binaryData);
+    const binaryData = Buffer.from(data, 'base64');
+    session.sendToClient(binaryData);
   }
 
   private async handleRouterNameUpdate(name: string): Promise<void> {

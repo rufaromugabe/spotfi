@@ -1760,14 +1760,47 @@ USPOTEOF`);
     try {
       const whitelist = config.whitelist || [];
       const blocklist = config.blocklist || [];
-      const portalUrls = config.portalUrls || [];
+      let portalUrls = config.portalUrls || [];
+      
+      // Always include portal URL from router UAM config if not provided
+      // Portal URL MUST be allowed by default for captive portal to work
+      if (portalUrls.length === 0) {
+        try {
+          const uspotConfig = await routerRpcService.rpcCall(routerId, 'uci', 'get', { config: 'uspot' });
+          const values = uspotConfig?.values || uspotConfig || {};
+          const sectionKey = Object.keys(values).find(key => 
+            values[key]['.type'] === 'uspot' || key === 'hotspot' || key === 'captive'
+          );
+          const section = sectionKey ? values[sectionKey] : {};
+          const uamServer = section.uam_server || section['uam_server'];
+          if (uamServer) {
+            portalUrls = [uamServer];
+            this.logger.info(`[Access Control] Auto-detected portal URL from router config: ${uamServer}`);
+          }
+        } catch (e) {
+          this.logger.warn(`[Access Control] Could not auto-detect portal URL: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
+      }
       
       // Combine all domains that need whitelisting (Portal + Custom)
       const allowedDomains = new Set<string>();
       const allowedIps = new Set<string>();
+      // Map of domain -> IP for static DNS entries (resolved domains)
+      const domainToIp = new Map<string, string>();
       
-      // Helper to parse URL/Domain/IP
-      const addTarget = (target: string) => {
+      // Helper to extract IP from sslip.io domains (works without DNS)
+      const extractSslipIp = (hostname: string): string | null => {
+        // Pattern: subdomain.IP.sslip.io (e.g., app.31.97.217.241.sslip.io -> 31.97.217.241)
+        const sslipMatch = hostname.match(/^[^.]+\.((?:\d{1,3}\.){3}\d{1,3})\.sslip\.io$/);
+        if (sslipMatch && sslipMatch[1]) {
+          return sslipMatch[1];
+        }
+        return null;
+      };
+      
+      // Helper to parse URL/Domain/IP and resolve domains
+      // Portal URLs are processed first and always whitelisted by default
+      const addTarget = async (target: string) => {
         try {
           // If it's a URL, extract hostname
           let hostname = target;
@@ -1779,13 +1812,55 @@ USPOTEOF`);
           if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
             allowedIps.add(hostname); // Is IPv4
           } else {
-            allowedDomains.add(hostname); // Is Domain
+            // Always add domain to whitelist (portal URLs are always allowed)
+            allowedDomains.add(hostname);
+            
+            // Try to resolve domain to IP for static DNS entry and firewall whitelist
+            // This ensures immediate access even if DNS resolution is slow
+            // Use longer timeout for portal URLs to ensure they resolve
+            try {
+              const dns = await import('dns/promises');
+              const addresses = await Promise.race([
+                dns.resolve4(hostname),
+                new Promise<string[]>((_, reject) => 
+                  setTimeout(() => reject(new Error('DNS timeout')), 5000)
+                )
+              ]) as string[];
+              
+              if (addresses && addresses.length > 0) {
+                // Use first IPv4 address
+                const ip = addresses[0];
+                allowedIps.add(ip);
+                domainToIp.set(hostname, ip);
+                this.logger.info(`[Access Control] Resolved ${hostname} -> ${ip}`);
+              }
+            } catch (resolveError) {
+              // DNS resolution failed - try pattern-based extraction for known formats (e.g., sslip.io)
+              // This works for any domain matching the pattern, not just portal URLs
+              const sslipIp = extractSslipIp(hostname);
+              if (sslipIp) {
+                allowedIps.add(sslipIp);
+                domainToIp.set(hostname, sslipIp);
+                this.logger.info(`[Access Control] Extracted IP ${sslipIp} from sslip.io domain ${hostname} (DNS failed, using pattern)`);
+              } else {
+                // Domain is still whitelisted even if DNS resolution fails
+                // dnsmasq ipset will handle dynamic resolution
+                this.logger.debug(`[Access Control] Could not resolve ${hostname}, will rely on dnsmasq ipset (domain whitelisted)`);
+              }
+            }
           }
-        } catch {}
+        } catch (e) {
+          this.logger.warn(`[Access Control] Error processing target ${target}: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
       };
 
-      portalUrls.forEach(addTarget);
-      whitelist.forEach(addTarget);
+      // Process portal URLs FIRST - they must always be allowed by default
+      // Portal URLs are critical for captive portal functionality
+      // Even if DNS fails, the domain is whitelisted and dnsmasq will handle it
+      await Promise.all(portalUrls.map(url => addTarget(url)));
+      
+      // Then process whitelist domains
+      await Promise.all(whitelist.map(url => addTarget(url)));
       
       // Default whitelists (OS detection)
       const OS_DETECTION = [
@@ -1800,7 +1875,7 @@ USPOTEOF`);
       const ipsList = Array.from(allowedIps);
       const blockList = blocklist.filter(d => !allowedDomains.has(d)); // Whitelist takes precedence
 
-      this.logger.info(`[Access Control] Configuring: ${domainsList.length} allowed, ${blockList.length} blocked, ${ipsList.length} static IPs`);
+      this.logger.info(`[Access Control] Configuring: ${domainsList.length} allowed, ${blockList.length} blocked, ${ipsList.length} static IPs, ${domainToIp.size} static DNS entries`);
 
       // Script to configure dnsmasq and firewall
       const script = `
@@ -1861,11 +1936,24 @@ USPOTEOF`);
         # First clear old blocked domains (by iterating? risky if shared. We'll append for now)
         # Better: Write a dedicated dnsmasq.conf file for uspot
         
-        mkdir -p /tmp/dnsmasq.d
-        cat > /tmp/dnsmasq.d/uspot_access.conf << 'EOF'
+        # Ensure /etc/dnsmasq.d exists (standard location for dnsmasq config files)
+        # OpenWRT dnsmasq automatically reads *.conf files from /etc/dnsmasq.d/
+        mkdir -p /etc/dnsmasq.d
+        
+        # Write static DNS entries to persistent location
+        # This ensures DNS resolution works even if external DNS is slow or blocked
+        cat > /etc/dnsmasq.d/uspot_access.conf << 'EOF'
         # uSpot Access Control (Generated)
-        ${blockList.map(d => `address=/${d}/`).join('\n')}
+        # Blocklist: Sinkhole blocked domains to 0.0.0.0
+        ${blockList.map(d => `address=/${d}/0.0.0.0`).join('\n')}
+        
+        # Whitelist: Static DNS entries for domains with known IPs (especially sslip.io)
+        # This ensures DNS resolution works even if external DNS is slow or blocked
+        ${Array.from(domainToIp.entries()).map(([domain, ip]) => `address=/${domain}/${ip}`).join('\n')}
         EOF
+        
+        # Ensure file is readable
+        chmod 644 /etc/dnsmasq.d/uspot_access.conf
         
         # 3. Apply Changes
         # ----------------

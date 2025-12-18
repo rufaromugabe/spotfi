@@ -14,4 +14,32 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET in your environment}
     ports:
       - "${PORT:-8080}:8080"
+      
+  emqx:
+    image: emqx/emqx:5.3.0
+    container_name: emqx
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "8084:8084"
+      - "8883:8883"
+      - "18083:18083"
+    environment:
+      EMQX_ALLOW_ANONYMOUS: "true" # For dev simplicity. Prod should use false.
+      EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management"
+      # --- Production Authentication (Uncomment/Verify vars for Prod) ---
+      # EMQX_ALLOW_ANONYMOUS: "false"
+      # EMQX_AUTHENTICATION__1__MECHANISM: "password_based"
+      # EMQX_AUTHENTICATION__1__BACKEND: "postgresql"
+      # EMQX_AUTHENTICATION__1__ENABLE: "true"
+      # EMQX_AUTHENTICATION__1__SERVER: "postgres:5432" # Adjust host/port
+      # EMQX_AUTHENTICATION__1__DATABASE: "spotfi"
+      # EMQX_AUTHENTICATION__1__USERNAME: "postgres"
+      # EMQX_AUTHENTICATION__1__PASSWORD: "password"
+      # EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = \${username}"
+      # EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain"
+    volumes:
+      - vol-emqx-data:/opt/emqx/data
 
+volumes:
+  vol-emqx-data:
