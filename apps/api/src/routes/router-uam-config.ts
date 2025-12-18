@@ -125,7 +125,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
       tags: ['router-management'],
       summary: 'Configure uspot captive portal',
       security: [{ bearerAuth: [] }],
-      description: 'Configure uspot auth mode. RADIUS secret injected from RADIUS_MASTER_SECRET env.',
+      description: 'Configure uspot auth mode. Uses unique per-router RADIUS secret.',
       body: {
         type: 'object',
         required: ['authMode'],
@@ -260,7 +260,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           hotspotIp = (ipResult?.stdout || '10.1.30.1').trim();
         } catch { }
 
-        // RADIUS auth settings (master secret)
+        // RADIUS auth settings (per-router unique secret)
         uciCommands.push(
           `uci set uspot.${sectionName}.auth_server='${radiusHost}'`,
           `uci set uspot.${sectionName}.auth_port='${radiusPort}'`,
@@ -285,7 +285,7 @@ export async function routerUamConfigRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // Accounting server (master secret)
+        // Accounting server (per-router unique secret)
         if (body.radiusServer2) {
           const acctHost = body.radiusServer2.split(':')[0];
           const acctPort = body.radiusServer2.split(':')[1] || '1813';

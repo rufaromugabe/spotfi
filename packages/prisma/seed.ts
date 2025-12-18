@@ -7,8 +7,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Seeding database...');
 
-  // Master secret for RADIUS (must match RADIUS_MASTER_SECRET in .env)
-  const masterSecret = process.env.RADIUS_MASTER_SECRET || '391487087f0adffeffbe44aa399ef811';
+
 
   // ============================================
   // 1. CREATE APP USERS
@@ -53,7 +52,6 @@ async function main() {
       token: 'test-router-token-123',
       uamSecret: uniqueUamSecret, // Unique UAM secret per router
       status: 'ONLINE',
-      nasipaddress: '192.168.1.1',
       macAddress: '00:11:22:33:44:55',
       location: 'Main Office - Floor 1',
       lastSeen: new Date(),
@@ -61,19 +59,7 @@ async function main() {
   });
   console.log('✅ Created sample router:', router.name);
 
-  // Create master NAS entry (wildcard for all routers)
-  await prisma.nas.upsert({
-    where: { nasName: '0.0.0.0/0' },
-    update: { secret: masterSecret },
-    create: {
-      nasName: '0.0.0.0/0',
-      shortName: 'master',
-      type: 'other',
-      secret: masterSecret,
-      description: 'Master NAS entry (all routers) - Docker-compatible',
-    },
-    });
-  console.log('✅ Created master NAS entry');
+
 
   // ============================================
   // 4. CREATE RADIUS TEST USERS
@@ -289,17 +275,17 @@ async function main() {
     const existingEndUser = await prisma.endUser.findUnique({ where: { username: userData.username } });
 
     const endUser = existingEndUser || await prisma.endUser.create({
-        data: {
-          username: userData.username,
-          password: hashedPassword,
-          email: userData.email,
-          phone: userData.phone,
-          fullName: userData.fullName,
-          status: userData.status,
-          notes: userData.notes,
-          createdById: admin.id,
-        },
-      });
+      data: {
+        username: userData.username,
+        password: hashedPassword,
+        email: userData.email,
+        phone: userData.phone,
+        fullName: userData.fullName,
+        status: userData.status,
+        notes: userData.notes,
+        createdById: admin.id,
+      },
+    });
     createdEndUsers.push({ ...endUser, plainPassword: userData.password });
 
     // RADIUS entry
@@ -361,19 +347,19 @@ async function main() {
     });
 
     if (!existingUserPlan) {
-    await prisma.userPlan.create({
-      data: {
-        userId: endUser.id,
-        planId: plan.id,
-        status: 'ACTIVE',
-        activatedAt: new Date(),
-        expiresAt,
-        dataQuota: plan.dataQuota,
-        dataUsed: 0n,
-        autoRenew: assignment.autoRenew,
-        assignedById: admin.id,
-      },
-    });
+      await prisma.userPlan.create({
+        data: {
+          userId: endUser.id,
+          planId: plan.id,
+          status: 'ACTIVE',
+          activatedAt: new Date(),
+          expiresAt,
+          dataQuota: plan.dataQuota,
+          dataUsed: 0n,
+          autoRenew: assignment.autoRenew,
+          assignedById: admin.id,
+        },
+      });
     }
 
     if (plan.sessionTimeout) await upsertRadReply(assignment.username, 'Session-Timeout', plan.sessionTimeout.toString());
@@ -422,10 +408,6 @@ async function main() {
 
   console.log('');
   console.log('✨ Seeding completed!');
-  console.log('');
-  console.log('🔐 Dual Secret Architecture:');
-  console.log(`   Master Secret (RADIUS): ${masterSecret.substring(0, 8)}...`);
-  console.log(`   Router UAM Secret: ${uniqueUamSecret.substring(0, 8)}... (unique per router)`);
   console.log('');
   console.log('📝 App Credentials:');
   console.log('   Admin: admin@spotfi.com / admin123');

@@ -51,7 +51,7 @@ API    → Resolves promise with response
 ```
 Frontend → WebSocket /x (connects to API)
 API      → spotfi/router/{id}/x/in (via MQTT)
-Router   → spotfi/router/{id}/x/out (via MQTT)
+Router   → spotfi/api/{INSTANCE_ID}/x/out (via MQTT)
 API      → WebSocket /x (to frontend)
 ```
 
@@ -98,7 +98,7 @@ API      → WebSocket /x (to frontend)
 | `spotfi/router/{id}/rpc/request` | API → Router | RPC commands | 0 |
 | `spotfi/router/{id}/rpc/response` | Router → API | RPC responses | 0 |
 | `spotfi/router/{id}/x/in` | API → Router | Terminal input | 0 |
-| `spotfi/router/{id}/x/out` | Router → API | Terminal output | 0 |
+| `spotfi/api/{INSTANCE_ID}/x/out` | Router → API | Terminal output (instance-specific) | 0 |
 
 ## Deployment Notes
 
@@ -111,7 +111,9 @@ MQTT_BROKER_URL=mqtt://emqx:1883  # or mqtts:// for TLS
 Routers must have:
 - `SPOTFI_TOKEN`: Authentication token
 - `SPOTFI_MQTT_BROKER`: Broker URL
-- `SPOTFI_ROUTER_ID`: Unique router ID (optional, uses MAC if missing)
+- `SPOTFI_ROUTER_ID`: Unique router ID
+- `RADIUS_SECRET`: Unique secret for RADIUS
+- `UAM_SECRET`: Unique secret for Portal (CHAP)
 
 ### API Cluster
 - Multiple API instances can run simultaneously

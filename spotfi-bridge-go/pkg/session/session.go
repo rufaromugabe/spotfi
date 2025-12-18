@@ -26,7 +26,7 @@ type SessionManager struct {
 }
 
 func NewSessionManager(sendFunc func(topic string, payload interface{}) error) *SessionManager {
-	sm := \u0026SessionManager{
+	sm := &SessionManager{
 		sessions: make(map[string]*XSession),
 		sendFunc: sendFunc,
 	}
@@ -41,7 +41,7 @@ func (sm *SessionManager) sweepGhostSessions() {
 		sm.mu.Lock()
 		now := time.Now()
 		for id, sess := range sm.sessions {
-			if sess.Active \u0026\u0026 now.Sub(sess.LastActivity) \u003e 10*time.Minute {
+			if sess.Active && now.Sub(sess.LastActivity) > 10*time.Minute {
 				// Kill idle session
 				sess.Active = false
 				sess.Pty.Close()
@@ -81,9 +81,9 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	}
 
 	// Set window size (standard)
-	pty.Setsize(f, \u0026pty.Winsize{Rows: 24, Cols: 80})
+	pty.Setsize(f, &pty.Winsize{Rows: 24, Cols: 80})
 
-	sess := \u0026XSession{
+	sess := &XSession{
 		ID:            sessionID,
 		Cmd:           c,
 		Pty:           f,
@@ -111,7 +111,7 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 			if err != nil {
 				break // EOF or error (process died)
 			}
-			if n \u003e 0 {
+			if n > 0 {
 				dataB64 := base64.StdEncoding.EncodeToString(buf[:n])
 				sm.sendFunc(responseTopic, map[string]interface{}{
 					"type":      "x-data",

@@ -164,8 +164,6 @@ func main() {
 		}
 	})
 
-	})
-
 	log.Printf("SpotFi Bridge (MQTT) Started. ID: %s", routerID)
 
 	// Metric Loop

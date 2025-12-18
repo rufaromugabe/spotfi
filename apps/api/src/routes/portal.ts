@@ -109,12 +109,9 @@ function computeChapResponse(password: string, challenge: string, uamSecret?: st
 export async function portalRoutes(fastify: FastifyInstance) {
   const radiusServer = process.env.RADIUS_SERVER_1 || 'localhost';
   const radiusPort = parseInt(process.env.RADIUS_PORT || '1812', 10);
-  const masterSecret = process.env.RADIUS_MASTER_SECRET || '';
   const uamServerUrl = process.env.UAM_SERVER_URL || 'https://api.spotfi.com/uam/login';
 
-  if (!masterSecret) {
-    fastify.log.warn('[Portal] RADIUS_MASTER_SECRET not set');
-  }
+
 
   let uamServerPath: string;
   try {
@@ -366,10 +363,7 @@ export async function portalRoutes(fastify: FastifyInstance) {
       return showError('Missing required fields');
     }
 
-    if (!masterSecret) {
-      fastify.log.error('[UAM] RADIUS_MASTER_SECRET not configured');
-      return showError('Server configuration error');
-    }
+
 
     try {
       // Find router by ID (nasid) or MAC address (called) to get UAM secret
@@ -397,13 +391,18 @@ export async function portalRoutes(fastify: FastifyInstance) {
       const nasId = routerConfig?.id || nasid;
       const uniqueUamSecret = routerConfig?.uamSecret ?? undefined;
 
-      // Authenticate with RADIUS using master secret
+      if (!routerConfig?.radiusSecret) {
+        fastify.log.error(`[UAM] Router missing radius secret: nasid=${nasid}, called=${called}`);
+        return showError('Router configuration error');
+      }
+
+      // Authenticate with RADIUS using unique router secret
       const authResult = await authenticateUser({
         username,
         password,
         nasIp,
         nasId,
-        secret: routerConfig?.radiusSecret || masterSecret,
+        secret: routerConfig.radiusSecret,
         server: radiusServer,
         port: radiusPort,
         logger: fastify.log

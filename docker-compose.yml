@@ -28,16 +28,31 @@ services:
       EMQX_ALLOW_ANONYMOUS: "true" # For dev simplicity. Prod should use false.
       EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management"
       # --- Production Authentication (Uncomment/Verify vars for Prod) ---
-      # EMQX_ALLOW_ANONYMOUS: "false"
-      # EMQX_AUTHENTICATION__1__MECHANISM: "password_based"
-      # EMQX_AUTHENTICATION__1__BACKEND: "postgresql"
-      # EMQX_AUTHENTICATION__1__ENABLE: "true"
-      # EMQX_AUTHENTICATION__1__SERVER: "postgres:5432" # Adjust host/port
-      # EMQX_AUTHENTICATION__1__DATABASE: "spotfi"
-      # EMQX_AUTHENTICATION__1__USERNAME: "postgres"
-      # EMQX_AUTHENTICATION__1__PASSWORD: "password"
-      # EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = \${username}"
-      # EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain"
+      EMQX_ALLOW_ANONYMOUS: "false" # Hardened for production
+      EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management,emqx_auth_pgsql"
+      # --- Production Authentication & Authorization ---
+      EMQX_AUTHENTICATION__1__MECHANISM: "password_based"
+      EMQX_AUTHENTICATION__1__BACKEND: "postgresql"
+      EMQX_AUTHENTICATION__1__ENABLE: "true"
+      EMQX_AUTHENTICATION__1__SERVER: "postgres:5432"
+      EMQX_AUTHENTICATION__1__DATABASE: "spotfi"
+      EMQX_AUTHENTICATION__1__USERNAME: "postgres"
+      EMQX_AUTHENTICATION__1__PASSWORD: "password"
+      # Use router token as MQTT password
+      EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = \${username}"
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain"
+      
+      # --- Authorization (ACL) Logic ---
+      # Restrict routers to their own topic tree
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: "postgresql"
+      EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
+      EMQX_AUTHORIZATION__SOURCES__1__SERVER: "postgres:5432"
+      EMQX_AUTHORIZATION__SOURCES__1__DATABASE: "spotfi"
+      EMQX_AUTHORIZATION__SOURCES__1__USERNAME: "postgres"
+      EMQX_AUTHORIZATION__SOURCES__1__PASSWORD: "password"
+      # ACL Query: Routers can move anything in spotfi/router/{id}/ but nowhere else
+      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = \${username}"
+    
     volumes:
       - vol-emqx-data:/opt/emqx/data
 
