@@ -12,6 +12,7 @@ interface PendingCommand {
 class CommandManager {
   private pendingCommands = new Map<string, PendingCommand>();
   private commandIdCounter = 0;
+  private serverPrefix = Math.random().toString(36).substring(2, 6);
   private logger?: FastifyBaseLogger;
   private readonly DEFAULT_TIMEOUT = 10000; // 10s default timeout (aggressive)
 
@@ -21,7 +22,8 @@ class CommandManager {
 
   generateCommandId(): string {
     this.commandIdCounter++;
-    return `cmd_${Date.now()}_${this.commandIdCounter}`;
+    // Example: cmd_1700000000_a9f1_1
+    return `cmd_${Date.now()}_${this.serverPrefix}_${this.commandIdCounter}`;
   }
 
   // Renamed or overloaded: no longer needs socket

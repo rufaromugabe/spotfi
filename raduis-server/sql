@@ -381,8 +381,9 @@ sql {
 	# This allows each router to have a unique secret even if they share an IP.
 	client_query = "SELECT nasname, shortname, type, secret, server, community, description \
                    FROM ${client_table} \
-                   WHERE nasname = '%{Packet-Src-IP-Address}' \
-                      OR nasname = '%{NAS-Identifier}'"
+                   WHERE nasname = '%{NAS-Identifier}' \
+                      OR nasname = '%{Packet-Src-IP-Address}' \
+                   ORDER BY (nasname = '%{NAS-Identifier}') DESC LIMIT 1"
 
 	#
 	# The group attribute specific to this instance of rlm_sql

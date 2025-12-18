@@ -44,6 +44,12 @@ const fastify = Fastify({
   } : true,
 });
 
+// Handle BigInt serialization in JSON responses
+// @ts-ignore
+BigInt.prototype.toJSON = function () {
+  return this.toString();
+};
+
 // Register plugins
 await fastify.register(cors, {
   origin: process.env.CORS_ORIGIN || '*',
