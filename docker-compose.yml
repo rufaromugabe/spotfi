@@ -12,6 +12,9 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       DATABASE_URL: ${DATABASE_URL:?Define DATABASE_URL in your environment}
       JWT_SECRET: ${JWT_SECRET:?Define JWT_SECRET in your environment}
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL:-mqtt://emqx:1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
     ports:
       - "${PORT:-8080}:8080"
       

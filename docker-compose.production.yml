@@ -76,6 +76,8 @@ services:
       RADIUS_SERVER_1: freeradius
       RADIUS_PORT: 1812
       MQTT_BROKER_URL: "mqtt://emqx:1883" # Internal docker network URL
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
     ports:
       - "${API_PORT:-8090}:${PORT:-8090}"
     depends_on:
