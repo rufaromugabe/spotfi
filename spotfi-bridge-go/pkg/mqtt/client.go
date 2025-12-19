@@ -1,8 +1,11 @@
 package mqtt
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -42,6 +45,76 @@ func NewClient(brokerURL, clientID, username, password string, onConnect mqtt.On
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
 		log.Printf("MQTT Connection Lost: %v", err)
 	})
+
+	// Custom dialer that prefers IPv4 to avoid IPv6 DNS issues on OpenWrt
+	// This manually resolves hostnames to IPv4 addresses first using IPv4 DNS servers
+	customDialer := func(network, address string) (net.Conn, error) {
+		// Parse the address (format: "host:port")
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+
+		// Check if it's already an IP address
+		if ip := net.ParseIP(host); ip != nil {
+			dialer := &net.Dialer{
+				Timeout:   30 * time.Second,
+				DualStack: false, // Prefer IPv4
+			}
+			return dialer.Dial(network, address)
+		}
+
+		// Use custom resolver that prefers IPv4 DNS servers
+		// Try common IPv4 DNS servers first (8.8.8.8, 1.1.1.1, or system resolver)
+		resolver := &net.Resolver{
+			PreferGo: true, // Use Go's DNS resolver instead of cgo
+		}
+
+		// Try to resolve to IPv4 addresses first
+		// This avoids IPv6 DNS resolver issues on OpenWrt
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			// Fallback: try system resolver
+			ips2, err2 := net.LookupIP(host)
+			if err2 != nil {
+				return nil, fmt.Errorf("DNS lookup failed: %v", err)
+			}
+			// Convert []net.IP to []net.IPAddr
+			for _, ip := range ips2 {
+				ips = append(ips, net.IPAddr{IP: ip})
+			}
+		}
+
+		// Prefer IPv4 addresses
+		var ipv4 net.IP
+		for _, ipAddr := range ips {
+			if ipAddr.IP.To4() != nil {
+				ipv4 = ipAddr.IP
+				break
+			}
+		}
+
+		// If no IPv4 found, use first available IP
+		if ipv4 == nil && len(ips) > 0 {
+			ipv4 = ips[0].IP
+		}
+
+		if ipv4 == nil {
+			return nil, fmt.Errorf("no IP address found for %s", host)
+		}
+
+		// Dial using the resolved IP address
+		dialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			DualStack: false,
+		}
+		return dialer.Dial(network, net.JoinHostPort(ipv4.String(), port))
+	}
+
+	opts.SetDialer(customDialer)
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
