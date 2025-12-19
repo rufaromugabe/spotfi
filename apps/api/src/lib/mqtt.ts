@@ -113,12 +113,15 @@ export class MqttService {
                 return;
             }
             const payload = JSON.stringify(message);
-            this.client.publish(topic, payload, options, (err) => {
+            // Use QoS 1 for RPC requests to ensure delivery (at-least-once)
+            // Default to QoS 0 if options are provided
+            const publishOptions = options || { qos: 1, retain: false };
+            this.client.publish(topic, payload, publishOptions, (err) => {
                 if (err) {
                     this.logger?.error(`Failed to publish to ${topic}: ${err.message}`);
                     reject(err);
                 } else {
-                    this.logger?.info(`[MQTT] Published to ${topic} (${payload.length} bytes)`);
+                    this.logger?.info(`[MQTT] Published to ${topic} (${payload.length} bytes, QoS: ${publishOptions.qos || 0})`);
                     resolve();
                 }
             });
