@@ -176,18 +176,20 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
 # With custom MQTT broker (for self-hosting)
-# Format: sh script.sh TOKEN MQTT_BROKER GITHUB_TOKEN
+# Format: sh script.sh TOKEN MQTT_BROKER [ROUTER_ID] [GITHUB_TOKEN]
 # IMPORTANT: MQTT broker URL must be: mqtts://host:port or mqtt://host:port (no trailing slash!)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtts://mqtt.example.com:8883
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtt://mqtt.example.com:1883
 
+# With router ID (required for MQTT authentication)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtt://mqtt.example.com:1883 YOUR_ROUTER_ID
 
-
-# With GitHub token (if not stored in /etc/github_token)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtts://mqtt.example.com:8883 ghp_your_token_here
+# With router ID and GitHub token (for private repos)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtt://mqtt.example.com:1883 YOUR_ROUTER_ID ghp_your_token_here
 ```
 
 **Note:** 
 - The SpotFi bridge uses **MQTT only** - no WebSocket connections. All communication flows through the MQTT broker.
+- **Router ID is required** for MQTT authentication. Get it from the SpotFi dashboard when creating the router (it's the `id` field in the API response).
 - **MQTT Broker URL Format:** Must be `mqtts://host:port` or `mqtt://host:port` (no trailing slash, no path, no query parameters)
   - ✅ Correct: `mqtts://mqtt.example.com:8883` (SSL/TLS)
   - ✅ Correct: `mqtt://mqtt.example.com:1883` (non-SSL)
