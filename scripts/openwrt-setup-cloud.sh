@@ -88,8 +88,21 @@ fi
 
 # Normalize MQTT Broker URL: remove trailing slashes, paths, and query parameters
 # MQTT URLs should be: tcp://host:port or ssl://host:port (no trailing slash, no path, no query params)
-# First, extract just the protocol://host:port part
-MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|/$||' | sed 's|/.*$||' | sed 's|?.*$||')
+# Remove query parameters (everything after ?)
+MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|?.*$||')
+# Remove trailing slash if present
+MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|/$||')
+# Remove any path after the port (e.g., /ws, /path) - but only if there's actually a path
+# Check if URL contains a / after the protocol:// part, and if so, remove everything after the first /
+# Pattern: protocol://host:port/path -> keep only protocol://host:port
+if echo "$MQTT_BROKER" | grep -qE "^(ssl|tcp)://.*/"; then
+    # URL has a path, extract only protocol://host:port part
+    # Use cut to get everything before the first / after protocol://
+    # First, remove the protocol part, then find first /, then reconstruct
+    PROTOCOL=$(echo "$MQTT_BROKER" | sed 's|://.*$||')
+    REST=$(echo "$MQTT_BROKER" | sed 's|^[^:]*://||' | cut -d'/' -f1)
+    MQTT_BROKER="${PROTOCOL}://${REST}"
+fi
 # Ensure proper format: protocol://host:port
 if echo "$MQTT_BROKER" | grep -qvE "^(tcp|ssl)://"; then
     # If no protocol or wrong protocol, fix it
