@@ -91,6 +91,8 @@ services:
     image: emqx/emqx:5.3.0
     container_name: spotfi-emqx
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "1883:1883"   # MQTT TCP
       - "8083:8083"   # MQTT WebSocket
@@ -116,12 +118,12 @@ services:
       EMQX_AUTHENTICATION__1__ENABLE_CACHE: "true"
       EMQX_AUTHENTICATION__1__CACHE_TTL: "1m"
 
-      # API User Authentication (Built-in Database)
-      # This allows API users to authenticate separately from routers
-      # You must create the API user via EMQX Dashboard (port 18083) or API
-      # Username should match MQTT_USERNAME, password should match MQTT_PASSWORD
-      EMQX_AUTHENTICATION__2__MECHANISM: "password_based"
-      EMQX_AUTHENTICATION__2__BACKEND: "built_in_database"
+      # 2. JWT Authentication (For Backend API)
+      # Replaces built-in database auth. Validates tokens signed with JWT_SECRET.
+      EMQX_AUTHENTICATION__2__MECHANISM: "jwt"
+      EMQX_AUTHENTICATION__2__ALGORITHM: "hmac-based"
+      EMQX_AUTHENTICATION__2__SECRET: "${JWT_SECRET}"
+      EMQX_AUTHENTICATION__2__FROM: "password"
       EMQX_AUTHENTICATION__2__ENABLE: "true"
 
       # --- Authorization (ACL) Logic ---

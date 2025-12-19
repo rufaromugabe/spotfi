@@ -149,15 +149,24 @@ await fastify.register(terminalRoutes);
 
 // Setup WebSocket server
 // Initialize MQTT connection
+// The API uses a generated JWT token for authentication with EMQX
+// This replaces the legacy password-based authentication for the backend
 const mqttBroker = process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
-const mqttUsername = process.env.MQTT_USERNAME;
-const mqttPassword = process.env.MQTT_PASSWORD;
-const mqttService = initMqtt(mqttBroker, fastify.log, mqttUsername, mqttPassword);
+// Default to 'api_user' to match the ACL query in docker-compose
+const mqttUsername = process.env.MQTT_USERNAME || 'api_user'; 
 
-if (!mqttUsername || !mqttPassword) {
-    fastify.log.warn('⚠️  MQTT credentials not set. If MQTT broker requires authentication, connection will fail.');
-    fastify.log.warn('   Set MQTT_USERNAME and MQTT_PASSWORD environment variables.');
-}
+// Generate JWT for backend access
+// This uses the same JWT_SECRET shared with EMQX
+// Generate a long-lived token (10 years) for the backend service
+// Payload 'username' must match the MQTT username for ACL checks
+const mqttPassword = fastify.jwt.sign({
+  username: mqttUsername,
+  superuser: true
+}, { expiresIn: '3650d' }); 
+
+fastify.log.info(`Generated JWT for MQTT authentication (user: ${mqttUsername})`);
+
+const mqttService = initMqtt(mqttBroker, fastify.log, mqttUsername, mqttPassword);
 
 // Setup WebSocket server (now safe after MQTT is ready)
 setupWebSocket(fastify);
