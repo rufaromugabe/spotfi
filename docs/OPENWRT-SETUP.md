@@ -546,7 +546,7 @@ The Go-based bridge cannot connect to the MQTT broker. This could be due to:
   - Trailing slash before port: `mqtts://mqtt.example.com/:8883` ❌
   - Should be: `mqtts://mqtt.example.com:8883` ✅
 - Network connectivity issues
-- Firewall blocking MQTT ports (8883 for SSL, 1883 for TCP)
+- Firewall blocking MQTT ports (8883 for SSL/TLS, 1883 for non-SSL)
 - MQTT broker authentication failure
 - Old bridge binary version
 
@@ -571,19 +571,13 @@ cat /etc/spotfi.env
 # Edit the config file
 vi /etc/spotfi.env
 
-# Fix the SPOTFI_MQTT_BROKER line:
-# Examples of incorrect formats:
-#   mqtts://mqtt.example.com/:8883  (wrong - trailing slash)
-#   ssl://mqtt.example.com:8883     (wrong - use mqtts:// instead)
-#   mqtt://mqtt.example.com/1883    (wrong - trailing slash)
-#
-# Correct formats:
-#   mqtt://mqtt.example.com:1883    (non-SSL on port 1883) ✅
-#   mqtts://mqtt.example.com:8883   (SSL/TLS on port 8883) ✅
-
-# Example fix (change from SSL to non-SSL):
-# Change: SPOTFI_MQTT_BROKER="mqtts://mqtt.31.97.217.241.sslip.io:8883"
-# To:     SPOTFI_MQTT_BROKER="mqtt://mqtt.31.97.217.241.sslip.io:1883"
+# Fix the SPOTFI_MQTT_BROKER line to use correct format:
+#   mqtt://mqtt.example.com:1883    (non-SSL) ✅
+#   mqtts://mqtt.example.com:8883    (SSL/TLS) ✅
+# 
+# Common mistakes to avoid:
+#   - Trailing slash: mqtts://mqtt.example.com/:8883 ❌
+#   - Wrong protocol: ssl://mqtt.example.com:8883 ❌ (use mqtts://)
 
 # Or re-run setup script with correct URL format
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
