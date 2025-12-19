@@ -88,6 +88,64 @@ func main() {
 		log.Fatal("Missing configuration: SPOTFI_ROUTER_ID not set. Router ID is required for MQTT authentication.")
 	}
 
+	// Initialize global SessionManager (will be set up after MQTT connection)
+	// This function will be used by SessionManager to publish messages
+	var publishFunc func(topic string, v interface{}) error
+
+	// Setup subscriptions function - called on initial connect and on reconnect
+	setupSubscriptions := func() {
+		if mqttClient == nil {
+			return
+		}
+
+		// 1. RPC Requests
+		rpcTopic := fmt.Sprintf("spotfi/router/%s/rpc/request", routerID)
+		err := mqttClient.Subscribe(rpcTopic, func(c paho.Client, m paho.Message) {
+			var msg map[string]interface{}
+			if err := json.Unmarshal(m.Payload(), &msg); err != nil {
+				log.Printf("Invalid RPC JSON: %v", err)
+				return
+			}
+
+			// Respond via MQTT
+			sendFunc := func(v interface{}) error {
+				payload, _ := json.Marshal(v)
+				return mqttClient.Publish(fmt.Sprintf("spotfi/router/%s/rpc/response", routerID), payload)
+			}
+
+			go rpc.HandleRPC(msg, sendFunc)
+		})
+		if err != nil {
+			log.Printf("Failed to subscribe to RPC: %v", err)
+		} else {
+			log.Printf("Subscribed to RPC topic: %s", rpcTopic)
+		}
+
+		// 2. X-Tunnel Data (Inbound - from API to Router)
+		xTopic := fmt.Sprintf("spotfi/router/%s/x/in", routerID)
+		err = mqttClient.Subscribe(xTopic, func(c paho.Client, m paho.Message) {
+			var msg map[string]interface{}
+			if err := json.Unmarshal(m.Payload(), &msg); err != nil {
+				return
+			}
+
+			msgType, _ := msg["type"].(string)
+			switch msgType {
+			case "x-start":
+				go sm.HandleStart(msg)
+			case "x-data":
+				sm.HandleData(msg)
+			case "x-stop":
+				sm.HandleStop(msg)
+			}
+		})
+		if err != nil {
+			log.Printf("Failed to subscribe to X-Tunnel: %v", err)
+		} else {
+			log.Printf("Subscribed to X-Tunnel topic: %s", xTopic)
+		}
+	}
+
 	// Connect to MQTT
 	// Username = Router ID (from database)
 	// Password = Router Token
@@ -101,8 +159,11 @@ func main() {
 	const maxBackoff = 30 * time.Second
 
 	for {
+		// OnConnectHandler will re-subscribe on every reconnect
 		client, err = mqtt.NewClient(brokerURL, clientID, routerID, cfg.Token, func(c paho.Client) {
 			log.Println("MQTT Client Connected")
+			// Re-subscribe on reconnect (subscriptions are lost with CleanSession=true)
+			setupSubscriptions()
 		})
 		if err == nil {
 			break
@@ -123,8 +184,8 @@ func main() {
 	mqttClient = client
 	defer mqttClient.Close()
 
-	// Initialize global SessionManager pointing to MQTT
-	sm = session.NewSessionManager(func(topic string, v interface{}) error {
+	// Set up publish function for SessionManager
+	publishFunc = func(topic string, v interface{}) error {
 		payload, _ := json.Marshal(v)
 		// Use provided topic if possible, fallback to standard out topic
 		pubTopic := topic
@@ -132,49 +193,13 @@ func main() {
 			pubTopic = fmt.Sprintf("spotfi/router/%s/x/out", routerID)
 		}
 		return mqttClient.Publish(pubTopic, payload)
-	})
-
-	// Topic Handlers
-
-	// 1. RPC Requests
-	rpcTopic := fmt.Sprintf("spotfi/router/%s/rpc/request", routerID)
-	err = mqttClient.Subscribe(rpcTopic, func(c paho.Client, m paho.Message) {
-		var msg map[string]interface{}
-		if err := json.Unmarshal(m.Payload(), &msg); err != nil {
-			log.Printf("Invalid RPC JSON: %v", err)
-			return
-		}
-
-		// Respond via MQTT
-		sendFunc := func(v interface{}) error {
-			payload, _ := json.Marshal(v)
-			return mqttClient.Publish(fmt.Sprintf("spotfi/router/%s/rpc/response", routerID), payload)
-		}
-
-		go rpc.HandleRPC(msg, sendFunc)
-	})
-	if err != nil {
-		log.Printf("Failed to subscribe to RPC: %v", err)
 	}
 
-	// 2. X-Tunnel Data (Inbound - from API to Router)
-	xTopic := fmt.Sprintf("spotfi/router/%s/x/in", routerID)
-	mqttClient.Subscribe(xTopic, func(c paho.Client, m paho.Message) {
-		var msg map[string]interface{}
-		if err := json.Unmarshal(m.Payload(), &msg); err != nil {
-			return
-		}
+	// Initialize global SessionManager pointing to MQTT
+	sm = session.NewSessionManager(publishFunc)
 
-		msgType, _ := msg["type"].(string)
-		switch msgType {
-		case "x-start":
-			go sm.HandleStart(msg)
-		case "x-data":
-			sm.HandleData(msg)
-		case "x-stop":
-			sm.HandleStop(msg)
-		}
-	})
+	// Set up subscriptions on initial connect
+	setupSubscriptions()
 
 	log.Printf("SpotFi Bridge (MQTT) Started. ID: %s", routerID)
 
