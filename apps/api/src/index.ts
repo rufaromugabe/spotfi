@@ -175,14 +175,14 @@ const SHARED_GROUP = 'api_cluster';
 const responseTopic = `$share/${SHARED_GROUP}/spotfi/router/+/rpc/response`;
 fastify.log.info(`Subscribing to RPC response topic: ${responseTopic}`);
 mqttService.subscribe(responseTopic, (topic: string, message: any) => {
-  fastify.log.debug(`[RPC Response] Received on topic ${topic}, message:`, JSON.stringify(message));
+  fastify.log.debug(`[RPC Response] Received on topic ${topic}, message: ${JSON.stringify(message)}`);
   
   // Extract command ID from message (assumes message has id field)
   if (message.id) {
     fastify.log.debug(`[RPC Response] Handling response for command ID: ${message.id}`);
     commandManager.handleResponse(message.id, message);
   } else {
-    fastify.log.warn(`[RPC Response] Received response without id field. Topic: ${topic}, Message keys:`, Object.keys(message));
+    fastify.log.warn(`[RPC Response] Received response without id field. Topic: ${topic}, Message keys: ${Object.keys(message).join(', ')}`);
   }
 });
 
