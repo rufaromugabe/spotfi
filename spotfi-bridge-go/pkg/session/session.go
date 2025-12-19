@@ -48,9 +48,9 @@ func (sm *SessionManager) sweepGhostSessions() {
 				if sess.Cmd.Process != nil {
 					sess.Cmd.Process.Kill()
 				}
-				delete(sm.sessions, id)
-			}
-		}
+		delete(sm.sessions, id)
+	}
+}
 		sm.mu.Unlock()
 	}
 }
@@ -67,7 +67,12 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 
 	// Create command
 	c := exec.Command("/bin/sh")
-	c.Env = append(os.Environ(), "TERM=xterm-256color", "HOME=/root")
+	// Set proper terminal environment variables to prevent echo issues
+	c.Env = append(os.Environ(), 
+		"TERM=xterm-256color",
+		"HOME=/root",
+		"PS1=$ ", // Simple prompt to avoid issues
+	)
 
 	// Start PTY
 	f, err := pty.Start(c)
@@ -82,6 +87,17 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 
 	// Set window size (standard)
 	pty.Setsize(f, &pty.Winsize{Rows: 24, Cols: 80})
+
+	// Configure terminal settings to prevent character duplication
+	// The PTY library handles most of this, but we ensure proper echo behavior
+	// by configuring the shell's terminal settings after it starts
+	go func() {
+		// Wait for shell to be ready
+		time.Sleep(200 * time.Millisecond)
+		// Reset terminal to sane defaults and ensure proper echo behavior
+		// This prevents the triple-character echo issue
+		f.Write([]byte("stty sane\r"))
+	}()
 
 	sess := &XSession{
 		ID:            sessionID,
