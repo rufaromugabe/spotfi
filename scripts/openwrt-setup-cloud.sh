@@ -402,8 +402,16 @@ start_service() {
         exit 1
     }
     
+    # Load environment variables from /etc/spotfi.env
+    # Export them so the bridge can read them via os.Getenv()
+    . /etc/spotfi.env
+    
     procd_open_instance
     procd_set_param command $PROG
+    # Export environment variables from spotfi.env
+    procd_set_param env SPOTFI_TOKEN="$SPOTFI_TOKEN"
+    procd_set_param env SPOTFI_MQTT_BROKER="$SPOTFI_MQTT_BROKER"
+    [ -n "$SPOTFI_MAC" ] && procd_set_param env SPOTFI_MAC="$SPOTFI_MAC"
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1
