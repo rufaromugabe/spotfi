@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -66,7 +67,24 @@ func NewClient(brokerURL, clientID, username, password string, onConnect mqtt.On
 }
 
 func (c *Client) Publish(topic string, payload interface{}) error {
-	token := c.client.Publish(topic, 0, false, payload)
+	// Convert payload to []byte
+	var payloadBytes []byte
+	var err error
+	
+	switch v := payload.(type) {
+	case []byte:
+		payloadBytes = v
+	case string:
+		payloadBytes = []byte(v)
+	default:
+		// JSON marshal maps, structs, etc.
+		payloadBytes, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal payload: %w", err)
+		}
+	}
+	
+	token := c.client.Publish(topic, 0, false, payloadBytes)
 	token.Wait()
 	return token.Error()
 }
