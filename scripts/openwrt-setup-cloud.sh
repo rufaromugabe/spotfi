@@ -31,7 +31,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo ""
     echo "Arguments:"
     echo "  TOKEN         - Router token from SpotFi dashboard (required)"
-    echo "  MQTT_BROKER   - (Optional) MQTT Broker URL (default: ssl://mqtt.spotfi.cloud:8883)"
+    echo "  MQTT_BROKER   - (Optional) MQTT Broker URL (default: mqtts://mqtt.spotfi.cloud:8883)"
     echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
     echo ""
     echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
@@ -39,7 +39,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo ""
     echo "Example:"
     echo "  $0 your-router-token-here"
-    echo "  $0 your-router-token-here ssl://mqtt.example.com:8883"
+    echo "  $0 your-router-token-here mqtts://mqtt.example.com:8883"
     echo ""
     exit 1
 fi
@@ -47,17 +47,17 @@ fi
 TOKEN="$1"
 
 # Smart parameter detection:
-# - If $2 looks like MQTT broker (starts with ssl:// or tcp://), treat it as MQTT_BROKER
+# - If $2 looks like MQTT broker (starts with mqtts://, mqtt://, ssl://, or tcp://), treat it as MQTT_BROKER
 # - If $2 looks like GitHub token (starts with ghp_), treat it as GITHUB_TOKEN
 
 if [ -n "$2" ]; then
-  if echo "$2" | grep -qE "^(ssl|tcp)://"; then
+  if echo "$2" | grep -qE "^(mqtts|mqtt|ssl|tcp)://"; then
     # $2 is MQTT broker URL
     MQTT_BROKER="$2"
     GITHUB_TOKEN_PARAM="${3:-}"
   elif echo "$2" | grep -q "^ghp_"; then
     # $2 is GitHub token (user skipped MQTT broker)
-    MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+    MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
     GITHUB_TOKEN_PARAM="$2"
   else
     # Unknown format, assume it's MQTT broker without protocol
@@ -66,14 +66,14 @@ if [ -n "$2" ]; then
   fi
 else
   # No $2 provided, use defaults
-  MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+  MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
   GITHUB_TOKEN_PARAM="${3:-}"
 fi
 
 # Handle GitHub token in MQTT_BROKER position (if user passed token as 2nd arg)
 if echo "$MQTT_BROKER" | grep -q "^ghp_"; then
   GITHUB_TOKEN_PARAM="$MQTT_BROKER"
-  MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+  MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
 fi
 
 # Get GitHub token from multiple sources (priority: parameter > env var > file)
@@ -87,7 +87,8 @@ elif [ -f /etc/github_token ]; then
 fi
 
 # Normalize MQTT Broker URL: remove trailing slashes, paths, and query parameters
-# MQTT URLs should be: tcp://host:port or ssl://host:port (no trailing slash, no path, no query params)
+# MQTT URLs should be: mqtt://host:port or mqtts://host:port (no trailing slash, no path, no query params)
+# Also support legacy ssl:// and tcp:// for backward compatibility
 # Remove query parameters (everything after ?)
 MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|?.*$||')
 # Remove trailing slash if present
@@ -95,7 +96,7 @@ MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|/$||')
 # Remove any path after the port (e.g., /ws, /path) - but only if there's actually a path
 # Check if URL contains a / after the protocol:// part, and if so, remove everything after the first /
 # Pattern: protocol://host:port/path -> keep only protocol://host:port
-if echo "$MQTT_BROKER" | grep -qE "^(ssl|tcp)://.*/"; then
+if echo "$MQTT_BROKER" | grep -qE "^(mqtts|mqtt|ssl|tcp)://.*/"; then
     # URL has a path, extract only protocol://host:port part
     # Use cut to get everything before the first / after protocol://
     # First, remove the protocol part, then find first /, then reconstruct
@@ -103,15 +104,23 @@ if echo "$MQTT_BROKER" | grep -qE "^(ssl|tcp)://.*/"; then
     REST=$(echo "$MQTT_BROKER" | sed 's|^[^:]*://||' | cut -d'/' -f1)
     MQTT_BROKER="${PROTOCOL}://${REST}"
 fi
+# Convert legacy protocols to standard MQTT protocols
+# ssl:// -> mqtts:// (SSL/TLS)
+# tcp:// -> mqtt:// (non-SSL)
+if echo "$MQTT_BROKER" | grep -qE "^ssl://"; then
+    MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|^ssl://|mqtts://|')
+elif echo "$MQTT_BROKER" | grep -qE "^tcp://"; then
+    MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|^tcp://|mqtt://|')
+fi
 # Ensure proper format: protocol://host:port
-if echo "$MQTT_BROKER" | grep -qvE "^(tcp|ssl)://"; then
+if echo "$MQTT_BROKER" | grep -qvE "^(mqtts|mqtt)://"; then
     # If no protocol or wrong protocol, fix it
     if echo "$MQTT_BROKER" | grep -qE "://"; then
-        # Has protocol but wrong one (ws/wss), replace with ssl
-        MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|^wss\?://|ssl://|')
+        # Has protocol but wrong one (ws/wss), replace with mqtts
+        MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|^wss\?://|mqtts://|')
     else
-        # No protocol, assume ssl://
-        MQTT_BROKER="ssl://${MQTT_BROKER}"
+        # No protocol, assume mqtts:// (SSL/TLS)
+        MQTT_BROKER="mqtts://${MQTT_BROKER}"
     fi
 fi
 

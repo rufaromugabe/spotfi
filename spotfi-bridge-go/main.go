@@ -68,10 +68,16 @@ func main() {
 	}
 
 	// Determine Broker URL
+	// Try environment variable first, then config file, then default
 	brokerURL := os.Getenv("SPOTFI_MQTT_BROKER")
+	if brokerURL == "" {
+		brokerURL = cfg.MQTTBroker
+	}
 	if brokerURL == "" {
 		brokerURL = "tcp://emqx:1883" // Default for manual testing
 		log.Printf("Using default broker: %s", brokerURL)
+	} else {
+		log.Printf("Using MQTT broker: %s", brokerURL)
 	}
 
 	// Router ID (Token only mode supported but need ID for topics)

@@ -172,27 +172,28 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 **Cloudflare Tunnel-like Setup - Just provide your token!**
 
 ```bash
-# Basic usage (uses default MQTT broker: ssl://mqtt.spotfi.cloud:8883)
+# Basic usage (uses default MQTT broker: mqtts://mqtt.spotfi.cloud:8883)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
 # With custom MQTT broker (for self-hosting)
 # Format: sh script.sh TOKEN MQTT_BROKER GITHUB_TOKEN
-# IMPORTANT: MQTT broker URL must be: ssl://host:port or tcp://host:port (no trailing slash!)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883
+# IMPORTANT: MQTT broker URL must be: mqtts://host:port or mqtt://host:port (no trailing slash!)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtts://mqtt.example.com:8883
 
 
 
 # With GitHub token (if not stored in /etc/github_token)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883 ghp_your_token_here
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtts://mqtt.example.com:8883 ghp_your_token_here
 ```
 
 **Note:** 
 - The SpotFi bridge uses **MQTT only** - no WebSocket connections. All communication flows through the MQTT broker.
-- **MQTT Broker URL Format:** Must be `ssl://host:port` or `tcp://host:port` (no trailing slash, no path, no query parameters)
-  - ✅ Correct: `ssl://mqtt.example.com:8883`
-  - ❌ Wrong: `ssl://mqtt.example.com/:8883` (trailing slash before port)
-  - ❌ Wrong: `ssl://mqtt.example.com:8883/ws` (path)
-  - ❌ Wrong: `ssl://mqtt.example.com:8883?token=xxx` (query params)
+- **MQTT Broker URL Format:** Must be `mqtts://host:port` or `mqtt://host:port` (no trailing slash, no path, no query parameters)
+  - ✅ Correct: `mqtts://mqtt.example.com:8883` (SSL/TLS)
+  - ✅ Correct: `mqtt://mqtt.example.com:1883` (non-SSL)
+  - ❌ Wrong: `mqtts://mqtt.example.com/:8883` (trailing slash before port)
+  - ❌ Wrong: `mqtts://mqtt.example.com:8883/ws` (path)
+  - ❌ Wrong: `mqtts://mqtt.example.com:8883?token=xxx` (query params)
 
 **Example:**
 
@@ -215,7 +216,7 @@ The script creates `/etc/spotfi.env` with:
 
 ```bash
 SPOTFI_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-SPOTFI_MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+SPOTFI_MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
 SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 ```
 
@@ -536,14 +537,14 @@ MQTT connection failed: connection refused
 or
 Failed to connect to MQTT broker
 or
-Connecting to ssl://mqtt.example.com/:8883/ws?mac=...&token=...
+Connecting to mqtts://mqtt.example.com/:8883/ws?mac=...&token=...
 ```
 
 **Cause:**
 The Go-based bridge cannot connect to the MQTT broker. This could be due to:
 - **Incorrect MQTT broker URL format** (most common)
-  - Trailing slash before port: `ssl://mqtt.example.com/:8883` ❌
-  - Should be: `ssl://mqtt.example.com:8883` ✅
+  - Trailing slash before port: `mqtts://mqtt.example.com/:8883` ❌
+  - Should be: `mqtts://mqtt.example.com:8883` ✅
 - Network connectivity issues
 - Firewall blocking MQTT ports (8883 for SSL, 1883 for TCP)
 - MQTT broker authentication failure
@@ -558,7 +559,10 @@ The Go-based bridge cannot connect to the MQTT broker. This could be due to:
 cat /etc/spotfi.env
 
 # Check if MQTT broker URL has trailing slash or incorrect format
-# Should be: ssl://host:port (no trailing slash, no path, no query params)
+# Correct formats:
+#   - Non-SSL: mqtt://host:port (e.g., mqtt://mqtt.example.com:1883)
+#   - SSL/TLS: mqtts://host:port (e.g., mqtts://mqtt.example.com:8883)
+# Should NOT have: trailing slash, path, or query params
 ```
 
 2. **Fix MQTT Broker URL:**
@@ -568,12 +572,22 @@ cat /etc/spotfi.env
 vi /etc/spotfi.env
 
 # Fix the SPOTFI_MQTT_BROKER line:
-# Change: ssl://mqtt.example.com/:8883  (wrong - trailing slash)
-# To:     ssl://mqtt.example.com:8883   (correct)
+# Examples of incorrect formats:
+#   mqtts://mqtt.example.com/:8883  (wrong - trailing slash)
+#   ssl://mqtt.example.com:8883     (wrong - use mqtts:// instead)
+#   mqtt://mqtt.example.com/1883    (wrong - trailing slash)
+#
+# Correct formats:
+#   mqtt://mqtt.example.com:1883    (non-SSL on port 1883) ✅
+#   mqtts://mqtt.example.com:8883   (SSL/TLS on port 8883) ✅
+
+# Example fix (change from SSL to non-SSL):
+# Change: SPOTFI_MQTT_BROKER="mqtts://mqtt.31.97.217.241.sslip.io:8883"
+# To:     SPOTFI_MQTT_BROKER="mqtt://mqtt.31.97.217.241.sslip.io:1883"
 
 # Or re-run setup script with correct URL format
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN mqtt://mqtt.example.com:1883
 ```
 
 3. **Restart Bridge:**

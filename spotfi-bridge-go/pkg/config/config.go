@@ -13,6 +13,7 @@ type Config struct {
 	Mac        string
 	WsURL      string
 	RouterName string
+	MQTTBroker string
 }
 
 // LoadEnv loads .env file manually to avoid extra dependencies
@@ -52,6 +53,8 @@ func LoadEnv() Config {
 			config.WsURL = val
 		case "SPOTFI_ROUTER_NAME":
 			config.RouterName = val
+		case "SPOTFI_MQTT_BROKER":
+			config.MQTTBroker = val
 		}
 	}
 	return config
