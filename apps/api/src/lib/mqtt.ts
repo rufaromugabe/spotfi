@@ -37,8 +37,12 @@ export class MqttService {
 
     private resubscribe() {
         this.messageHandlers.forEach((_, filter) => {
-            this.client.subscribe(filter, (err) => {
-                if (err) this.logger?.error(`Failed to subscribe to ${filter}: ${err.message}`);
+            this.client.subscribe(filter, (err, granted) => {
+                if (err) {
+                    this.logger?.error(`Failed to subscribe to ${filter}: ${err.message}`);
+                } else {
+                    this.logger?.debug(`Subscribed to ${filter}, granted: ${JSON.stringify(granted)}`);
+                }
             });
         });
     }
@@ -65,8 +69,19 @@ export class MqttService {
     }
 
     // Simple wildcard matcher for MQTT topics (+ and #)
+    // Handles shared subscriptions ($share/group/...) by stripping the prefix
     private mqttMatch(filter: string, topic: string): boolean {
-        const filterParts = filter.split('/');
+        // Strip $share/group/ prefix if present (brokers strip this before matching)
+        let actualFilter = filter;
+        if (filter.startsWith('$share/')) {
+            // Remove $share/group/ prefix to get the actual topic filter
+            const parts = filter.split('/');
+            if (parts.length >= 3) {
+                actualFilter = parts.slice(2).join('/');
+            }
+        }
+
+        const filterParts = actualFilter.split('/');
         const topicParts = topic.split('/');
 
         for (let i = 0; i < filterParts.length; i++) {
@@ -80,7 +95,15 @@ export class MqttService {
     public subscribe(topicFilter: string, handler: (topic: string, message: any) => void) {
         this.messageHandlers.set(topicFilter, handler);
         if (this.client.connected) {
-            this.client.subscribe(topicFilter);
+            this.client.subscribe(topicFilter, (err, granted) => {
+                if (err) {
+                    this.logger?.error(`Failed to subscribe to ${topicFilter}: ${err.message}`);
+                } else {
+                    this.logger?.info(`Subscribed to ${topicFilter}, granted: ${JSON.stringify(granted)}`);
+                }
+            });
+        } else {
+            this.logger?.debug(`Queueing subscription to ${topicFilter} (client not connected yet)`);
         }
     }
 
