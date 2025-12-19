@@ -60,8 +60,9 @@ services:
       # ACL Query: 
       # - Routers get access to their own topics: spotfi/router/{id}/# and spotfi/api/#
       # - API users (username = 'api_user') get full access to all router topics
+      # Note: EMQX requires one row per topic (not arrays), so we use UNION ALL to return multiple topics
       # Note: Update 'api_user' to match your MQTT_USERNAME
-      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/+/#', 'spotfi/api/#'] as topics FROM (SELECT 1) WHERE $${username} = 'api_user'"
+      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, 'spotfi/router/' || id || '/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/router/+/#' as topic FROM (SELECT 1) WHERE $${username} = 'api_user' UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM (SELECT 1) WHERE $${username} = 'api_user'"
     
     volumes:
       - vol-emqx-data:/opt/emqx/data
