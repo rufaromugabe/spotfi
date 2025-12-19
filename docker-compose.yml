@@ -25,12 +25,7 @@ services:
       - "8883:8883"
       - "18083:18083"
     environment:
-      EMQX_ALLOW_ANONYMOUS: "true" # For dev simplicity. Prod should use false.
-      EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management"
-      # --- Production Authentication (Uncomment/Verify vars for Prod) ---
-      EMQX_ALLOW_ANONYMOUS: "false" # Hardened for production
-      EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management,emqx_auth_pgsql"
-      # --- Production Authentication & Authorization ---
+      EMQX_ALLOW_ANONYMOUS: "false"
       EMQX_AUTHENTICATION__1__MECHANISM: "password_based"
       EMQX_AUTHENTICATION__1__BACKEND: "postgresql"
       EMQX_AUTHENTICATION__1__ENABLE: "true"
@@ -39,7 +34,7 @@ services:
       EMQX_AUTHENTICATION__1__USERNAME: "postgres"
       EMQX_AUTHENTICATION__1__PASSWORD: "password"
       EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = $${username}"
-      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain"
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "{name = plain}"
       
       # --- Authorization (ACL) Logic ---
       # Restrict routers to their own topic tree

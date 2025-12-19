@@ -98,20 +98,21 @@ services:
     environment:
       # Production: Disable anonymous, enable Postgres Auth
       EMQX_ALLOW_ANONYMOUS: "false"
-      EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management"
       
       # Postgres Authentication
       EMQX_AUTHENTICATION__1__MECHANISM: "password_based"
       EMQX_AUTHENTICATION__1__BACKEND: "postgresql"
       EMQX_AUTHENTICATION__1__ENABLE: "true"
-      EMQX_AUTHENTICATION__1__ENABLE_CACHE: "true" # Enable caching
-      EMQX_AUTHENTICATION__1__CACHE_TTL: "1m"      # 1 minute cache
       EMQX_AUTHENTICATION__1__SERVER: "postgres:5432"
       EMQX_AUTHENTICATION__1__DATABASE: "${POSTGRES_DB:-spotfi}"
       EMQX_AUTHENTICATION__1__USERNAME: "${POSTGRES_USER:-postgres}"
       EMQX_AUTHENTICATION__1__PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
       EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = $${username}"
-      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "plain" # Token is the password
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "{name = plain}"
+      
+      # Cache settings (5.3.0 schema)
+      EMQX_AUTHENTICATION__1__ENABLE_CACHE: "true"
+      EMQX_AUTHENTICATION__1__CACHE_TTL: "1m"
 
       # --- Authorization (ACL) Logic ---
       # Restrict routers to their own topic tree
