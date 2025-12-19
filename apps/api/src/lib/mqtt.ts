@@ -60,18 +60,21 @@ export class MqttService {
             message = { payload: payloadStr };
         }
 
+        // Log all received messages for debugging
+        this.logger?.info(`[MQTT] Message received on ${topic} (${payload.length} bytes)`);
+
         // Naive topic matching for now (can be improved with mqtt-match)
         let matched = false;
         for (const [filter, handler] of this.messageHandlers.entries()) {
             if (this.mqttMatch(filter, topic)) {
-                this.logger?.debug(`[MQTT] Message received on ${topic} (matched filter: ${filter})`);
+                this.logger?.info(`[MQTT] Message matched filter ${filter}, calling handler`);
                 handler(topic, message);
                 matched = true;
             }
         }
         
         if (!matched) {
-            this.logger?.warn(`[MQTT] Received message on ${topic} but no handler matched`);
+            this.logger?.warn(`[MQTT] Received message on ${topic} but no handler matched (payload: ${payloadStr.substring(0, 100)})`);
         }
     }
 
