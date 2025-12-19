@@ -47,6 +47,10 @@ export async function terminalRoutes(fastify: FastifyInstance) {
       cursorBlink: true,
       scrollback: 1000,
       convertEol: true,
+      disableStdin: false,
+      // Disable local echo - let the server/shell handle all echoing
+      // This prevents character duplication issues
+      localEcho: false,
       theme: {
         background: '#0b0f16',
         foreground: '#e2e8f0',

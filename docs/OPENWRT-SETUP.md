@@ -109,6 +109,8 @@ wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromuga
 chmod +x /tmp/openwrt-setup-cloud.sh
 ```
 
+ sh /tmp/openwrt-setup-cloud.sh c1d8c313e9f3d4db701943de1db3219d9ebaa0471eda5aad4f4117228331de5c mqtt://mqtt.31.97.217.241.sslip.io:1883 cmj5tqoms0002ylu25pft7k17
+
 **For Private Repository (with GitHub Token):**
 
 > **Note:** BusyBox `wget` on OpenWRT doesn't support `--header`. Use `curl` instead, or install full `wget`.

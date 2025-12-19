@@ -100,15 +100,22 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 	// Set window size (standard)
 	pty.Setsize(f, &pty.Winsize{Rows: 24, Cols: 80})
 
-	// Configure terminal settings to prevent character duplication
-	// The PTY library handles most of this, but we ensure proper echo behavior
-	// by configuring the shell's terminal settings after it starts
+	// Configure terminal to prevent character duplication
+	// Send terminal configuration commands to ensure proper echo behavior
 	go func() {
-		// Wait for shell to be ready
-		time.Sleep(200 * time.Millisecond)
-		// Reset terminal to sane defaults and ensure proper echo behavior
-		// This prevents the triple-character echo issue
+		// Wait for shell to be fully ready
+		time.Sleep(400 * time.Millisecond)
+		
+		// Reset terminal to known good state
+		// This clears any problematic terminal settings
 		f.Write([]byte("stty sane\r"))
+		time.Sleep(50 * time.Millisecond)
+		
+		// Configure for proper terminal behavior:
+		// - Enable canonical mode (line editing works properly)
+		// - Ensure echo is handled correctly by the shell
+		// - Set proper terminal characteristics
+		f.Write([]byte("stty icanon echo echoe echok\r"))
 	}()
 
 	sess := &XSession{
