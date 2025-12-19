@@ -39,16 +39,27 @@ services:
       EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = $${username}"
       EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "{name = plain}"
       
+      # API User Authentication (Built-in Database)
+      # This allows API users to authenticate separately from routers
+      # You must create the API user via EMQX Dashboard (port 18083) or API
+      # Username should match MQTT_USERNAME, password should match MQTT_PASSWORD
+      EMQX_AUTHENTICATION__2__MECHANISM: "password_based"
+      EMQX_AUTHENTICATION__2__BACKEND: "built_in_database"
+      EMQX_AUTHENTICATION__2__ENABLE: "true"
+
       # --- Authorization (ACL) Logic ---
-      # Restrict routers to their own topic tree
+      # Restrict routers to their own topic tree, allow API users full access
       EMQX_AUTHORIZATION__SOURCES__1__TYPE: "postgresql"
       EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
       EMQX_AUTHORIZATION__SOURCES__1__SERVER: "postgres:5432"
       EMQX_AUTHORIZATION__SOURCES__1__DATABASE: "spotfi"
       EMQX_AUTHORIZATION__SOURCES__1__USERNAME: "postgres"
       EMQX_AUTHORIZATION__SOURCES__1__PASSWORD: "password"
-      # ACL Query: Routers can move anything in spotfi/router/{id}/ but nowhere else
-      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = $${username}"
+      # ACL Query: 
+      # - Routers get access to their own topics: spotfi/router/{id}/# and spotfi/api/#
+      # - API users (username = 'api_user') get full access to all router topics
+      # Note: Update 'api_user' to match your MQTT_USERNAME
+      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/' || id || '/#', 'spotfi/api/#'] as topics FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, ARRAY['spotfi/router/+/#', 'spotfi/api/#'] as topics FROM (SELECT 1) WHERE $${username} = 'api_user'"
     
     volumes:
       - vol-emqx-data:/opt/emqx/data
