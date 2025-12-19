@@ -45,11 +45,15 @@ export class MqttService {
 
     private handleMessage(topic: string, payload: Buffer) {
         let message: any;
+        const payloadStr = payload.toString();
+        
+        // Try to parse as JSON first
         try {
-            message = JSON.parse(payload.toString());
+            message = JSON.parse(payloadStr);
         } catch (e) {
-            this.logger?.warn(`Received non-JSON MQTT message on ${topic}`);
-            return;
+            // If not JSON, treat as plain string (e.g., "ONLINE", "OFFLINE" status messages)
+            // Wrap it in an object with a 'payload' field for consistency
+            message = { payload: payloadStr };
         }
 
         // Naive topic matching for now (can be improved with mqtt-match)
