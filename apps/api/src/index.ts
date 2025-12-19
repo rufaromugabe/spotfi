@@ -150,7 +150,14 @@ await fastify.register(terminalRoutes);
 // Setup WebSocket server
 // Initialize MQTT connection
 const mqttBroker = process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
-const mqttService = initMqtt(mqttBroker, fastify.log);
+const mqttUsername = process.env.MQTT_USERNAME;
+const mqttPassword = process.env.MQTT_PASSWORD;
+const mqttService = initMqtt(mqttBroker, fastify.log, mqttUsername, mqttPassword);
+
+if (!mqttUsername || !mqttPassword) {
+    fastify.log.warn('⚠️  MQTT credentials not set. If MQTT broker requires authentication, connection will fail.');
+    fastify.log.warn('   Set MQTT_USERNAME and MQTT_PASSWORD environment variables.');
+}
 
 // Setup WebSocket server (now safe after MQTT is ready)
 setupWebSocket(fastify);

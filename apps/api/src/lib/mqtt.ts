@@ -97,7 +97,14 @@ export class MqttService {
 // Singleton instance to be initialized in server.ts
 export let mqttService: MqttService;
 
-export function initMqtt(brokerUrl: string, logger?: FastifyBaseLogger) {
-    mqttService = new MqttService(brokerUrl, {}, logger);
+export function initMqtt(brokerUrl: string, logger?: FastifyBaseLogger, username?: string, password?: string) {
+    const options: IClientOptions = {};
+    if (username) {
+        options.username = username;
+    }
+    if (password) {
+        options.password = password;
+    }
+    mqttService = new MqttService(brokerUrl, options, logger);
     return mqttService;
 }
