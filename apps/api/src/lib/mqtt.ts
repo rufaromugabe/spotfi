@@ -115,7 +115,7 @@ export class MqttService {
                     this.logger?.error(`Failed to publish to ${topic}: ${err.message}`);
                     reject(err);
                 } else {
-                    this.logger?.debug(`Published to ${topic} (${payload.length} bytes)`);
+                    this.logger?.info(`[MQTT] Published to ${topic} (${payload.length} bytes)`);
                     resolve();
                 }
             });

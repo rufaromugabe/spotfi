@@ -175,6 +175,9 @@ import { MqttHandler } from './services/mqtt-handler.js';
 new MqttHandler(fastify.log).setup();
 
 // Configure CommandManager to use MQTT
+// Set logger for command manager to enable RPC logging
+commandManager.setLogger(fastify.log);
+
 // Subscribe to response topic for all routers
 // Note: Using regular subscription (not shared) for single-instance deployments
 // For multi-instance, use: $share/api_cluster/spotfi/router/+/rpc/response
@@ -182,7 +185,7 @@ const responseTopic = 'spotfi/router/+/rpc/response';
 mqttService.subscribe(responseTopic, (topic: string, message: any) => {
   // Extract command ID from message (assumes message has id field)
   if (message.id) {
-    fastify.log.debug(`[RPC] Received response for command ${message.id} from ${topic}`);
+    fastify.log.info(`[RPC] Received response for command ${message.id} from ${topic}`);
     commandManager.handleResponse(message.id, message);
   } else {
     fastify.log.warn(`[RPC] Received response without command ID from ${topic}:`, message);
