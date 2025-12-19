@@ -23,8 +23,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
-    echo "Usage: $0 TOKEN [MQTT_BROKER] [GITHUB_TOKEN]"
+if [ "$#" -lt 1 ] || [ "$#" -gt 4 ]; then
+    echo "Usage: $0 TOKEN [MQTT_BROKER] [ROUTER_ID] [GITHUB_TOKEN]"
     echo ""
     echo "Cloudflare Tunnel-like setup: Just provide your router token."
     echo "All configuration (including uSpot setup) will be done from the cloud."
