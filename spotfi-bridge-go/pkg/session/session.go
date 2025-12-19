@@ -36,21 +36,23 @@ func NewSessionManager(sendFunc func(topic string, payload interface{}) error) *
 }
 
 func (sm *SessionManager) sweepGhostSessions() {
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
 		sm.mu.Lock()
 		now := time.Now()
 		for id, sess := range sm.sessions {
-			if sess.Active && now.Sub(sess.LastActivity) > 10*time.Minute {
+			// Clean up sessions that have been idle for more than 2 minutes
+			// This catches any sessions that didn't get properly closed
+			if sess.Active && now.Sub(sess.LastActivity) > 2*time.Minute {
 				// Kill idle session
 				sess.Active = false
 				sess.Pty.Close()
 				if sess.Cmd.Process != nil {
 					sess.Cmd.Process.Kill()
 				}
-		delete(sm.sessions, id)
-	}
-}
+				delete(sm.sessions, id)
+			}
+		}
 		sm.mu.Unlock()
 	}
 }
@@ -62,8 +64,20 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 		return
 	}
 
-	// Clean existing if present
-	sm.HandleStop(msg)
+	// Clean up ALL existing sessions to prevent multiple active terminals
+	// This fixes the issue where reconnecting creates new sessions but old ones remain active
+	sm.mu.Lock()
+	for id, sess := range sm.sessions {
+		if sess.Active {
+			sess.Active = false
+			sess.Pty.Close()
+			if sess.Cmd.Process != nil {
+				sess.Cmd.Process.Kill()
+			}
+			delete(sm.sessions, id)
+		}
+	}
+	sm.mu.Unlock()
 
 	// Create command
 	c := exec.Command("/bin/sh")
