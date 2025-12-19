@@ -74,7 +74,7 @@ class CommandManager {
         await mqttService.publish(topic, message);
 
         if (this.logger) {
-          this.logger.debug(`[Router ${routerId}] Sent MQTT rpc call: ${params.path}.${params.method} (id: ${commandId})`);
+          this.logger.info(`[RPC] Published to ${topic}: ${params.path}.${params.method} (id: ${commandId})`);
         }
       } catch (error: any) {
         clearTimeout(timeoutId);

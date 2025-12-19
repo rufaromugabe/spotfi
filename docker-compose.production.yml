@@ -102,6 +102,10 @@ services:
       - "8883:8883"   # MQTT SSL
       - "18083:18083" # Dashboard (Restrict access in prod!)
     environment:
+      # Erlang cookie for node clustering (security)
+      # Set a secure random value if planning to cluster EMQX nodes
+      # For single-node deployments, this warning can be ignored
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:-spotfi-secure-cookie-change-in-production}
       # Production: Disable anonymous, enable Postgres Auth
       EMQX_ALLOW_ANONYMOUS: "false"
       
@@ -134,9 +138,8 @@ services:
       EMQX_AUTHORIZATION__SOURCES__1__DATABASE: "${POSTGRES_DB:-spotfi}"
       EMQX_AUTHORIZATION__SOURCES__1__USERNAME: "${POSTGRES_USER:-postgres}"
       EMQX_AUTHORIZATION__SOURCES__1__PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
-      # Enable caching: Reduces DB queries by 99%+ (authorization results cached per client)
-      # Cache TTL: 5 minutes (balance between freshness and performance)
-      EMQX_AUTHORIZATION__SOURCES__1__CACHE_TTL: "5m"
+      # Note: EMQX 5.3.0 automatically caches authorization results per client
+      # No explicit cache configuration needed - caching is built-in and enabled by default
       # ACL Query: 
       # - Routers get access to their own topics: spotfi/router/{id}/# and spotfi/api/#
       # - API users (username matching MQTT_USERNAME) get full access to all router topics

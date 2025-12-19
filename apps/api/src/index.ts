@@ -176,14 +176,19 @@ new MqttHandler(fastify.log).setup();
 
 // Configure CommandManager to use MQTT
 // Subscribe to response topic for all routers
-
-const SHARED_GROUP = 'api_cluster';
-mqttService.subscribe(`$share/${SHARED_GROUP}/spotfi/router/+/rpc/response`, (topic: string, message: any) => {
+// Note: Using regular subscription (not shared) for single-instance deployments
+// For multi-instance, use: $share/api_cluster/spotfi/router/+/rpc/response
+const responseTopic = 'spotfi/router/+/rpc/response';
+mqttService.subscribe(responseTopic, (topic: string, message: any) => {
   // Extract command ID from message (assumes message has id field)
   if (message.id) {
+    fastify.log.debug(`[RPC] Received response for command ${message.id} from ${topic}`);
     commandManager.handleResponse(message.id, message);
+  } else {
+    fastify.log.warn(`[RPC] Received response without command ID from ${topic}:`, message);
   }
 });
+fastify.log.info(`[RPC] Subscribed to MQTT response topic: ${responseTopic}`);
 
 
 // Health check

@@ -80,7 +80,15 @@ export class MqttService {
     public subscribe(topicFilter: string, handler: (topic: string, message: any) => void) {
         this.messageHandlers.set(topicFilter, handler);
         if (this.client.connected) {
-            this.client.subscribe(topicFilter);
+            this.client.subscribe(topicFilter, (err) => {
+                if (err) {
+                    this.logger?.error(`Failed to subscribe to ${topicFilter}: ${err.message}`);
+                } else {
+                    this.logger?.info(`Successfully subscribed to ${topicFilter}`);
+                }
+            });
+        } else {
+            this.logger?.warn(`MQTT not connected yet, subscription to ${topicFilter} will be attempted on connect`);
         }
     }
 
