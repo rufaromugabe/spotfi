@@ -3,6 +3,7 @@ import { AuthenticatedUser } from '../types/fastify.js';
 import { routerRpcService } from '../services/router-rpc.service.js';
 import { routerAccessService } from '../services/router-access.service.js';
 import { assertAuthenticated, requireAdmin } from '../utils/router-middleware.js';
+import { prisma } from '../lib/prisma.js';
 
 export async function routerSystemRoutes(fastify: FastifyInstance) {
   // Get router system info via ubus
@@ -225,6 +226,111 @@ export async function routerSystemRoutes(fastify: FastifyInstance) {
       fastify.log.error(`[Bridge Update] Failed to update bridge for router ${id}: ${errorMessage}`);
       return reply.code(503).send({ 
         error: 'Failed to update bridge: ' + errorMessage,
+        routerId: id
+      });
+    }
+  });
+
+  // Run setup script via RPC (Admin only)
+  fastify.post('/api/routers/:id/setup/run', {
+    preHandler: [fastify.authenticate, requireAdmin],
+    schema: {
+      tags: ['router-management'],
+      summary: 'Run router setup script remotely',
+      security: [{ bearerAuth: [] }],
+      description: 'Admin only - Downloads and executes the OpenWrt setup script on the router',
+      body: {
+        type: 'object',
+        properties: {
+          mqttBroker: {
+            type: 'string',
+            description: 'MQTT broker URL (optional, defaults to MQTT_BROKER_URL env or mqtt://emqx:1883)',
+            format: 'uri'
+          },
+          scriptUrl: {
+            type: 'string',
+            description: 'URL to download setup script (optional, defaults to GitHub raw URL)',
+            format: 'uri'
+          },
+          githubToken: {
+            type: 'string',
+            description: 'GitHub token for private repos (optional)'
+          },
+          timeout: {
+            type: 'number',
+            default: 120000,
+            description: 'Timeout in milliseconds (default: 120s)'
+          }
+        }
+      }
+    }
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    assertAuthenticated(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { mqttBroker?: string; scriptUrl?: string; githubToken?: string; timeout?: number };
+
+    const router = await routerAccessService.verifyRouterAccess(id, request.user as AuthenticatedUser);
+    if (!router) {
+      return reply.code(404).send({ error: 'Router not found' });
+    }
+
+    try {
+      // Get router token and ID from database
+      const routerData = await prisma.router.findUnique({
+        where: { id },
+        select: { token: true, id: true }
+      });
+
+      if (!routerData) {
+        return reply.code(404).send({ error: 'Router not found' });
+      }
+
+      // Determine MQTT broker URL
+      const mqttBroker = body.mqttBroker || process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
+      
+      // Determine script URL (default to GitHub raw URL)
+      const scriptUrl = body.scriptUrl || 'https://raw.githubusercontent.com/your-org/spotfi/main/scripts/openwrt-setup-cloud.sh';
+
+      fastify.log.info(`[Setup] Running setup script for router ${id} via RPC`);
+
+      // Create setup command that:
+      // 1. Downloads the setup script
+      // 2. Makes it executable
+      // 3. Runs it with router token, MQTT broker, and router ID
+      const setupCommand = [
+        'set -e',
+        'echo "Downloading setup script..."',
+        `SCRIPT_FILE="/tmp/openwrt-setup-cloud.sh"`,
+        `wget -q -O "$SCRIPT_FILE" "${scriptUrl}" || curl -s -o "$SCRIPT_FILE" "${scriptUrl}" || {`,
+        '  echo "ERROR: Failed to download setup script"',
+        '  exit 1',
+        '}',
+        'chmod +x "$SCRIPT_FILE"',
+        '',
+        'echo "Running setup script..."',
+        // Build command with parameters
+        `"$SCRIPT_FILE" "${routerData.token}" "${mqttBroker}" "${routerData.id}"${body.githubToken ? ` "${body.githubToken}"` : ''}`,
+        '',
+        'echo "SUCCESS: Setup script completed"',
+        'rm -f "$SCRIPT_FILE"'
+      ].filter(line => line.trim() !== '').join('\n');
+
+      const result = await routerRpcService.rpcCall(id, 'file', 'exec', {
+        command: '/bin/sh',
+        params: ['-c', setupCommand]
+      }, body.timeout || 120000);
+
+      return {
+        routerId: id,
+        success: true,
+        message: 'Setup script executed successfully',
+        result: result.result || result
+      };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      fastify.log.error(`[Setup] Failed to run setup script for router ${id}: ${errorMessage}`);
+      return reply.code(503).send({ 
+        error: 'Failed to run setup script: ' + errorMessage,
         routerId: id
       });
     }
