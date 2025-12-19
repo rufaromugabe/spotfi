@@ -62,8 +62,20 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 		return
 	}
 
-	// Clean existing if present
-	sm.HandleStop(msg)
+	// Close ALL existing sessions for this router to ensure only one session per router
+	// This prevents multiple terminal sessions from being active simultaneously
+	sm.mu.Lock()
+	for id, sess := range sm.sessions {
+		if sess.Active {
+			sess.Active = false
+			sess.Pty.Close()
+			if sess.Cmd.Process != nil {
+				sess.Cmd.Process.Kill()
+			}
+			delete(sm.sessions, id)
+		}
+	}
+	sm.mu.Unlock()
 
 	// Create command
 	c := exec.Command("/bin/sh")

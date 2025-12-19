@@ -70,6 +70,13 @@ export class xTunnelManager {
       throw new Error('Router not found');
     }
 
+    // Close any existing sessions for this router to ensure only one session per router
+    // This prevents multiple terminal connections from interfering with each other
+    this.closeRouterSessions(routerId);
+    if (this.sessions.size > 0) {
+      logger.info(`[x] Closed existing session(s) for router ${routerId} before creating new session`);
+    }
+
     // Create session
     const sessionId = `${routerId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const session = new xTunnelSession(
