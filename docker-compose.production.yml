@@ -142,11 +142,11 @@ services:
       # No explicit cache configuration needed - caching is built-in and enabled by default
       # ACL Query: 
       # - Routers get access to their own topics: spotfi/router/{id}/# and spotfi/api/#
-      # - API users (username matching MQTT_USERNAME) get full access to all router topics
+      # - API users (usernames NOT in routers table) get full access to all router topics
       # Note: EMQX requires one row per topic (not arrays), so we use UNION ALL to return multiple topics
       # Note: Query uses indexed router.id lookup (primary key) for fast performance
-      # Note: Replace 'api_user' below with your actual MQTT_USERNAME value
-      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, 'spotfi/router/' || id || '/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/router/+/#' as topic FROM (SELECT 1) WHERE $${username} = 'api_user' UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM (SELECT 1) WHERE $${username} = 'api_user'"
+      # Note: API users are identified by NOT existing in routers table (since routers use their ID as username)
+      EMQX_AUTHORIZATION__SOURCES__1__QUERY: "SELECT 'allow' as permission, 'all' as action, 'spotfi/router/' || id || '/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM routers WHERE id = $${username} UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/router/+/#' as topic FROM (SELECT 1) WHERE NOT EXISTS (SELECT 1 FROM routers WHERE id = $${username}) UNION ALL SELECT 'allow' as permission, 'all' as action, 'spotfi/api/#' as topic FROM (SELECT 1) WHERE NOT EXISTS (SELECT 1 FROM routers WHERE id = $${username})"
     
     volumes:
       - vol-emqx-data:/opt/emqx/data

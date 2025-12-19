@@ -37,8 +37,12 @@ export class MqttService {
 
     private resubscribe() {
         this.messageHandlers.forEach((_, filter) => {
-            this.client.subscribe(filter, (err) => {
-                if (err) this.logger?.error(`Failed to subscribe to ${filter}: ${err.message}`);
+            this.client.subscribe(filter, (err, granted) => {
+                if (err) {
+                    this.logger?.error(`Failed to subscribe to ${filter}: ${err.message}`);
+                } else {
+                    this.logger?.info(`Successfully subscribed to ${filter} (QoS: ${granted?.[0]?.qos ?? 'unknown'})`);
+                }
             });
         });
     }
@@ -57,10 +61,17 @@ export class MqttService {
         }
 
         // Naive topic matching for now (can be improved with mqtt-match)
+        let matched = false;
         for (const [filter, handler] of this.messageHandlers.entries()) {
             if (this.mqttMatch(filter, topic)) {
+                this.logger?.debug(`[MQTT] Message received on ${topic} (matched filter: ${filter})`);
                 handler(topic, message);
+                matched = true;
             }
+        }
+        
+        if (!matched) {
+            this.logger?.warn(`[MQTT] Received message on ${topic} but no handler matched`);
         }
     }
 
@@ -94,9 +105,19 @@ export class MqttService {
 
     public publish(topic: string, message: any, options?: any): Promise<void> {
         return new Promise((resolve, reject) => {
-            this.client.publish(topic, JSON.stringify(message), options, (err) => {
-                if (err) reject(err);
-                else resolve();
+            if (!this.client.connected) {
+                reject(new Error('MQTT client not connected'));
+                return;
+            }
+            const payload = JSON.stringify(message);
+            this.client.publish(topic, payload, options, (err) => {
+                if (err) {
+                    this.logger?.error(`Failed to publish to ${topic}: ${err.message}`);
+                    reject(err);
+                } else {
+                    this.logger?.debug(`Published to ${topic} (${payload.length} bytes)`);
+                    resolve();
+                }
             });
         });
     }
