@@ -32,6 +32,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo "Arguments:"
     echo "  TOKEN         - Router token from SpotFi dashboard (required)"
     echo "  MQTT_BROKER   - (Optional) MQTT Broker URL (default: mqtts://mqtt.spotfi.cloud:8883)"
+    echo "  ROUTER_ID     - (Optional) Router ID from SpotFi dashboard (required for MQTT auth)"
     echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
     echo ""
     echo "Note: GitHub token can also be set via GITHUB_TOKEN environment variable"
@@ -39,7 +40,8 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo ""
     echo "Example:"
     echo "  $0 your-router-token-here"
-    echo "  $0 your-router-token-here mqtts://mqtt.example.com:8883"
+    echo "  $0 your-router-token-here mqtt://mqtt.example.com:1883"
+    echo "  $0 your-router-token-here mqtt://mqtt.example.com:1883 your-router-id-here"
     echo ""
     exit 1
 fi
@@ -48,25 +50,44 @@ TOKEN="$1"
 
 # Smart parameter detection:
 # - If $2 looks like MQTT broker (starts with mqtts://, mqtt://, ssl://, or tcp://), treat it as MQTT_BROKER
-# - If $2 looks like GitHub token (starts with ghp_), treat it as GITHUB_TOKEN
+# - $3 is ROUTER_ID (optional but recommended)
+# - $4 is GITHUB_TOKEN (optional)
 
 if [ -n "$2" ]; then
   if echo "$2" | grep -qE "^(mqtts|mqtt|ssl|tcp)://"; then
     # $2 is MQTT broker URL
     MQTT_BROKER="$2"
-    GITHUB_TOKEN_PARAM="${3:-}"
+    # Check if $3 is router ID or GitHub token
+    if [ -n "$3" ] && echo "$3" | grep -q "^ghp_"; then
+      # $3 is GitHub token (user skipped router ID)
+      ROUTER_ID=""
+      GITHUB_TOKEN_PARAM="$3"
+    else
+      # $3 is router ID (or empty)
+      ROUTER_ID="${3:-}"
+      GITHUB_TOKEN_PARAM="${4:-}"
+    fi
   elif echo "$2" | grep -q "^ghp_"; then
-    # $2 is GitHub token (user skipped MQTT broker)
+    # $2 is GitHub token (user skipped MQTT broker and router ID)
     MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
+    ROUTER_ID=""
     GITHUB_TOKEN_PARAM="$2"
   else
     # Unknown format, assume it's MQTT broker without protocol
     MQTT_BROKER="$2"
-    GITHUB_TOKEN_PARAM="${3:-}"
+    # Check if $3 is router ID or GitHub token
+    if [ -n "$3" ] && echo "$3" | grep -q "^ghp_"; then
+      ROUTER_ID=""
+      GITHUB_TOKEN_PARAM="$3"
+    else
+      ROUTER_ID="${3:-}"
+      GITHUB_TOKEN_PARAM="${4:-}"
+    fi
   fi
 else
   # No $2 provided, use defaults
   MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
+  ROUTER_ID=""
   GITHUB_TOKEN_PARAM="${3:-}"
 fi
 
@@ -74,6 +95,7 @@ fi
 if echo "$MQTT_BROKER" | grep -q "^ghp_"; then
   GITHUB_TOKEN_PARAM="$MQTT_BROKER"
   MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
+  ROUTER_ID=""
 fi
 
 # Get GitHub token from multiple sources (priority: parameter > env var > file)
@@ -371,11 +393,21 @@ if [ -z "$MAC_ADDRESS" ]; then
     MAC_ADDRESS=""
 fi
 
-# Create environment file (token-only mode)
+# Create environment file
 cat > /etc/spotfi.env << EOF
 SPOTFI_TOKEN="$TOKEN"
 SPOTFI_MQTT_BROKER="$MQTT_BROKER"
 EOF
+
+# Add Router ID if provided (required for MQTT authentication)
+if [ -n "$ROUTER_ID" ]; then
+    echo "SPOTFI_ROUTER_ID=\"$ROUTER_ID\"" >> /etc/spotfi.env
+    echo -e "${GREEN}✓ Router ID configured${NC}"
+else
+    echo -e "${YELLOW}Warning: Router ID not provided${NC}"
+    echo "  MQTT authentication requires SPOTFI_ROUTER_ID"
+    echo "  You can add it manually to /etc/spotfi.env later"
+fi
 
 # Add MAC if detected (optional, cloud can detect it)
 if [ -n "$MAC_ADDRESS" ]; then

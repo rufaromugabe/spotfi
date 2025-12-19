@@ -12,12 +12,16 @@ type Client struct {
 	routerID string
 }
 
+// NewClient creates a new MQTT client
+// username: Router ID (from database) - used for EMQX authentication
+// password: Router Token - used for EMQX authentication
+// EMQX authenticates using: SELECT token FROM routers WHERE id = username
 func NewClient(brokerURL, clientID, username, password string, onConnect mqtt.OnConnectHandler) (*Client, error) {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(brokerURL)
 	opts.SetClientID(clientID)
-	opts.SetUsername(username)
-	opts.SetPassword(password)
+	opts.SetUsername(username) // Router ID
+	opts.SetPassword(password) // Router Token
 	opts.SetCleanSession(true) // Set to false if we want queued messages while offline
 	
 	// LWT (Last Will and Testament)

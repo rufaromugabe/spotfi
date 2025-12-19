@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,20 +81,19 @@ func main() {
 		log.Printf("Using MQTT broker: %s", brokerURL)
 	}
 
-	// Router ID (Token only mode supported but need ID for topics)
+	// Router ID - Required for MQTT authentication (username = router ID, password = token)
+	// EMQX authenticates using: SELECT token FROM routers WHERE id = username
 	routerID := cfg.RouterID
 	if routerID == "" {
-		if len(cfg.Mac) > 0 {
-			routerID = cfg.Mac
-		} else {
-			// Fallback: This is risky in real dev but fine for this bridge logic
-			routerID = "unknown_device"
-			log.Println("WARNING: No RouterID or MAC found. Using 'unknown_device'. RPC may fail.")
-		}
+		log.Fatal("Missing configuration: SPOTFI_ROUTER_ID not set. Router ID is required for MQTT authentication.")
 	}
 
 	// Connect to MQTT
+	// Username = Router ID (from database)
+	// Password = Router Token
 	clientID := fmt.Sprintf("router-%s", routerID)
+	log.Printf("Connecting to MQTT broker with username='%s' (router ID)", routerID)
+	
 	// Connect to MQTT with Exponential Backoff
 	var client *mqtt.Client
 	var err error
@@ -106,6 +106,12 @@ func main() {
 		})
 		if err == nil {
 			break
+		}
+		// Provide more helpful error messages for authentication failures
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not Authorized") || strings.Contains(errMsg, "NotAuthorized") {
+			log.Printf("MQTT authentication failed: username='%s' (router ID), password='%s...' (token)", routerID, cfg.Token[:min(8, len(cfg.Token))])
+			log.Printf("Verify: 1) Router ID '%s' exists in database, 2) Token matches router's token in database", routerID)
 		}
 		log.Printf("Failed to connect to MQTT broker: %v. Retrying in %v...", err, backoff)
 		time.Sleep(backoff)

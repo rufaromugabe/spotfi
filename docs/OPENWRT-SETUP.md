@@ -220,8 +220,20 @@ SPOTFI_MQTT_BROKER="mqtts://mqtt.spotfi.cloud:8883"
 SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 ```
 
+**Important:** For MQTT authentication, you must also add the router ID:
+
+```bash
+# Get router ID from SpotFi dashboard or API response when creating router
+# Then add to /etc/spotfi.env:
+SPOTFI_ROUTER_ID="cmichrwmz0003zijqm53zfpdr"
+```
+
+**MQTT Authentication:**
+- **Username** = Router ID (from database)
+- **Password** = Router Token
+- EMQX authenticates using: `SELECT token FROM routers WHERE id = username`
+
 **Note:** 
-- The router will connect with just the token. The cloud identifies the router and provides all configuration.
 - The bridge uses **MQTT exclusively** - all communication (metrics, RPC commands, terminal sessions) flows through the MQTT broker.
 - No WebSocket connections are used.
 
