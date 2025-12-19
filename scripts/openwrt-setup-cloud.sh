@@ -23,15 +23,14 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Parse arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 4 ]; then
-    echo "Usage: $0 TOKEN [SERVER_DOMAIN] [MQTT_BROKER] [GITHUB_TOKEN]"
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: $0 TOKEN [MQTT_BROKER] [GITHUB_TOKEN]"
     echo ""
     echo "Cloudflare Tunnel-like setup: Just provide your router token."
     echo "All configuration (including uSpot setup) will be done from the cloud."
     echo ""
     echo "Arguments:"
     echo "  TOKEN         - Router token from SpotFi dashboard (required)"
-    echo "  SERVER_DOMAIN - (Optional) SpotFi server domain (default: wss://api.spotfi.com/ws)"
     echo "  MQTT_BROKER   - (Optional) MQTT Broker URL (default: ssl://mqtt.spotfi.cloud:8883)"
     echo "  GITHUB_TOKEN  - (Optional) GitHub Personal Access Token for private repos"
     echo ""
@@ -40,19 +39,38 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 4 ]; then
     echo ""
     echo "Example:"
     echo "  $0 your-router-token-here"
+    echo "  $0 your-router-token-here ssl://mqtt.example.com:8883"
     echo ""
     exit 1
 fi
 
 TOKEN="$1"
-WS_URL="${2:-wss://api.spotfi.com/ws}"
-MQTT_BROKER="${3:-ssl://mqtt.spotfi.cloud:8883}"
-GITHUB_TOKEN_PARAM="${4:-}"
 
-# Smart detection: If 3rd arg is GITHUB_TOKEN (legacy usage), handling
-# If $3 starts with ghp_ or doesn't look like a URL, and $4 is empty...
-# Actually, let's strictly follow the new docs to avoid confusion, but we can be nice.
-# If $3 looks like a github token (starts with ghp_), assume user skipped MQTT and wants default.
+# Smart parameter detection:
+# - If $2 looks like MQTT broker (starts with ssl:// or tcp://), treat it as MQTT_BROKER
+# - If $2 looks like GitHub token (starts with ghp_), treat it as GITHUB_TOKEN
+
+if [ -n "$2" ]; then
+  if echo "$2" | grep -qE "^(ssl|tcp)://"; then
+    # $2 is MQTT broker URL
+    MQTT_BROKER="$2"
+    GITHUB_TOKEN_PARAM="${3:-}"
+  elif echo "$2" | grep -q "^ghp_"; then
+    # $2 is GitHub token (user skipped MQTT broker)
+    MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+    GITHUB_TOKEN_PARAM="$2"
+  else
+    # Unknown format, assume it's MQTT broker without protocol
+    MQTT_BROKER="$2"
+    GITHUB_TOKEN_PARAM="${3:-}"
+  fi
+else
+  # No $2 provided, use defaults
+  MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
+  GITHUB_TOKEN_PARAM="${3:-}"
+fi
+
+# Handle GitHub token in MQTT_BROKER position (if user passed token as 2nd arg)
 if echo "$MQTT_BROKER" | grep -q "^ghp_"; then
   GITHUB_TOKEN_PARAM="$MQTT_BROKER"
   MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
@@ -68,21 +86,20 @@ elif [ -f /etc/github_token ]; then
     GITHUB_TOKEN=$(cat /etc/github_token 2>/dev/null | tr -d '\n\r ')
 fi
 
-# Normalize WebSocket URL: add protocol if missing, ensure /ws path
-if echo "$WS_URL" | grep -qv "://"; then
-    WS_URL="wss://${WS_URL}"
-fi
-if echo "$WS_URL" | grep -qv "/ws"; then
-    WS_URL="${WS_URL%/}/ws"
-fi
-
 # Normalize MQTT Broker URL: remove trailing slashes, paths, and query parameters
 # MQTT URLs should be: tcp://host:port or ssl://host:port (no trailing slash, no path, no query params)
+# First, extract just the protocol://host:port part
 MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|/$||' | sed 's|/.*$||' | sed 's|?.*$||')
 # Ensure proper format: protocol://host:port
-if echo "$MQTT_BROKER" | grep -qvE "^(tcp|ssl|ws|wss)://"; then
-    # If no protocol, assume ssl://
-    MQTT_BROKER="ssl://${MQTT_BROKER}"
+if echo "$MQTT_BROKER" | grep -qvE "^(tcp|ssl)://"; then
+    # If no protocol or wrong protocol, fix it
+    if echo "$MQTT_BROKER" | grep -qE "://"; then
+        # Has protocol but wrong one (ws/wss), replace with ssl
+        MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|^wss\?://|ssl://|')
+    else
+        # No protocol, assume ssl://
+        MQTT_BROKER="ssl://${MQTT_BROKER}"
+    fi
 fi
 
 echo -e "${GREEN}========================================${NC}"
@@ -90,10 +107,9 @@ echo -e "${GREEN}SpotFi OpenWRT Router Setup - Cloud Mode${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Token: ${TOKEN:0:8}... (hidden)"
-echo "WebSocket: $WS_URL"
 echo "MQTT Broker: $MQTT_BROKER"
 echo ""
-echo "This will install SpotFi bridge. All configuration will be done from the cloud."
+echo "This will install SpotFi bridge (MQTT-only). All configuration will be done from the cloud."
 echo ""
 
 TOTAL_STEPS=6
@@ -233,7 +249,7 @@ else
     echo "  - Using public repository access"
 fi
 
-# Step 4: Install WebSocket bridge (Go binary)
+# Step 4: Install MQTT bridge (Go binary)
 STEP_NUM=$((STEP_NUM + 1))
 echo -e "${YELLOW}[${STEP_NUM}/${TOTAL_STEPS}] Installing SpotFi Bridge (Go)...${NC}"
 
@@ -336,7 +352,6 @@ fi
 # Create environment file (token-only mode)
 cat > /etc/spotfi.env << EOF
 SPOTFI_TOKEN="$TOKEN"
-SPOTFI_WS_URL="$WS_URL"
 SPOTFI_MQTT_BROKER="$MQTT_BROKER"
 EOF
 
@@ -353,7 +368,7 @@ if ! /usr/bin/spotfi-bridge --test >/dev/null 2>&1; then
     echo "  The bridge will connect with token-only authentication"
 fi
 
-echo -e "${GREEN}✓ WebSocket bridge installed${NC}"
+echo -e "${GREEN}✓ MQTT bridge installed${NC}"
 
 # Step 5: Create init scripts
 STEP_NUM=$((STEP_NUM + 1))
@@ -405,7 +420,6 @@ echo ""
 echo "Router Status:"
 echo "  - Mode: Cloud (token-only authentication)"
 echo "  - Token: ${TOKEN:0:8}... (hidden)"
-echo "  - WebSocket: $WS_URL"
 echo "  - MQTT Broker: $MQTT_BROKER"
 if [ -n "$MAC_ADDRESS" ]; then
     echo "  - MAC Address: $MAC_ADDRESS (auto-detected)"

@@ -180,6 +180,8 @@ sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 # IMPORTANT: MQTT broker URL must be: ssl://host:port or tcp://host:port (no trailing slash!)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883
 
+
+
 # With GitHub token (if not stored in /etc/github_token)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883 ghp_your_token_here
 ```
