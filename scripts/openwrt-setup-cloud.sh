@@ -76,6 +76,15 @@ if echo "$WS_URL" | grep -qv "/ws"; then
     WS_URL="${WS_URL%/}/ws"
 fi
 
+# Normalize MQTT Broker URL: remove trailing slashes, paths, and query parameters
+# MQTT URLs should be: tcp://host:port or ssl://host:port (no trailing slash, no path, no query params)
+MQTT_BROKER=$(echo "$MQTT_BROKER" | sed 's|/$||' | sed 's|/.*$||' | sed 's|?.*$||')
+# Ensure proper format: protocol://host:port
+if echo "$MQTT_BROKER" | grep -qvE "^(tcp|ssl|ws|wss)://"; then
+    # If no protocol, assume ssl://
+    MQTT_BROKER="ssl://${MQTT_BROKER}"
+fi
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}SpotFi OpenWRT Router Setup - Cloud Mode${NC}"
 echo -e "${GREEN}========================================${NC}"

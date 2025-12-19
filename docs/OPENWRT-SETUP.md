@@ -84,6 +84,12 @@ curl -X POST http://192.168.56.1:8080/api/routers \
 
 **Important:** Save the `token` value - this is all you need for setup!
 
+**Note:** When a router is created, SpotFi automatically generates two unique secrets:
+- **UAM Secret**: For portal CHAP authentication (challenge transformation)
+- **RADIUS Secret**: For RADIUS server communication (authentication/accounting)
+
+These secrets are stored securely in the database and used automatically - you don't need to manage them manually.
+
 ---
 
 ### Step 2: Install SpotFi Bridge on Router
@@ -166,16 +172,25 @@ chmod +x /tmp/openwrt-setup-cloud.sh
 **Cloudflare Tunnel-like Setup - Just provide your token!**
 
 ```bash
-# Basic usage (uses defaults: wss://api.spotfi.com/ws, ssl://mqtt.spotfi.cloud:8883)
+# Basic usage (uses default MQTT broker: ssl://mqtt.spotfi.cloud:8883)
 sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
-# With custom server (for self-hosting)
-# Format: sh script.sh TOKEN WS_URL MQTT_URL GITHUB_TOKEN
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://your-server.com/ws tcp://your-server.com:1883
+# With custom MQTT broker (for self-hosting)
+# Format: sh script.sh TOKEN MQTT_BROKER GITHUB_TOKEN
+# IMPORTANT: MQTT broker URL must be: ssl://host:port or tcp://host:port (no trailing slash!)
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883
 
 # With GitHub token (if not stored in /etc/github_token)
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN wss://api.spotfi.com/ws ssl://mqtt.spotfi.cloud:8883 ghp_your_token_here
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883 ghp_your_token_here
 ```
+
+**Note:** 
+- The SpotFi bridge uses **MQTT only** - no WebSocket connections. All communication flows through the MQTT broker.
+- **MQTT Broker URL Format:** Must be `ssl://host:port` or `tcp://host:port` (no trailing slash, no path, no query parameters)
+  - ✅ Correct: `ssl://mqtt.example.com:8883`
+  - ❌ Wrong: `ssl://mqtt.example.com/:8883` (trailing slash before port)
+  - ❌ Wrong: `ssl://mqtt.example.com:8883/ws` (path)
+  - ❌ Wrong: `ssl://mqtt.example.com:8883?token=xxx` (query params)
 
 **Example:**
 
@@ -187,7 +202,7 @@ sh /tmp/openwrt-setup-cloud.sh test-router-token-123
 **What the script does:**
 
 - ✅ Detects router architecture automatically
-- ✅ Downloads and installs SpotFi bridge binary
+- ✅ Downloads and installs SpotFi bridge binary (MQTT-only)
 - ✅ Auto-detects MAC address
 - ✅ Creates minimal config with just token
 - ✅ Sets up init scripts and starts service
@@ -198,12 +213,47 @@ The script creates `/etc/spotfi.env` with:
 
 ```bash
 SPOTFI_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-SPOTFI_WS_URL="wss://api.spotfi.com/ws"
 SPOTFI_MQTT_BROKER="ssl://mqtt.spotfi.cloud:8883"
 SPOTFI_MAC="00:11:22:33:44:55"  # Auto-detected
 ```
 
-**Note:** The router will connect with just the token. The cloud identifies the router and provides all configuration.
+**Note:** 
+- The router will connect with just the token. The cloud identifies the router and provides all configuration.
+- The bridge uses **MQTT exclusively** - all communication (metrics, RPC commands, terminal sessions) flows through the MQTT broker.
+- No WebSocket connections are used.
+
+---
+
+### Step 3.5: Understanding the MQTT Bridge Architecture
+
+**MQTT-Only Communication:**
+
+The SpotFi bridge uses **MQTT exclusively** for all communication. No WebSocket connections are used.
+
+**MQTT Topics Used:**
+
+- `spotfi/router/{id}/metrics` - Router heartbeat and metrics (published every 30s)
+- `spotfi/router/{id}/status` - Online/Offline status (with Last Will and Testament)
+- `spotfi/router/{id}/rpc/request` - Incoming RPC commands from API
+- `spotfi/router/{id}/rpc/response` - RPC responses to API
+- `spotfi/router/{id}/x/in` - Incoming terminal tunnel data from API
+- `spotfi/router/{id}/x/out` - Outgoing terminal tunnel data to API
+
+**Benefits of MQTT:**
+
+- ✅ Lightweight protocol - perfect for resource-constrained routers
+- ✅ Built-in QoS and message persistence
+- ✅ Automatic reconnection with Last Will and Testament
+- ✅ Efficient pub/sub model for real-time communication
+- ✅ Works through firewalls and NAT without special configuration
+
+**Connection Flow:**
+
+1. Bridge connects to MQTT broker using router token for authentication
+2. Bridge subscribes to router-specific topics
+3. Bridge publishes metrics and status updates
+4. API sends commands via MQTT topics
+5. Bridge responds via MQTT topics
 
 ---
 
@@ -226,13 +276,15 @@ curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uspot/setup \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 
 # Then configure UAM/RADIUS
+# Note: Router secrets (uamSecret and radiusSecret) are automatically generated
+# when the router is created - you don't need to provide them manually
 curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
+    "authMode": "uam",
     "uamServerUrl": "https://api.spotfi.com/uam/login",
-    "radiusServer": "YOUR_RADIUS_IP",
-    "radiusSecret": "YOUR_RADIUS_SECRET"
+    "radiusServer": "YOUR_RADIUS_IP:1812"
   }'
 ```
 
@@ -242,9 +294,18 @@ curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
 - ✅ Configures network interfaces (LAN + hotspot)
 - ✅ Sets up firewall rules
 - ✅ Configures HTTPS portal
+- ✅ Uses router's automatically generated secrets:
+  - **UAM Secret**: Used for CHAP challenge transformation in portal authentication
+  - **RADIUS Secret**: Used for RADIUS authentication/accounting with FreeRADIUS server
 - ✅ Restarts services
 
 **No manual configuration needed!** Everything is done from the cloud.
+
+**Note:** Each router automatically gets two unique secrets when created:
+- **`uamSecret`**: Used for UAM portal CHAP authentication (challenge transformation)
+- **`radiusSecret`**: Used for RADIUS server communication (authentication and accounting)
+
+These secrets are generated automatically and stored securely - you don't need to provide or manage them manually.
 
 ---
 
@@ -301,7 +362,7 @@ The automated scripts (`openwrt-setup-cloud.sh` and `openwrt-setup-uspot.sh`) ha
 - ✅ Network interface setup
 - ✅ WiFi configuration
 - ✅ Firewall rules
-- ✅ WebSocket bridge installation (if using cloud script)
+- ✅ MQTT bridge installation (if using cloud script)
 - ✅ Service initialization
 
 For manual configuration details, see the script source code on GitHub or refer to the troubleshooting section below.
@@ -464,53 +525,107 @@ cat /etc/spotfi.env
 
 ---
 
-### Problem: "Error starting x session: Exception occurred in preexec_fn"
+### Problem: "Bridge not connecting to MQTT broker"
 
 **Error Message:**
 
 ```
-Error starting x session: Exception occurred in preexec_fn.
-File "/root/spotfi-bridge/bridge.py", line 260, in handle_x_start
+MQTT connection failed: connection refused
+or
+Failed to connect to MQTT broker
+or
+Connecting to ssl://mqtt.example.com/:8883/ws?mac=...&token=...
 ```
 
 **Cause:**
-This error indicates your router is running an **old version** of `bridge.py` that still uses `preexec_fn`, which is not supported on OpenWrt/BusyBox systems.
+The Go-based bridge cannot connect to the MQTT broker. This could be due to:
+- **Incorrect MQTT broker URL format** (most common)
+  - Trailing slash before port: `ssl://mqtt.example.com/:8883` ❌
+  - Should be: `ssl://mqtt.example.com:8883` ✅
+- Network connectivity issues
+- Firewall blocking MQTT ports (8883 for SSL, 1883 for TCP)
+- MQTT broker authentication failure
+- Old bridge binary version
 
 **Fix:**
-Re-run the setup script with your token:
+
+1. **Check MQTT Broker URL Format:**
 
 ```bash
-# Download and run setup script with your router token
-wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
-sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
+# View current configuration
+cat /etc/spotfi.env
+
+# Check if MQTT broker URL has trailing slash or incorrect format
+# Should be: ssl://host:port (no trailing slash, no path, no query params)
 ```
 
-**Alternative: Quick Update (Bridge Only)**
-If you only need to update the bridge.py file:
+2. **Fix MQTT Broker URL:**
+
+```bash
+# Edit the config file
+vi /etc/spotfi.env
+
+# Fix the SPOTFI_MQTT_BROKER line:
+# Change: ssl://mqtt.example.com/:8883  (wrong - trailing slash)
+# To:     ssl://mqtt.example.com:8883   (correct)
+
+# Or re-run setup script with correct URL format
+wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh && \
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN ssl://mqtt.example.com:8883
+```
+
+3. **Restart Bridge:**
+
+```bash
+/etc/init.d/spotfi-bridge restart
+```
+
+**Check MQTT Connection:**
+
+```bash
+# Check bridge logs for MQTT connection status
+logread | grep -i mqtt
+
+# Check if bridge is running
+ps | grep spotfi-bridge
+
+# Verify MQTT broker URL in config
+cat /etc/spotfi.env | grep MQTT
+
+# Test network connectivity to MQTT broker
+ping mqtt.spotfi.cloud
+```
+
+**Update Bridge Binary:**
+If you need to update just the bridge binary:
 
 ```bash
 # Stop the service
 /etc/init.d/spotfi-bridge stop
 
-# Download and update bridge.py
+# Re-run the setup script - it will download the latest Go binary
 wget -O /tmp/openwrt-setup-cloud.sh https://raw.githubusercontent.com/rufaromugabe/spotfi/main/scripts/openwrt-setup-cloud.sh
+sh /tmp/openwrt-setup-cloud.sh YOUR_ROUTER_TOKEN
 
-# Extract just the bridge.py part (lines 101-645)
-# Or re-run the full setup script - it's safe to run multiple times
+# Or manually download and replace binary
+# (check script for download URL based on your architecture)
 
 # Start the service
 /etc/init.d/spotfi-bridge start
 
 # Verify
-logread -f | grep -i x
+logread | grep spotfi-bridge
 ```
 
 **Verification:**
-After updating, x sessions should work without errors. You can verify by checking logs:
+After updating, the bridge should connect to MQTT. You can verify by checking logs:
 
 ```bash
-# Should NOT show preexec_fn errors anymore
-logread | grep -i x
+# Should show "MQTT Client Connected"
+logread | grep -i mqtt
+
+# Check bridge status
+/etc/init.d/spotfi-bridge status
 ```
 
 ---
@@ -529,8 +644,9 @@ ubus call uspot client_list
 # Check logs
 logread | grep -E "uspot|radius"
 
-# Test RADIUS manually
-echo "User-Name=testuser,User-Password=testpass" | radclient 192.168.42.181:1812 auth YOUR_RADIUS_SECRET
+# Test RADIUS manually (use the router's radiusSecret from database)
+# You can get it from the SpotFi dashboard or API
+echo "User-Name=testuser,User-Password=testpass" | radclient 192.168.42.181:1812 auth ROUTER_RADIUS_SECRET
 ```
 
 **Fix:**
@@ -663,13 +779,21 @@ uci commit firewall
 /etc/init.d/firewall restart
 ```
 
-### 4. Secure RADIUS Secret
+### 4. Router Secrets Management
 
+**Automatic Secret Generation:**
+- When a router is created in SpotFi, two unique secrets are automatically generated:
+  - **UAM Secret** (`uamSecret`): Used for portal CHAP authentication
+  - **RADIUS Secret** (`radiusSecret`): Used for RADIUS server communication
+- These secrets are stored securely in the database and used automatically
+- You don't need to manually manage or provide these secrets
+
+**Security Best Practices:**
 ```bash
-# Use strong random secret (from SpotFi)
-# Never share or commit to version control
-# Store securely in /etc/spotfi.env
-chmod 600 /etc/spotfi.env
+# Router secrets are stored in SpotFi database
+# Never share or commit secrets to version control
+# Secrets are automatically used by the API - no manual configuration needed
+# If a secret is compromised, re-register the router to generate new secrets
 ```
 
 ---
@@ -887,14 +1011,14 @@ passwd
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 
    # Configure UAM/RADIUS
+   # Note: Router secrets are automatically used from the database
    curl -X POST http://192.168.56.1:8080/api/routers/ROUTER_ID/uam/configure \
      -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
        "authMode": "uam",
        "uamServerUrl": "https://api.spotfi.com/uam/login",
-       "radiusServer": "YOUR_RADIUS_IP:1812",
-       "radiusSecret": "YOUR_RADIUS_SECRET"
+       "radiusServer": "YOUR_RADIUS_IP:1812"
      }'
    ```
 
