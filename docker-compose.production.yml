@@ -85,6 +85,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      emqx:
+        condition: service_healthy
 
   # MQTT Broker (EMQX) - Exposed
   emqx:
@@ -113,10 +115,6 @@ services:
       EMQX_AUTHENTICATION__1__PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
       EMQX_AUTHENTICATION__1__QUERY: "SELECT token as password FROM routers WHERE id = $${username}"
       EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM: "{name = plain}"
-      
-      # Cache settings (5.3.0 schema)
-      EMQX_AUTHENTICATION__1__ENABLE_CACHE: "true"
-      EMQX_AUTHENTICATION__1__CACHE_TTL: "1m"
 
       # 2. JWT Authentication (For Backend API)
       # Replaces built-in database auth. Validates tokens signed with JWT_SECRET.
@@ -124,6 +122,7 @@ services:
       EMQX_AUTHENTICATION__2__ALGORITHM: "hmac-based"
       EMQX_AUTHENTICATION__2__SECRET: "${JWT_SECRET}"
       EMQX_AUTHENTICATION__2__FROM: "password"
+      EMQX_AUTHENTICATION__2__USE_JWKS: "false"
       EMQX_AUTHENTICATION__2__ENABLE: "true"
 
       # --- Authorization (ACL) Logic ---
@@ -142,6 +141,12 @@ services:
     
     volumes:
       - vol-emqx-data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD-SHELL", "emqx ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
