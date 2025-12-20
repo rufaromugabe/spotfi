@@ -244,8 +244,8 @@ export async function routerSystemRoutes(fastify: FastifyInstance) {
         properties: {
           mqttBroker: {
             type: 'string',
-            description: 'MQTT broker URL (optional, defaults to MQTT_BROKER_URL env or mqtt://emqx:1883)',
-            format: 'uri'
+            description: 'MQTT broker URL (optional, defaults to MQTT_BROKER_URL env or mqtt://emqx:1883). Formats: mqtt://host:port, mqtts://host:port, tcp://host:port',
+            pattern: '^(mqtt|mqtts|ssl|tcp)://.+'
           },
           scriptUrl: {
             type: 'string',
@@ -285,8 +285,19 @@ export async function routerSystemRoutes(fastify: FastifyInstance) {
         return reply.code(404).send({ error: 'Router not found' });
       }
 
-      // Determine MQTT broker URL
-      const mqttBroker = body.mqttBroker || process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
+      // Determine MQTT broker URL with normalization
+      let mqttBroker = body.mqttBroker || process.env.MQTT_BROKER_URL || 'mqtt://emqx:1883';
+      
+      // Normalize MQTT URL: fix common typos (mqtt// -> mqtt://)
+      mqttBroker = mqttBroker.replace(/^(mqtt|mqtts|ssl|tcp)\/\//, '$1://');
+      
+      // Validate format
+      if (!/^(mqtt|mqtts|ssl|tcp):\/\/.+/.test(mqttBroker)) {
+        return reply.code(400).send({ 
+          error: 'Invalid MQTT broker URL format. Must be: mqtt://host:port, mqtts://host:port, ssl://host:port, or tcp://host:port',
+          provided: body.mqttBroker
+        });
+      }
       
       // Determine script URL (default to GitHub raw URL)
       const scriptUrl = body.scriptUrl || 'https://raw.githubusercontent.com/your-org/spotfi/main/scripts/openwrt-setup-cloud.sh';
