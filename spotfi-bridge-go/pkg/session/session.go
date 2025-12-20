@@ -132,7 +132,8 @@ func (sm *SessionManager) HandleStart(msg map[string]interface{}) {
 			}
 			if n > 0 {
 				dataB64 := base64.StdEncoding.EncodeToString(buf[:n])
-				sm.sendFunc(responseTopic, map[string]interface{}{
+				// Publish asynchronously to reduce latency
+				go sm.sendFunc(responseTopic, map[string]interface{}{
 					"type":      "x-data",
 					"sessionId": sessionID,
 					"data":      dataB64,

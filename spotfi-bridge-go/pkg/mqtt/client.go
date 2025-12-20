@@ -84,9 +84,15 @@ func (c *Client) Publish(topic string, payload interface{}) error {
 		}
 	}
 	
+	// Use QoS 0 (fire-and-forget) and don't wait for acknowledgment
+	// This reduces latency for terminal data
 	token := c.client.Publish(topic, 0, false, payloadBytes)
-	token.Wait()
-	return token.Error()
+	// Check for immediate errors without blocking
+	// For QoS 0, this is fire-and-forget, so we don't wait
+	if token.Error() != nil {
+		return token.Error()
+	}
+	return nil
 }
 
 func (c *Client) Subscribe(topic string, handler mqtt.MessageHandler) error {
